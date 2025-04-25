@@ -34,6 +34,9 @@ module Apikeys
     # Callbacks (Placeholders for future extension)
     attr_accessor :before_authentication, :after_authentication
 
+    # Debugging
+    attr_accessor :debug_logging
+
     # == Initialization ==
 
     def initialize
@@ -80,6 +83,9 @@ module Apikeys
       # Callbacks
       @before_authentication = ->(_request) { }
       @after_authentication = ->(_result) { }
+
+      # Debugging
+      @debug_logging = false # Disable debug logging by default
     end
   end
 end

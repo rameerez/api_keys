@@ -43,17 +43,17 @@ module Apikeys
     #
     # @param scope [String, Array<String>, nil] Optional scope(s) required for this action.
     def authenticate_api_key!(scope: nil)
-      logger.debug "[Apikeys Auth] authenticate_api_key! started for request: #{request.uuid}" if logger
+      log_debug "[Apikeys Auth] authenticate_api_key! started for request: #{request.uuid}"
       result = Services::Authenticator.call(request)
-      logger.debug "[Apikeys Auth] Authenticator result: #{result.inspect}" if logger
+      log_debug "[Apikeys Auth] Authenticator result: #{result.inspect}"
 
       if result.success?
         @current_api_key = result.api_key
-        logger.debug "[Apikeys Auth] Authentication successful. Key ID: #{@current_api_key.id}" if logger
+        log_debug "[Apikeys Auth] Authentication successful. Key ID: #{@current_api_key.id}"
 
         # Check required scope(s) if provided
         if scope && !check_api_key_scopes(scope)
-          logger.debug "[Apikeys Auth] Scope check failed. Required: #{scope}, Key scopes: #{@current_api_key.scopes}" if logger
+          log_debug "[Apikeys Auth] Scope check failed. Required: #{scope}, Key scopes: #{@current_api_key.scopes}"
           render_unauthorized(error_code: :missing_scope, message: "API key does not have the required scope(s): #{scope}")
           return # Halt chain
         end
@@ -61,7 +61,7 @@ module Apikeys
         update_key_usage_stats if Apikeys.configuration.track_requests_count
       else
         # Authentication failed
-        logger.debug "[Apikeys Auth] Authentication failed. Error: #{result.error_code}, Message: #{result.message}" if logger
+        log_debug "[Apikeys Auth] Authentication failed. Error: #{result.error_code}, Message: #{result.message}"
         render_unauthorized(error_code: result.error_code, message: result.message)
         # Implicitly halts chain due to render
       end
@@ -122,6 +122,14 @@ module Apikeys
     rescue ActiveRecord::ActiveRecordError => e
       Rails.logger.error "[Apikeys] Failed to update usage stats for key #{current_api_key.id}: #{e.message}" if defined?(Rails.logger)
       # Don't let stat update failures break the request
+    end
+
+    # Helper for conditional debug logging
+    def log_debug(message)
+      # Only log if debug_logging is enabled and a logger is available
+      if Apikeys.configuration.debug_logging && logger
+        logger.debug(message)
+      end
     end
 
     # Helper for logging
