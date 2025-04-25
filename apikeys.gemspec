@@ -8,8 +8,10 @@ Gem::Specification.new do |spec|
   spec.authors = ["rameerez"]
   spec.email = ["rubygems@rameerez.com"]
 
-  spec.summary = ""
-  spec.description = ""
+  spec.summary     = "Self-serve API key management for Rails apps."
+  spec.description = "Turn any Rails app into an API platform in 5 minutes. Handles secure API key generation, authentication, revocation, expiration, scopes, and provides optional self-serve UI."
+  spec.summary = "API key management"
+  spec.description = " issue API keys / tokens to your users allows each user of your application to generate multiple API tokens for their account. imagine the account settings of your application has a screen where a user may generate an API token for their account. You may use Sanctum to generate and manage those tokens. These tokens typically have a very long expiration time (years), but may be manually revoked by the user anytime."
   spec.homepage = "https://github.com/rameerez/apikeys"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1.0"
@@ -33,6 +35,21 @@ Gem::Specification.new do |spec|
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
 
-  spec.add_dependency "rails", ">= 6.1"
+  # Prevent pushing this gem to RubyGems.org by setting 'allowed_push_host', or
+  # delete this section to allow pushing this gem to any host.
+  # spec.metadata["allowed_push_host"] = "TODO: Set to your gem server host" # TODO: Configure if needed
 
+  # Runtime Dependencies
+  spec.add_dependency "bcrypt", "~> 3.1" # For secure token hashing
+  spec.add_dependency "rails", ">= 6.1" # Requires Rails 7+
+  spec.add_dependency "activerecord", ">= 7.0"
+  spec.add_dependency "activesupport", ">= 7.0"
+  spec.add_dependency "base58", "~> 0.2"   # For Base58 token alphabet
+
+  # Development Dependencies
+  spec.add_development_dependency "bundler", "~> 2.0"
+  spec.add_development_dependency "rake", "~> 13.0"
+  # TODO: Add testing framework (e.g., minitest or rspec)
+  # TODO: Add linter (e.g., rubocop)
+  # TODO: Add Rails itself for the dummy app testing
 end

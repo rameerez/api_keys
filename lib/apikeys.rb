@@ -9,6 +9,10 @@ require "active_support/all"
 require "apikeys/version"
 require "apikeys/configuration"
 
+require "apikeys/models/concerns/has_api_keys"
+
+require "apikeys/models/api_key"
+
 # Rails integration
 require "apikeys/engine" if defined?(Rails)
 
@@ -30,5 +34,16 @@ module Apikeys
       yield(configuration)
     end
 
+    # Resets the configuration to its default values.
+    # Useful for testing.
+    def reset_configuration!
+      @configuration = Configuration.new
+    end
+
   end
 end
+
+# TODO: Require other necessary files like configuration, engine, etc.
+# require_relative "apikeys/configuration"
+# require_relative "apikeys/engine"
+# require_relative "apikeys/railtie" if defined?(Rails::Railtie)

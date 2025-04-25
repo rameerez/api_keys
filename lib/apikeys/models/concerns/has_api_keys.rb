@@ -1,0 +1,111 @@
+# frozen_string_literal: true
+
+require "active_support/concern"
+
+module Apikeys
+  module Models
+    module Concerns
+      # Concern to add API key capabilities to an owner model (e.g., User, Organization).
+      # This module provides the `has_api_keys` class method when extended onto ActiveRecord::Base.
+      module HasApiKeys
+        extend ActiveSupport::Concern
+
+        # Module containing class methods to be extended onto ActiveRecord::Base
+        module ClassMethods
+          # Defines the association and allows configuration for the specific owner model.
+          #
+          # Example:
+          #   class User < ApplicationRecord
+          #     # Using keyword arguments:
+          #     has_api_keys max_keys: 5, require_name: true
+          #
+          #     # Or using a block:
+          #     has_api_keys do
+          #       max_keys 10
+          #       require_name false
+          #       default_scopes %w[read write]
+          #     end
+          #   end
+          def has_api_keys(**options, &block)
+            # Include the concern's instance methods into the calling class (e.g., User)
+            # Ensures any instance-level helpers in HasApiKeys are available on the owner.
+            include Apikeys::Models::Concerns::HasApiKeys unless included_modules.include?(Apikeys::Models::Concerns::HasApiKeys)
+
+            # Define the core association on the specific class calling this method
+            has_many :api_keys,
+                     class_name: "Apikeys::ApiKey",
+                     as: :owner,
+                     dependent: :destroy # Consider :nullify based on requirements
+
+            # Define class_attribute for settings if not already defined.
+            # This ensures inheritance works correctly (subclasses get their own copy).
+            unless respond_to?(:apikeys_settings)
+              class_attribute :apikeys_settings, instance_writer: false, default: {}
+            end
+
+            # Initialize settings for this specific class, merging defaults and options
+            current_settings = {
+              max_keys: Apikeys.configuration&.default_max_keys_per_owner, # Use safe navigation if config might not be loaded yet
+              require_name: Apikeys.configuration&.require_key_name,
+              default_scopes: Apikeys.configuration&.default_scopes || []
+            }.merge(options) # Merge keyword arguments first
+
+            # Apply DSL block if provided, allowing overrides
+            if block_given?
+              dsl = DslProvider.new(current_settings)
+              dsl.instance_eval(&block)
+            end
+
+            # Assign the final settings hash to the class attribute for this class
+            self.apikeys_settings = current_settings
+
+            # TODO: Add validation hook to check key limit on create?
+            # validates_with Apikeys::Validators::MaxKeysValidator, on: :create, if: -> { apikeys_settings[:max_keys].present? }
+          end
+        end
+
+        # DSL provider class to handle the block configuration
+        class DslProvider # Keep nested or move to a separate file if it grows
+          def initialize(settings)
+            @settings = settings # Operates directly on the hash passed in
+          end
+
+          def max_keys(value)
+            @settings[:max_keys] = value
+          end
+
+          def require_name(value)
+            @settings[:require_name] = value
+          end
+
+          def default_scopes(value)
+            @settings[:default_scopes] = Array(value)
+          end
+
+          # Placeholder for future scope definitions
+          # def define_scope(name, description:)
+          #   # In v1, this might just store metadata for documentation/future use
+          #   # Could store in a separate class attribute or within settings hash.
+          #   @settings[:defined_scopes] ||= {}
+          #   @settings[:defined_scopes][name.to_s] = description
+          # end
+        end
+
+        # --- Instance Methods ---
+        # Add any instance methods needed on the owner model (e.g., User) here.
+
+        # Example: Check if the owner has reached their API key limit.
+        # def reached_api_key_limit?
+        #   limit = self.class.apikeys_settings[:max_keys]
+        #   # Ensure api_keys association is loaded or query count
+        #   limit && api_keys.count >= limit # Or use a counter cache
+        # end
+
+        # Example: Get the specific settings for this owner instance's class.
+        # def apikeys_config
+        #   self.class.apikeys_settings
+        # end
+      end
+    end
+  end
+end

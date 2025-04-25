@@ -1,0 +1,127 @@
+# frozen_string_literal: true
+
+Apikeys.configure do |config|
+  # === Core Authentication ===
+
+  # The HTTP header name where the API key is expected.
+  # Default: "Authorization" (expects "Bearer <token>")
+  # config.header = "Authorization"
+
+  # The query parameter name to check as a fallback if the header is missing.
+  # Set to nil to disable query parameter lookup (recommended for security).
+  # Default: nil
+  # config.query_param = "api_key"
+
+  # === Token Generation ===
+
+  # A hash mapping Rails environments to short codes used in the default token prefix.
+  # Default: { production: "live", development: "test", test: "test" }
+  # config.env_prefix_map = { production: "live", staging: "stage", development: "dev", test: "test" }
+
+  # A lambda/proc that returns the prefix for newly generated tokens.
+  # Defaults to "ak_{env}_", using `env_prefix_map` or Rails.env.
+  # config.token_prefix = -> { "my_app_#{Rails.env.first}_" }
+
+  # The number of random bytes to generate for the token (before encoding).
+  # More bytes = more entropy = harder to guess.
+  # Default: 24 (generates ~32 Base58 chars or 48 hex chars)
+  # config.token_length = 32
+
+  # The encoding alphabet for the random part of the token.
+  # :base58 (recommended) - shorter, avoids ambiguous chars (0, O, I, l)
+  # :hex - standard hexadecimal encoding
+  # Default: :base58
+  # config.token_alphabet = :hex
+
+  # === Storage & Verification ===
+
+  # The hashing strategy used to store token digests in the database.
+  # :bcrypt (recommended) - includes salt, computationally expensive
+  # :sha256 - faster, but less secure if database is compromised (no salt by default here)
+  # Default: :bcrypt
+  # config.hash_strategy = :sha256
+
+  # A lambda/proc used for securely comparing digests (especially for :sha256).
+  # Should perform a constant-time comparison.
+  # Default: ActiveSupport::SecurityUtils.secure_compare
+  # config.secure_compare_proc = ->(a, b) { MySecureComparator.compare(a, b) }
+
+  # Defines the storage backend for API keys. Currently only :active_record supported.
+  # Future: :vault, :dynamodb, custom_class
+  # Default: :active_record
+  # config.key_store_adapter = :active_record
+
+  # Defines the authorization policy class used to check if a key is valid beyond basic checks.
+  # Allows injecting custom logic (IP allow-listing, time-of-day checks, etc.).
+  # Must be a class name (String or Class) responding to `.new(api_key, request).valid?`
+  # Default: "Apikeys::BasePolicy" (a basic implementation will be provided)
+  # config.policy_provider = "MyCustomApiKeyPolicy"
+
+  # === Optional Behaviors ===
+
+  # Automatically expire keys after a certain period from creation.
+  # Set to nil for no automatic expiration.
+  # Default: nil
+  # config.expire_after = 90.days
+
+  # Default scopes to assign to newly created keys if none are specified.
+  # Applies globally unless overridden by `has_api_keys` in the owner model.
+  # Default: []
+  # config.default_scopes = ["read"]
+
+  # If true, automatically update `last_used_at` and increment `requests_count`
+  # on the ApiKey record upon successful authentication.
+  # Note: Incrementing counters frequently can impact DB performance.
+  # Default: false
+  # config.track_requests_count = true
+
+  # Global limit on the number of *active* keys an owner can have.
+  # Can be overridden by `max_keys` in the `has_api_keys` block.
+  # Set to nil for no global limit.
+  # Default: nil
+  # config.default_max_keys_per_owner = 10
+
+  # If true, requires the `name` attribute to be present when creating keys.
+  # Can be overridden by `require_name` in the `has_api_keys` block.
+  # Default: false
+  # config.require_key_name = true
+
+  # === Performance ===
+
+  # Time-to-live (TTL) for caching ApiKey lookups.
+  # Set to 0 or nil to disable caching.
+  # Uses Rails.cache.
+  # Default: 10.seconds
+  # config.cache_ttl = 1.minute
+
+  # === Security ===
+
+  # If true, logs a warning if the gem is used over HTTP in production.
+  # Default: true
+  # config.https_only_production = true
+
+  # If true (and https_only_production is true), raises an error instead of
+  # just logging a warning when used over HTTP in production.
+  # Default: false
+  # config.https_strict_mode = true
+
+  # === Tenant Resolution ===
+
+  # A lambda/proc used by the `Apikeys::TenantResolution` concern to find
+  # the tenant associated with an API key (often the key's owner).
+  # The result is made available via `current_api_tenant`.
+  # Default: ->(api_key) { api_key.owner if api_key.respond_to?(:owner) }
+  # config.tenant_resolver = ->(api_key) { api_key.owner.account }
+
+  # === Callbacks ===
+
+  # A lambda/proc to run *before* token extraction and verification.
+  # Receives the request object.
+  # Default: ->(request) { }
+  # config.before_authentication = ->(request) { Rails.logger.info "Authenticating request: #{request.uuid}" }
+
+  # A lambda/proc to run *after* authentication attempt (success or failure).
+  # Receives the Apikeys::Services::Authenticator::Result object.
+  # Default: ->(result) { }
+  # config.after_authentication = ->(result) { MyAnalytics.track_auth(result) }
+end 

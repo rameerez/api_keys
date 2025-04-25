@@ -19,4 +19,5 @@ test/dummy/storage
 .DS_Store
 
 .vscode
+.cursor
 TODO
