@@ -2,6 +2,7 @@
 
 require "active_support/cache"
 require "active_support/core_ext/object/blank"
+require "digest"
 require_relative "../models/api_key"
 require_relative "../services/digestor"
 
@@ -25,30 +26,39 @@ module Apikeys
       # @param request [ActionDispatch::Request] The incoming request object.
       # @return [Apikeys::Services::Authenticator::Result] The result of the authentication attempt.
       def self.call(request)
+        logger.debug "[Apikeys Auth] Authenticator.call started for request: #{request.uuid}" if logger
         config = Apikeys.configuration
         config.before_authentication&.call(request)
 
         token = extract_token(request, config)
 
         unless token
+          logger.debug "[Apikeys Auth] Token extraction failed." if logger
           result = Result.failure(error_code: :missing_token, message: "API token is missing")
           config.after_authentication&.call(result)
           return result
         end
 
+        logger.debug "[Apikeys Auth] Token extracted successfully. Verifying..." if logger
+        # Pass the original token AND config to find_and_verify_key
         api_key = find_and_verify_key(token, config)
 
         result = if api_key&.active?
+                   logger.debug "[Apikeys Auth] Verification successful. Key ID: #{api_key.id}" if logger
                    # TODO: Optionally update last_used_at and requests_count
                    Result.success(api_key)
                  elsif api_key&.revoked?
+                   logger.debug "[Apikeys Auth] Verification failed: Key revoked. Key ID: #{api_key.id}" if logger
                    Result.failure(error_code: :revoked_key, message: "API key has been revoked")
                  elsif api_key&.expired?
+                   logger.debug "[Apikeys Auth] Verification failed: Key expired. Key ID: #{api_key.id}" if logger
                    Result.failure(error_code: :expired_key, message: "API key has expired")
-                 else # Not found or mismatch
+                 else # Not found, mismatch, or inactive
+                   logger.debug "[Apikeys Auth] Verification failed: Token invalid or key not found." if logger
                    Result.failure(error_code: :invalid_token, message: "API token is invalid")
                  end
 
+        logger.debug "[Apikeys Auth] Authenticator.call finished. Result: #{result.inspect}" if logger
         config.after_authentication&.call(result)
         result
       end
@@ -60,11 +70,16 @@ module Apikeys
         # Check header first (preferred)
         if config.header.present?
           header_value = request.headers[config.header]
+          logger.debug "[Apikeys Auth] Checking header '#{config.header}': '#{header_value}'" if logger
           if header_value
             # Handle "Bearer <token>" scheme
             match = header_value.match(/^Bearer\s+(.*)$/i)
-            return match[1] if match
+            if match
+              logger.debug "[Apikeys Auth] Extracted token from Bearer scheme." if logger
+              return match[1]
+            end
             # Fallback: return the raw header value if no Bearer scheme
+            logger.debug "[Apikeys Auth] No Bearer scheme, using raw header value as token." if logger
             return header_value
           end
         end
@@ -72,74 +87,98 @@ module Apikeys
         # Check query parameter as fallback (if configured)
         if config.query_param.present?
           param_value = request.query_parameters[config.query_param]
-          return param_value if param_value.present?
+          logger.debug "[Apikeys Auth] Checking query param '#{config.query_param}': '#{param_value}'" if logger
+          if param_value.present?
+            logger.debug "[Apikeys Auth] Extracted token from query parameter." if logger
+            return param_value
+          end
         end
 
+        logger.debug "[Apikeys Auth] No token found in headers or query parameters." if logger
         nil # No token found
       end
 
-      # Finds the ApiKey record corresponding to the token, verifying the digest.
+      # Finds the ApiKey record corresponding to the token and verifies it securely.
       # Uses caching if enabled.
+      # @param token [String] The plaintext token from the request.
+      # @param config [Apikeys::Configuration] The current configuration.
+      # @return [Apikeys::ApiKey, nil] The verified ApiKey instance or nil.
       def self.find_and_verify_key(token, config)
         cache_key = "apikeys:token:#{Digest::SHA1.hexdigest(token)}" # Cache key based on token hash
         cache_ttl = config.cache_ttl.to_i
+        logger.debug "[Apikeys Auth] Verifying token. Cache key: #{cache_key}, TTL: #{cache_ttl}" if logger
 
         if cache_ttl > 0
-          cached_result = Rails.cache.read(cache_key)
-          # Return cached result only if it's a definitive miss (nil) or a success (ApiKey instance)
-          # Avoid caching intermediate failure states like expired/revoked, as status can change.
-          return cached_result if cached_result.is_a?(Apikeys::ApiKey) || cached_result.nil?
+          cached_result = defined?(Rails) ? Rails.cache.read(cache_key) : nil
+          logger.debug "[Apikeys Auth] Cache check: Result=#{cached_result.inspect}" if logger
+          # Return cached result ONLY if it's a valid ApiKey instance (a true cache hit)
+          if cached_result.is_a?(Apikeys::ApiKey)
+             logger.debug "[Apikeys Auth] Cache HIT. Returning cached ApiKey ID: #{cached_result.id}" if logger
+             return cached_result
+          elsif cached_result.nil?
+             logger.debug "[Apikeys Auth] Cache MISS. Proceeding to DB lookup." if logger
+             # Continue execution if it's a cache miss (nil)
+          else
+             # Handle unexpected cache values (e.g., old symbol :not_found)
+             logger.warn "[Apikeys Auth] Invalid cache value found: #{cached_result.inspect}. Proceeding to DB lookup." if logger
+          end
         end
 
-        # Cache miss or TTL=0: Perform DB lookup
-        # We need to iterate through potential keys because we don't know the hash algorithm a priori
-        # In practice, digests should be unique, so this finds at most one.
-        # TODO: Optimize: If all keys used the same hash strategy, we could hash the incoming token
-        #       and lookup by digest directly. But supporting mixed strategies requires checking.
+        # --- Cache miss or TTL=0: Perform DB lookup & verification ---
+        logger.debug "[Apikeys Auth] Performing DB lookup and verification." if logger
 
-        # Extract prefix to potentially narrow down the search (minor optimization)
-        prefix_candidate = token[/^.+?_/] # Extract potential prefix like "ak_test_"
-        possible_keys = if prefix_candidate
-                          Apikeys::ApiKey.where(prefix: prefix_candidate)
-                        else
-                          Apikeys::ApiKey.all # Fallback if no discernible prefix
-                        end
+        # 1. Determine the expected hashing strategy (assuming single strategy for now)
+        strategy = config.hash_strategy.to_sym
+        logger.debug "[Apikeys Auth] Using strategy: #{strategy}" if logger
 
-        verified_key = possible_keys.find do |key|
-          Digestor.match?(token: token, stored_digest: key.token_digest, strategy: key.digest_algorithm.to_sym)
+        # 2. For bcrypt (or strategies needing secure compare): Find potential matches by prefix
+        verified_key = nil
+        if strategy == :bcrypt
+          # Match the standard prefix format: ak_{env}_ where {env} is one or more letters
+          prefix_candidate = token[/^ak_[a-z]+_/i]
+          logger.debug "[Apikeys Auth] Extracted prefix: #{prefix_candidate}" if logger
+
+          possible_keys_scope = if prefix_candidate
+                                  Apikeys::ApiKey.where(prefix: prefix_candidate, digest_algorithm: 'bcrypt')
+                                else
+                                  logger.warn "[Apikeys Auth] Token prefix missing or invalid, cannot perform DB lookup." if logger
+                                  Apikeys::ApiKey.none # Return an empty relation
+                                end
+
+          logger.debug "[Apikeys Auth] DB Query Scope SQL: #{possible_keys_scope.to_sql}" if logger && possible_keys_scope.respond_to?(:to_sql)
+          possible_keys = possible_keys_scope.to_a
+          logger.debug "[Apikeys Auth] Found #{possible_keys.count} potential key(s) with matching prefix and algorithm." if logger
+
+          verified_key = possible_keys.find do |key|
+            match_result = Digestor.match?(token: token, stored_digest: key.token_digest, strategy: :bcrypt)
+            logger.debug "[Apikeys Auth] Comparing with Key ID: #{key.id}. Match result: #{match_result}" if logger
+            match_result
+          end
+        else
+          logger.warn "[Apikeys Auth] Authentication attempt with unsupported hash strategy: #{strategy}" if logger
         end
+
+        logger.debug "[Apikeys Auth] DB Verification result: #{verified_key ? "Key ID: #{verified_key.id}" : 'No match'}" if logger
+        # --- End DB Lookup ---
 
         # Cache the result (either the found ApiKey instance or nil for a miss)
-        Rails.cache.write(cache_key, verified_key, expires_in: cache_ttl) if cache_ttl > 0
+        if cache_ttl > 0 && defined?(Rails)
+          logger.debug "[Apikeys Auth] Writing result to cache. Key: #{cache_key}, Value: #{verified_key.inspect}" if logger
+          Rails.cache.write(cache_key, verified_key, expires_in: cache_ttl)
+        end
 
         verified_key
       end
 
-      def find_key_by_token(token)
-        # 1. Check cache first (using digest as key)
-        digest_info = Digestor.digest(token: token)
-        digest = digest_info[:digest]
-        cache_key = "apikeys:digest:#{digest[0..9]}" # Use digest prefix for cache key
-
-        cached_result = Cache.read(cache_key)
-        if cached_result
-          # Cache hit: Could be an ApiKey instance or :not_found symbol
-          # Handle potential inconsistencies: ensure it's a valid ApiKey or nil
-          # if cached_result.is_a?(::ApiKey) && cached_result.token_digest == digest # Extra check if paranoid
-          return cached_result if cached_result.is_a?(Apikeys::ApiKey) || cached_result.nil?
-          # If cached result is invalid (e.g., :not_found symbol, or wrong type), proceed to DB lookup
-        end
-
-        # 2. DB lookup by digest
-        # api_key = Apikeys.configuration.key_store_adapter.find_by_digest(digest)
-        # For v1 ActiveRecordAdapter:
-        api_key = Apikeys::ApiKey.find_by(token_digest: digest)
-
-        # 3. Update cache
-        Cache.write(cache_key, api_key) # Cache the found key or nil if not found
-
-        api_key
+      # Helper for logging
+      def self.logger
+        defined?(Rails) ? Rails.logger : nil
       end
+
+      # NOTE: Removing the incorrect private `find_key_by_token` method.
+      # def find_key_by_token(token)
+      #   ...
+      # end
     end
   end
 end
