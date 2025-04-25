@@ -50,8 +50,14 @@ module Apikeys
         say "         # ..."
         say "       end"
         say "  4. Configure the gem further in `config/initializers/apikeys.rb` if needed."
-        say "  5. Protect your API endpoints by including `Apikeys::Authentication` in your API base controller"
-        say "     and adding `before_action :authenticate_api_key!`."
+        say "  5. Protect your API endpoints by including `Apikeys::Controller` in your API base controller"
+        say "     (this includes both Authentication and TenantResolution) and adding the before_action:"
+        say "       # Example for app/controllers/api/base_controller.rb"
+        say "       class Api::BaseController < ActionController::API"
+        say "         include Apikeys::Controller"
+        say "         before_action :authenticate_api_key! # Enforce authentication"
+        say "         # ..."
+        say "       end"
         say "\nSee the README and PRD (.cursor/prd.md) for detailed usage and examples.
 ", :cyan
         say "Happy coding! 🚀", :green
