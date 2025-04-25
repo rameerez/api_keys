@@ -19,18 +19,15 @@ module Apikeys
     # Expose the plaintext token only immediately after creation
     attr_reader :token
 
-    # Serialize `scopes` and `metadata` as JSON(B)
-    # Use json for broader DB compatibility (SQLite, MySQL), jsonb preferred for PG
-    # TODO: Consider making the column type configurable or detecting PG
-    serialize :scopes
-    serialize :metadata
+    # JSON attributes (:scopes, :metadata) are defined in the engine initializer
+    # using ActiveSupport.on_load(:active_record) to ensure DB connection is ready.
 
     # == Validations ==
     validates :token_digest, presence: true, uniqueness: { case_sensitive: true }
     validates :prefix, presence: true
     validates :digest_algorithm, presence: true
-    validates :scopes, presence: true
-    validates :metadata, presence: true
+    # validates :scopes, presence: true # Default handled by attribute def
+    # validates :metadata, presence: true # Default handled by attribute def
     validates :name, presence: true, if: :name_required?
     validate :within_quota, on: :create, if: :owner_present_and_configured?
 
@@ -42,7 +39,8 @@ module Apikeys
 
     # == Callbacks ==
     before_validation :set_defaults, on: :create
-    before_create :generate_token_and_digest
+    # Generate digest BEFORE validation runs
+    before_validation :generate_token_and_digest, on: :create
 
     # == Scopes ==
     scope :active, -> { where(revoked_at: nil).where("expires_at IS NULL OR expires_at > ?", Time.current) }
@@ -74,6 +72,10 @@ module Apikeys
     # Basic scope check. Assumes scopes are stored as an array of strings.
     # Returns true if the key has no specific scopes (allowing all) or includes the required scope.
     def allows_scope?(required_scope)
+      # Type casting for scopes/metadata happens via the attribute definition in the engine.
+      # Ensure the attribute is loaded/defined before using it.
+      # Check if the attribute method exists before calling .blank? or .include?
+      return true unless respond_to?(:scopes) # Guard clause if loaded before attribute definition
       scopes.blank? || scopes.include?(required_scope.to_s)
     end
 
@@ -91,19 +93,20 @@ module Apikeys
 
     private
 
+    # Set defaults for attributes not handled by the `attribute` API in the engine.
     def set_defaults
-      # Use owner-specific defaults if available, else global config
-      owner_settings = owner.class.apikeys_settings if owner_configured?
-      self.scopes ||= (owner_settings&.[](:default_scopes) || Apikeys.configuration.default_scopes || [])
-      self.metadata ||= {}
+      # Defaults for scopes/metadata handled by `attribute` definitions in engine initializer.
       self.prefix ||= Apikeys.configuration.token_prefix.call
     end
 
     # Generates the secure token, hashes it, and sets relevant attributes.
-    # This is the core security mechanism.
+    # Called before validation on create.
     def generate_token_and_digest
       # Generate token only if digest isn't already set (allows creating records with pre-hashed keys if needed)
       return if token_digest.present?
+
+      # Ensure prefix default is set if needed (e.g., if validation skipped or called directly)
+      set_defaults unless self.prefix.present?
 
       # Use the configured generator
       generated_token = Apikeys::Services::TokenGenerator.call(prefix: self.prefix)
@@ -121,6 +124,7 @@ module Apikeys
       self.digest_algorithm = digest_result[:algorithm]
 
       # Set default expiration if configured globally and not set individually
+      # Needs to happen here since it relies on Time.current
       if Apikeys.configuration.expire_after.present? && self.expires_at.nil?
         self.expires_at = Apikeys.configuration.expire_after.from_now
       end
@@ -149,6 +153,7 @@ module Apikeys
       return unless owner_settings && owner_settings[:max_keys].present?
 
       # Count only *active* keys for the quota check
+      # Ensure `owner` association is loaded if needed, or use SQL count
       current_active_keys = owner.api_keys.active.count
       if current_active_keys >= owner_settings[:max_keys]
         errors.add(:base, "exceeds maximum allowed API keys (#{owner_settings[:max_keys]}) for this owner")
@@ -156,7 +161,7 @@ module Apikeys
     end
 
     def expiration_date_cannot_be_in_the_past
-      errors.add(:expires_at, "can't be in the past") if expires_at < Time.current
+      errors.add(:expires_at, "can't be in the past") if expires_at.present? && expires_at < Time.current
     end
   end
 end
