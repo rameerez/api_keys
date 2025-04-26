@@ -9,6 +9,9 @@ module Apikeys
   class ApiKey < ActiveRecord::Base
     self.table_name = "api_keys"
 
+    # Make the gem work in any database (postgres, sqlite3, mysql...)
+    configure_json_attributes
+
     # == Concerns ==
     # TODO: Potentially extract token generation/hashing logic into concerns
 
@@ -179,5 +182,26 @@ module Apikeys
     def expiration_date_cannot_be_in_the_past
       errors.add(:expires_at, "can't be in the past") if expires_at.present? && expires_at < Time.current
     end
+
+    # Configure the right json-like attributes for the different databases
+    # according to the migration (jsonb = postgres; text = elsewhere)
+    # So that the JSON attributes work in any database (postgres, sqlite3, mysql...)
+    # and the gem works everywhere, transparent to users
+    def self.configure_json_attributes
+      ActiveSupport.on_load(:active_record) do
+        Apikeys::ApiKey.class_eval do
+          adapter = ActiveRecord::Base.connection.adapter_name.downcase rescue "sqlite"
+
+          if adapter.include?("postgresql")
+            attribute :scopes, :jsonb, default: []
+            attribute :metadata, :jsonb, default: {}
+          else
+            attribute :scopes, :json, default: []
+            attribute :metadata, :json, default: {}
+          end
+        end
+      end
+    end
+
   end
 end

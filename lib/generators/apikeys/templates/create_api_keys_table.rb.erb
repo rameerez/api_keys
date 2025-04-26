@@ -76,11 +76,11 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
     if ActiveRecord::Base.connection.adapter_name.downcase.include?('postgresql')
       :jsonb
     else
-      :json
+      :text
     end
   rescue ActiveRecord::ConnectionNotEstablished
     # Fallback during initial setup or if connection isn't available
-    :json
+    :text
   end
 
   # Provides the appropriate migration version syntax for the current Rails version.
