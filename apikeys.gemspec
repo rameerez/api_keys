@@ -40,11 +40,11 @@ Gem::Specification.new do |spec|
   # spec.metadata["allowed_push_host"] = "TODO: Set to your gem server host" # TODO: Configure if needed
 
   # Runtime Dependencies
-  spec.add_dependency "bcrypt", "~> 3.1" # For secure token hashing
-  spec.add_dependency "rails", ">= 6.1" # Requires Rails 7+
-  spec.add_dependency "activerecord", ">= 7.0"
-  spec.add_dependency "activesupport", ">= 7.0"
-  spec.add_dependency "base58", "~> 0.2"   # For Base58 token alphabet
+  spec.add_dependency "rails", ">= 6.1" # Requires Rails 6+
+  spec.add_dependency "activerecord", ">= 6.0"
+  spec.add_dependency "activesupport", ">= 6.0"
+  spec.add_dependency "base58", "~> 0.2"    # For Base58 token alphabet
+  spec.add_dependency "bcrypt", "~> 3.1"    # For secure token hashing
 
   # Development Dependencies
   spec.add_development_dependency "bundler", "~> 2.0"
