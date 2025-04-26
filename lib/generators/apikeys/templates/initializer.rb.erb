@@ -85,14 +85,6 @@ Apikeys.configure do |config|
   # Default: false
   # config.https_strict_mode = true
 
-  # === Tenant Resolution ===
-
-  # A lambda/proc used by the `Apikeys::TenantResolution` concern to find
-  # the tenant associated with an API key (often the key's owner).
-  # The result is made available via `current_api_tenant`.
-  # Default: ->(api_key) { api_key.owner if api_key.respond_to?(:owner) }
-  # config.tenant_resolver = ->(api_key) { api_key.owner.account }
-
   # === Callbacks ===
 
   # A lambda/proc to run *before* token extraction and verification.
