@@ -60,31 +60,6 @@ ApiKeys.configure do |config|
   # Default: []
   # config.default_scopes = ["read"]
 
-  # IMPORTANT: Usage Statistics & Background Jobs
-  # ---------------------------------------------
-  # ApiKeys updates the `last_used_at` timestamp on every successful authentication
-  # and optionally increments `requests_count` if `track_requests_count` is true.
-  # To avoid blocking the request cycle, these updates are performed asynchronously
-  # using ActiveJob (`ApiKeys::Jobs::UpdateStatsJob`).
-  #
-  # *** For reliable and performant usage statistics, you MUST configure a persistent
-  # ActiveJob backend adapter (e.g., Sidekiq, GoodJob, SolidQueue, Resque, Delayed::Job). ***
-  #
-  # - Using the default :async adapter is NOT recommended for production as updates
-  #   run in-process and may be lost if the application restarts unexpectedly.
-  # - Using the :inline adapter will perform updates synchronously within the request,
-  #   negating the performance benefits and potentially slowing down responses.
-  #
-  # If you do not have a persistent background job system configured, stats updates
-  # might be unreliable or impact performance. Consider disabling `track_requests_count`
-  # if you cannot use a persistent backend and performance is critical.
-
-  # If true, automatically update `last_used_at` and increment `requests_count`
-  # on the ApiKey record upon successful authentication.
-  # Note: Incrementing counters frequently can impact DB performance.
-  # Default: false
-  # config.track_requests_count = true
-
   # === Performance ===
 
   # Time-to-live (TTL) for caching ApiKey lookups.
@@ -107,6 +82,43 @@ ApiKeys.configure do |config|
   # Default: false
   # config.https_strict_mode = true
 
+  # IMPORTANT: Usage Statistics & Background Jobs
+  # ---------------------------------------------
+  # The api_keys gem executes callbacks and updates the `last_used_at` timestamp on every successful authentication
+  # and optionally increments `requests_count` if `track_requests_count` is true.
+  # To avoid blocking the request cycle, these calls and updates are performed asynchronously
+  # using ActiveJob (`ApiKeys::Jobs::UpdateStatsJob` and `ApiKeys::Jobs::CallbacksJob`)
+  #
+  # *** For callbacks to be executed, and for reliable and performant usage statistics, you MUST configure a persistent
+  # ActiveJob backend adapter in your Rails app! (e.g., Sidekiq, GoodJob, SolidQueue, Resque, Delayed::Job). ***
+  #
+  # - Using the default :async adapter is NOT recommended for production as updates
+  #   run in-process and may be lost if the application restarts unexpectedly.
+  # - Using the :inline adapter will perform updates synchronously within the request,
+  #   negating the performance benefits and potentially slowing down responses.
+  #
+  # If you do not have a persistent background job system configured, callbacks won't fire and stats updates
+  # might be unreliable or impact performance. Consider disabling `track_requests_count` and avoid using callbacks
+  # if you cannot use a persistent backend and performance is critical.
+
+  # === Background Job Queues ===
+
+  # Configure the ActiveJob queue name for processing API key usage statistics.
+  # Default: :default
+  # config.stats_job_queue = :api_keys_stats
+
+  # Configure the ActiveJob queue name for processing asynchronous callbacks.
+  # Default: :default
+  # config.callbacks_job_queue = :api_keys_callbacks
+
+  # === Usage Statistics ===
+
+  # If true, automatically update `last_used_at` and increment `requests_count`
+  # on the ApiKey record upon successful authentication.
+  # Note: Incrementing counters frequently can impact DB performance.
+  # Default: false
+  # config.track_requests_count = true
+
   # === Callbacks ===
 
   # A lambda/proc to run *before* token extraction and verification.
@@ -118,16 +130,6 @@ ApiKeys.configure do |config|
   # Receives the ApiKeys::Services::Authenticator::Result object.
   # Default: ->(result) { }
   # config.after_authentication = ->(result) { MyAnalytics.track_auth(result) }
-
-  # === Background Job Queues ===
-
-  # Configure the ActiveJob queue name for processing API key usage statistics.
-  # Default: :api_keys_stats
-  # config.stats_job_queue = :low_priority_stats
-
-  # Configure the ActiveJob queue name for processing asynchronous callbacks.
-  # Default: :api_keys_callbacks
-  # config.callbacks_job_queue = :realtime_callbacks
 
   # === Debugging ===
 

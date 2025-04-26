@@ -74,7 +74,6 @@ module ApiKeys
       @require_key_name = false # Don't require names for keys globally
       @expire_after = nil # Keys do not expire by default (e.g., 90.days)
       @default_scopes = [] # No default scopes assigned globally
-      @track_requests_count = false # Don't increment `requests_count` by default
 
       # Performance
       @cache_ttl = 5.minutes # More sensible default TTL for authentication caching
@@ -83,19 +82,22 @@ module ApiKeys
       @https_only_production = true # Warn if used over HTTP in production
       @https_strict_mode = false # Don't raise error, just warn
 
-      # Tenant Resolution
-      @tenant_resolver = ->(api_key) { api_key.owner if api_key.respond_to?(:owner) }
+      # Background Job Queues
+      @stats_job_queue = :default
+      @callbacks_job_queue = :default
+
+      # Usage Statistics
+      @track_requests_count = false # Don't increment `requests_count` by default
 
       # Callbacks
       @before_authentication = ->(_request) { }
       @after_authentication = ->(_result) { }
 
-      # Background Job Queues
-      @stats_job_queue = :api_keys_stats       # Default queue for stats updates
-      @callbacks_job_queue = :api_keys_callbacks # Default queue for callbacks
-
       # Debugging
-      @debug_logging = false # Disable debug logging by default
+      @debug_logging = false # Disable debug logging by default (warn and error get logged regardless of this)
+
+      # Tenant Resolution
+      @tenant_resolver = ->(api_key) { api_key.owner if api_key.respond_to?(:owner) }
     end
   end
 end
