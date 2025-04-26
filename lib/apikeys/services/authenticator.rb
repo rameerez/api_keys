@@ -5,11 +5,14 @@ require "active_support/core_ext/object/blank"
 require "digest"
 require_relative "../models/api_key"
 require_relative "../services/digestor"
+require_relative "../logging"
 
 module Apikeys
   module Services
     # Authenticates an incoming request by extracting and verifying an API key.
     class Authenticator
+      extend Apikeys::Logging
+
       # Result object for authentication attempts.
       Result = Struct.new(:success?, :api_key, :error_code, :message, keyword_init: true) do
         def self.success(api_key)
@@ -168,24 +171,6 @@ module Apikeys
         end
 
         verified_key
-      end
-
-      # Helper for conditional debug logging
-      def self.log_debug(message)
-        if Apikeys.configuration.debug_logging && logger
-          logger.debug(message)
-        end
-      end
-
-      # Helper for conditional warning logging
-      def self.log_warn(message)
-        # Warnings are logged regardless of debug flag, if logger available
-        logger.warn(message) if logger
-      end
-
-      # Helper for getting the logger instance
-      def self.logger
-        defined?(Rails) ? Rails.logger : nil
       end
 
       # Helper for accessing Rails cache safely

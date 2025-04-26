@@ -2,12 +2,14 @@
 
 require "active_support/concern"
 require_relative "services/authenticator"
+require_relative "logging"
 
 module Apikeys
   # Controller concern for handling API key authentication.
   # Provides `authenticate_api_key!` method and helper methods.
   module Authentication
     extend ActiveSupport::Concern
+    include Apikeys::Logging
 
     included do
       # Helper methods to access the authenticated key and its owner
@@ -122,19 +124,6 @@ module Apikeys
     rescue ActiveRecord::ActiveRecordError => e
       Rails.logger.error "[Apikeys] Failed to update usage stats for key #{current_api_key.id}: #{e.message}" if defined?(Rails.logger)
       # Don't let stat update failures break the request
-    end
-
-    # Helper for conditional debug logging
-    def log_debug(message)
-      # Only log if debug_logging is enabled and a logger is available
-      if Apikeys.configuration.debug_logging && logger
-        logger.debug(message)
-      end
-    end
-
-    # Helper for logging
-    def logger
-      defined?(Rails) ? Rails.logger : nil
     end
 
   end
