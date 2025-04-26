@@ -45,9 +45,11 @@ module ApiKeys
 
             # Initialize settings for this specific class, merging defaults and options
             current_settings = {
-              max_keys: ApiKeys.configuration&.default_max_keys_per_owner, # Use safe navigation if config might not be loaded yet
+              # Default to global config values first
+              max_keys: ApiKeys.configuration&.default_max_keys_per_owner,
               require_name: ApiKeys.configuration&.require_key_name,
-              default_scopes: ApiKeys.configuration&.default_scopes || []
+              default_scopes: ApiKeys.configuration&.default_scopes || [],
+              token_prefix: ApiKeys.configuration&.token_prefix # Add token_prefix default
             }.merge(options) # Merge keyword arguments first
 
             # Apply DSL block if provided, allowing overrides
@@ -80,6 +82,11 @@ module ApiKeys
 
           def default_scopes(value)
             @settings[:default_scopes] = Array(value)
+          end
+
+          def token_prefix(value)
+            # Store the string or proc provided
+            @settings[:token_prefix] = value
           end
 
           # Placeholder for future scope definitions

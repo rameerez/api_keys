@@ -100,15 +100,25 @@ module ApiKeys
 
     # Set defaults for attributes not handled by the `attribute` API in the engine.
     def set_defaults
-      # Defaults for scopes/metadata handled by `attribute` definitions in engine initializer.
-      self.prefix ||= ApiKeys.configuration.token_prefix.call
+      # NOTE: Defaults for scopes/metadata handled by `attribute` definitions in engine initializer.
+
+      # Determine the prefix: owner-specific setting > global config
+      # Note: `owner` might not be set yet if called outside normal AR flow.
+      owner_prefix_config = nil
+      if owner.present? && owner.class.respond_to?(:api_keys_settings)
+        owner_prefix_config = owner.class.api_keys_settings[:token_prefix]
+      end
+
+      # Use owner setting if present, otherwise fall back to global config
+      prefix_config = owner_prefix_config || ApiKeys.configuration.token_prefix
+
+      # Evaluate the prefix config (it might be a Proc)
+      # Ensure `self.prefix` is only set if it's not already present.
+      self.prefix ||= prefix_config.is_a?(Proc) ? prefix_config.call : prefix_config
 
       # Removed default scopes logic here. It's correctly handled in the
       # HasApiKeys#create_api_key! helper method, which is the intended
       # way to create keys with proper default scope application.
-      # if self.scopes.nil? && ApiKeys.configuration.default_scopes.present?
-      #   self.scopes = ApiKeys.configuration.default_scopes
-      # end
     end
 
     # Generates the secure token, hashes it, and sets relevant attributes.
