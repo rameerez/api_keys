@@ -11,8 +11,8 @@ module ApiKeys
     class UpdateStatsJob < ActiveJob::Base
       include ApiKeys::Logging # Include logging helpers
 
-      # Use the queue name specified in the configuration
-      queue_as -> { ApiKeys.configuration.stats_job_queue }
+      # Use the queue name specified in the configuration (evaluated at load time)
+      queue_as ApiKeys.configuration.stats_job_queue
 
       # Perform the database updates for the given ApiKey.
       #

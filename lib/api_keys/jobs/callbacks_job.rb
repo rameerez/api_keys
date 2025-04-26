@@ -10,8 +10,8 @@ module ApiKeys
     class CallbacksJob < ActiveJob::Base
       include ApiKeys::Logging
 
-      # Use the queue name specified in the configuration
-      queue_as -> { ApiKeys.configuration.callbacks_job_queue }
+      # Use the queue name specified in the configuration (evaluated at load time)
+      queue_as ApiKeys.configuration.callbacks_job_queue
 
       # Executes the appropriate callback based on the type.
       #
