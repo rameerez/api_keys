@@ -4,13 +4,10 @@ require "active_record"
 require_relative "../services/token_generator"
 require_relative "../services/digestor"
 
-module Apikeys
+module ApiKeys
   # The core ActiveRecord model representing an API key.
   class ApiKey < ActiveRecord::Base
     self.table_name = "api_keys"
-
-    # Make the gem work in any database (postgres, sqlite3, mysql...)
-    configure_json_attributes
 
     # == Concerns ==
     # TODO: Potentially extract token generation/hashing logic into concerns
@@ -32,7 +29,7 @@ module Apikeys
     # validates :scopes, presence: true # Default handled by attribute def
     # validates :metadata, presence: true # Default handled by attribute def
     validates :name, presence: true, if: :name_required?
-    validate :within_quota, on: :create, if: -> { owner.present? && (owner_configured? || Apikeys.configuration.default_max_keys_per_owner.present?) }
+    validate :within_quota, on: :create, if: -> { owner.present? && (owner_configured? || ApiKeys.configuration.default_max_keys_per_owner.present?) }
 
     # TODO: Add validation for expires_at > Time.current if present
     validate :expiration_date_cannot_be_in_the_past, if: :expires_at?
@@ -99,13 +96,13 @@ module Apikeys
     # Set defaults for attributes not handled by the `attribute` API in the engine.
     def set_defaults
       # Defaults for scopes/metadata handled by `attribute` definitions in engine initializer.
-      self.prefix ||= Apikeys.configuration.token_prefix.call
+      self.prefix ||= ApiKeys.configuration.token_prefix.call
 
       # Removed default scopes logic here. It's correctly handled in the
       # HasApiKeys#create_api_key! helper method, which is the intended
       # way to create keys with proper default scope application.
-      # if self.scopes.nil? && Apikeys.configuration.default_scopes.present?
-      #   self.scopes = Apikeys.configuration.default_scopes
+      # if self.scopes.nil? && ApiKeys.configuration.default_scopes.present?
+      #   self.scopes = ApiKeys.configuration.default_scopes
       # end
     end
 
@@ -119,24 +116,24 @@ module Apikeys
       set_defaults unless self.prefix.present?
 
       # Use the configured generator
-      generated_token = Apikeys::Services::TokenGenerator.call(prefix: self.prefix)
+      generated_token = ApiKeys::Services::TokenGenerator.call(prefix: self.prefix)
       @token = generated_token # Store plaintext temporarily in instance var for display
 
       # Safety check: Ensure generated token starts with the expected prefix
       unless @token.start_with?(self.prefix)
-        raise Apikeys::Error, "Generated token '#{@token}' does not match expected prefix '#{self.prefix}'. Check TokenGenerator."
+        raise ApiKeys::Error, "Generated token '#{@token}' does not match expected prefix '#{self.prefix}'. Check TokenGenerator."
       end
 
       # Use the configured digestor
-      digest_result = Apikeys::Services::Digestor.digest(token: @token)
+      digest_result = ApiKeys::Services::Digestor.digest(token: @token)
 
       self.token_digest = digest_result[:digest]
       self.digest_algorithm = digest_result[:algorithm]
 
       # Set default expiration if configured globally and not set individually
       # Needs to happen here since it relies on Time.current
-      if Apikeys.configuration.expire_after.present? && self.expires_at.nil?
-        self.expires_at = Apikeys.configuration.expire_after.from_now
+      if ApiKeys.configuration.expire_after.present? && self.expires_at.nil?
+        self.expires_at = ApiKeys.configuration.expire_after.from_now
       end
     end
 
@@ -147,23 +144,23 @@ module Apikeys
     end
 
     def owner_configured?
-      owner.class.respond_to?(:apikeys_settings)
+      owner.class.respond_to?(:api_keys_settings)
     end
 
     def name_required?
       if owner_configured?
-        owner.class.apikeys_settings[:require_name]
+        owner.class.api_keys_settings[:require_name]
       else
-        Apikeys.configuration.require_key_name
+        ApiKeys.configuration.require_key_name
       end
     end
 
     def within_quota
       # Determine the applicable limit: owner-specific setting first, then global config.
       limit = if owner_configured?
-                owner.class.apikeys_settings[:max_keys]
+                owner.class.api_keys_settings[:max_keys]
               else
-                Apikeys.configuration.default_max_keys_per_owner
+                ApiKeys.configuration.default_max_keys_per_owner
               end
 
       # Only validate if a limit is actually set (either per-owner or globally).
@@ -181,26 +178,6 @@ module Apikeys
 
     def expiration_date_cannot_be_in_the_past
       errors.add(:expires_at, "can't be in the past") if expires_at.present? && expires_at < Time.current
-    end
-
-    # Configure the right json-like attributes for the different databases
-    # according to the migration (jsonb = postgres; text = elsewhere)
-    # So that the JSON attributes work in any database (postgres, sqlite3, mysql...)
-    # and the gem works everywhere, transparent to users
-    def self.configure_json_attributes
-      ActiveSupport.on_load(:active_record) do
-        Apikeys::ApiKey.class_eval do
-          adapter = ActiveRecord::Base.connection.adapter_name.downcase rescue "sqlite"
-
-          if adapter.include?("postgresql")
-            attribute :scopes, :jsonb, default: []
-            attribute :metadata, :jsonb, default: {}
-          else
-            attribute :scopes, :json, default: []
-            attribute :metadata, :json, default: {}
-          end
-        end
-      end
     end
 
   end

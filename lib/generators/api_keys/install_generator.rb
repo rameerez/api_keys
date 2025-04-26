@@ -3,9 +3,9 @@
 require "rails/generators/base"
 require "rails/generators/active_record"
 
-module Apikeys
+module ApiKeys
   module Generators
-    # Rails generator for installing the Apikeys gem.
+    # Rails generator for installing the ApiKeys gem.
     # Creates the necessary migration and initializer file.
     class InstallGenerator < Rails::Generators::Base
       include ActiveRecord::Generators::Migration
@@ -28,12 +28,12 @@ module Apikeys
 
       # Creates the initializer file using the template.
       def create_initializer
-        template "initializer.rb", "config/initializers/apikeys.rb"
+        template "initializer.rb", "config/initializers/api_keys.rb"
       end
 
       # Displays helpful information to the user after installation.
       def display_post_install_message
-        say "\n🎉 Apikeys gem successfully installed!", :green
+        say "\n🎉 ApiKeys gem successfully installed!", :green
         say "\nNext steps:"
         say "  1. Run `rails db:migrate` to create the `api_keys` table."
         say "     ☢️  Run migrations before starting your application!", :yellow
@@ -46,15 +46,15 @@ module Apikeys
         say "         end"
         say "         # ..."
         say "       end"
-        say "\n  3. Optionally, configure the gem behavior in `config/initializers/apikeys.rb` if needed."
-        say "\n  4. In your app's API controllers, verify API keys by including `Apikeys::Controller`, and adding the before_action to the desired endpoints:"
+        say "\n  3. Optionally, configure the gem behavior in `config/initializers/api_keys.rb` if needed."
+        say "\n  4. In your app's API controllers, verify API keys by including `ApiKeys::Controller`, and adding the before_action to the desired endpoints:"
         say "       # Example for app/controllers/api/base_controller.rb"
         say "       class Api::BaseController < ActionController::API"
-        say "         include Apikeys::Controller"
+        say "         include ApiKeys::Controller"
         say "         before_action :authenticate_api_key! # Enforce authentication"
         say "         # ..."
         say "       end"
-        say "\nSee the apikeys README for detailed usage and examples.
+        say "\nSee the api_keys README for detailed usage and examples.
 ", :cyan
         say "Happy coding! 🚀", :green
       end

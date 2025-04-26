@@ -2,7 +2,7 @@
 
 require "active_support/concern"
 
-module Apikeys
+module ApiKeys
   module Models
     module Concerns
       # Concern to add API key capabilities to an owner model (e.g., User, Organization).
@@ -29,25 +29,25 @@ module Apikeys
           def has_api_keys(**options, &block)
             # Include the concern's instance methods into the calling class (e.g., User)
             # Ensures any instance-level helpers in HasApiKeys are available on the owner.
-            include Apikeys::Models::Concerns::HasApiKeys unless included_modules.include?(Apikeys::Models::Concerns::HasApiKeys)
+            include ApiKeys::Models::Concerns::HasApiKeys unless included_modules.include?(ApiKeys::Models::Concerns::HasApiKeys)
 
             # Define the core association on the specific class calling this method
             has_many :api_keys,
-                     class_name: "Apikeys::ApiKey",
+                     class_name: "ApiKeys::ApiKey",
                      as: :owner,
                      dependent: :destroy # Consider :nullify based on requirements
 
             # Define class_attribute for settings if not already defined.
             # This ensures inheritance works correctly (subclasses get their own copy).
-            unless respond_to?(:apikeys_settings)
-              class_attribute :apikeys_settings, instance_writer: false, default: {}
+            unless respond_to?(:api_keys_settings)
+              class_attribute :api_keys_settings, instance_writer: false, default: {}
             end
 
             # Initialize settings for this specific class, merging defaults and options
             current_settings = {
-              max_keys: Apikeys.configuration&.default_max_keys_per_owner, # Use safe navigation if config might not be loaded yet
-              require_name: Apikeys.configuration&.require_key_name,
-              default_scopes: Apikeys.configuration&.default_scopes || []
+              max_keys: ApiKeys.configuration&.default_max_keys_per_owner, # Use safe navigation if config might not be loaded yet
+              require_name: ApiKeys.configuration&.require_key_name,
+              default_scopes: ApiKeys.configuration&.default_scopes || []
             }.merge(options) # Merge keyword arguments first
 
             # Apply DSL block if provided, allowing overrides
@@ -57,10 +57,10 @@ module Apikeys
             end
 
             # Assign the final settings hash to the class attribute for this class
-            self.apikeys_settings = current_settings
+            self.api_keys_settings = current_settings
 
             # TODO: Add validation hook to check key limit on create?
-            # validates_with Apikeys::Validators::MaxKeysValidator, on: :create, if: -> { apikeys_settings[:max_keys].present? }
+            # validates_with ApiKeys::Validators::MaxKeysValidator, on: :create, if: -> { api_keys_settings[:max_keys].present? }
           end
         end
 
@@ -104,8 +104,8 @@ module Apikeys
         # @return [String] The plaintext API key token (e.g., "ak_test_...").
         def create_api_key!(name: nil, scopes: nil, expires_at: nil, metadata: nil)
           # Fetch default scopes from this owner class's settings, falling back to global config.
-          owner_settings = self.class.apikeys_settings
-          default_scopes = owner_settings&.[](:default_scopes) || Apikeys.configuration.default_scopes || []
+          owner_settings = self.class.api_keys_settings
+          default_scopes = owner_settings&.[](:default_scopes) || ApiKeys.configuration.default_scopes || []
 
           # Use provided scopes if given, otherwise use the calculated defaults.
           key_scopes = scopes.nil? ? default_scopes : Array(scopes)
@@ -125,14 +125,14 @@ module Apikeys
 
         # Example: Check if the owner has reached their API key limit.
         # def reached_api_key_limit?
-        #   limit = self.class.apikeys_settings[:max_keys]
+        #   limit = self.class.api_keys_settings[:max_keys]
         #   # Ensure api_keys association is loaded or query count
         #   limit && api_keys.count >= limit # Or use a counter cache
         # end
 
         # Example: Get the specific settings for this owner instance's class.
-        # def apikeys_config
-        #   self.class.apikeys_settings
+        # def api_keys_config
+        #   self.class.api_keys_settings
         # end
       end
     end

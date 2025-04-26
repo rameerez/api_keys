@@ -4,12 +4,12 @@ require "active_support/concern"
 require_relative "services/authenticator"
 require_relative "logging"
 
-module Apikeys
+module ApiKeys
   # Controller concern for handling API key authentication.
   # Provides `authenticate_api_key!` method and helper methods.
   module Authentication
     extend ActiveSupport::Concern
-    include Apikeys::Logging
+    include ApiKeys::Logging
 
     included do
       # Helper methods to access the authenticated key and its owner
@@ -19,7 +19,7 @@ module Apikeys
     # Returns the currently authenticated API key instance if authentication was
     # successful, otherwise returns nil.
     #
-    # @return [Apikeys::ApiKey, nil]
+    # @return [ApiKeys::ApiKey, nil]
     def current_api_key
       @current_api_key
     end
@@ -45,25 +45,25 @@ module Apikeys
     #
     # @param scope [String, Array<String>, nil] Optional scope(s) required for this action.
     def authenticate_api_key!(scope: nil)
-      log_debug "[Apikeys Auth] authenticate_api_key! started for request: #{request.uuid}"
+      log_debug "[ApiKeys Auth] authenticate_api_key! started for request: #{request.uuid}"
       result = Services::Authenticator.call(request)
-      log_debug "[Apikeys Auth] Authenticator result: #{result.inspect}"
+      log_debug "[ApiKeys Auth] Authenticator result: #{result.inspect}"
 
       if result.success?
         @current_api_key = result.api_key
-        log_debug "[Apikeys Auth] Authentication successful. Key ID: #{@current_api_key.id}"
+        log_debug "[ApiKeys Auth] Authentication successful. Key ID: #{@current_api_key.id}"
 
         # Check required scope(s) if provided
         if scope && !check_api_key_scopes(scope)
-          log_debug "[Apikeys Auth] Scope check failed. Required: #{scope}, Key scopes: #{@current_api_key.scopes}"
+          log_debug "[ApiKeys Auth] Scope check failed. Required: #{scope}, Key scopes: #{@current_api_key.scopes}"
           render_unauthorized(error_code: :missing_scope, message: "API key does not have the required scope(s): #{scope}")
           return # Halt chain
         end
         # Authentication successful, optionally update usage stats
-        update_key_usage_stats if Apikeys.configuration.track_requests_count
+        update_key_usage_stats if ApiKeys.configuration.track_requests_count
       else
         # Authentication failed
-        log_debug "[Apikeys Auth] Authentication failed. Error: #{result.error_code}, Message: #{result.message}"
+        log_debug "[ApiKeys Auth] Authentication failed. Error: #{result.error_code}, Message: #{result.message}"
         render_unauthorized(error_code: result.error_code, message: result.message)
         # Implicitly halts chain due to render
       end
@@ -91,7 +91,7 @@ module Apikeys
     def render_unauthorized(error_code:, message:, status: :unauthorized)
       # Translate error code using I18n if available, otherwise use message
       # TODO: Add I18n locale file later
-      error_message = I18n.t("apikeys.errors.#{error_code}", default: message) rescue message
+      error_message = I18n.t("api_keys.errors.#{error_code}", default: message) rescue message
 
       response_body = { error: error_code, message: error_message }
       # Add required scope info for missing_scope errors
@@ -108,7 +108,7 @@ module Apikeys
 
       # Use update_columns for efficiency, skipping validations/callbacks
       updates = { last_used_at: Time.current }
-      if Apikeys.configuration.track_requests_count
+      if ApiKeys.configuration.track_requests_count
         # Use increment_counter for atomic updates if available and suitable
         # Or fallback to update_columns with an increment expression
         # Note: This simplistic approach might have race conditions at high concurrency.
@@ -122,7 +122,7 @@ module Apikeys
       end
 
     rescue ActiveRecord::ActiveRecordError => e
-      Rails.logger.error "[Apikeys] Failed to update usage stats for key #{current_api_key.id}: #{e.message}" if defined?(Rails.logger)
+      Rails.logger.error "[ApiKeys] Failed to update usage stats for key #{current_api_key.id}: #{e.message}" if defined?(Rails.logger)
       # Don't let stat update failures break the request
     end
 

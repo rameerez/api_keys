@@ -4,18 +4,18 @@ require "active_support/concern"
 require_relative "authentication"       # Include authentication logic
 require_relative "tenant_resolution"    # Include tenant resolution logic
 
-module Apikeys
-  # Unified controller concern that bundles common Apikeys functionality
+module ApiKeys
+  # Unified controller concern that bundles common ApiKeys functionality
   # for easy inclusion in controllers.
   #
   # Includes:
-  #   - Apikeys::Authentication (provides authenticate_api_key!, current_api_key, etc.)
-  #   - Apikeys::TenantResolution (provides current_api_tenant)
+  #   - ApiKeys::Authentication (provides authenticate_api_key!, current_api_key, etc.)
+  #   - ApiKeys::TenantResolution (provides current_api_tenant)
   #
   # == Usage
   #
   #   class Api::BaseController < ActionController::API
-  #     include Apikeys::Controller
+  #     include ApiKeys::Controller
   #
   #     before_action :authenticate_api_key!
   #
@@ -33,8 +33,8 @@ module Apikeys
 
     included do
       # Bring in the functionality from the specific concerns
-      include Apikeys::Authentication
-      include Apikeys::TenantResolution
+      include ApiKeys::Authentication
+      include ApiKeys::TenantResolution
 
       # You could add further convenience methods here if needed,
       # potentially combining logic from both included concerns.

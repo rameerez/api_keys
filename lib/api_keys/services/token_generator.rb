@@ -3,7 +3,7 @@
 require "securerandom"
 require "base58"
 
-module Apikeys
+module ApiKeys
   module Services
     # Generates secure, random API tokens according to configured settings.
     class TokenGenerator
@@ -13,7 +13,7 @@ module Apikeys
       # @param prefix [String] The prefix to prepend to the token.
       # @param alphabet [Symbol] The encoding alphabet (:base58 or :hex).
       # @return [String] The generated token including the prefix.
-      def self.call(length: Apikeys.configuration.token_length, prefix: Apikeys.configuration.token_prefix.call, alphabet: Apikeys.configuration.token_alphabet)
+      def self.call(length: ApiKeys.configuration.token_length, prefix: ApiKeys.configuration.token_prefix.call, alphabet: ApiKeys.configuration.token_alphabet)
         random_bytes = SecureRandom.bytes(length)
 
         random_part = case alphabet

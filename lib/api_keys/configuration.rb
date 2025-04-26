@@ -3,9 +3,9 @@
 require "active_support/core_ext/numeric/time"
 require "active_support/security_utils"
 
-module Apikeys
-  # Defines the configuration options for the Apikeys gem.
-  # These options can be set in an initializer, e.g., config/initializers/apikeys.rb
+module ApiKeys
+  # Defines the configuration options for the ApiKeys gem.
+  # These options can be set in an initializer, e.g., config/initializers/api_keys.rb
   class Configuration
     # == Accessors ==
 
@@ -59,12 +59,12 @@ module Apikeys
       @hash_strategy = :bcrypt # Recommended: :bcrypt or :sha256
       @secure_compare_proc = ->(a, b) { ActiveSupport::SecurityUtils.secure_compare(a, b) }
       @key_store_adapter = :active_record # Default storage backend
-      # TODO: Define and implement Apikeys::BasePolicy in later versions
+      # TODO: Define and implement ApiKeys::BasePolicy in later versions
       # This will define the authorization policy class used to check if a key is valid beyond basic checks.
       # Allows injecting custom logic (IP allow-listing, time-of-day checks, etc.).
       # Must be a class name (String or Class) responding to `.new(api_key, request).valid?`
-      # Default: "Apikeys::BasePolicy" (a basic implementation should be provided)
-      @policy_provider = "Apikeys::BasePolicy" # Default authorization policy class name
+      # Default: "ApiKeys::BasePolicy" (a basic implementation should be provided)
+      @policy_provider = "ApiKeys::BasePolicy" # Default authorization policy class name
 
       # Optional Behaviors
       @default_max_keys_per_owner = nil # No global key limit per owner

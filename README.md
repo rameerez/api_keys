@@ -1,10 +1,10 @@
-# Apikeys
+# ApiKeys
 
 [![Gem Version](https://badge.fury.io/rb/pay.svg)](https://badge.fury.io/rb/pay)
 
 > **Turn any Rails app into an API platform in 5 minutes, with Stripe-grade security & DX.**
 
-`apikeys` is a Ruby gem that handles secure API key generation, authentication, revocation, expiration, scopes, and provides optional self-serve UI for your Rails application users.
+`api_keys` is a Ruby gem that handles secure API key generation, authentication, revocation, expiration, scopes, and provides optional self-serve UI for your Rails application users.
 
 See the [Product Requirements Document](.cursor/prd.md) for the full vision and features.
 
@@ -13,7 +13,7 @@ See the [Product Requirements Document](.cursor/prd.md) for the full vision and 
 Add this line to your application's Gemfile:
 
 ```ruby
-gem "apikeys"
+gem "api_keys"
 ```
 
 And then execute:
@@ -25,13 +25,13 @@ $ bundle install
 Or install it yourself as:
 
 ```bash
-$ gem install apikeys
+$ gem install api_keys
 ```
 
 Then run the installer:
 
 ```bash
-$ rails g apikeys:install
+$ rails g api_keys:install
 $ rails db:migrate
 ```
 
@@ -47,7 +47,7 @@ To install this gem onto your local machine, run `bundle exec rake install`. To 
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/your-repo/apikeys. <!-- TODO: Update link -->
+Bug reports and pull requests are welcome on GitHub at https://github.com/your-repo/api_keys. <!-- TODO: Update link -->
 
 ## License
 

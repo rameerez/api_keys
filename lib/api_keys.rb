@@ -6,19 +6,19 @@ require "rails"
 require "active_record"
 require "active_support/all"
 
-require "apikeys/version"
-require "apikeys/configuration"
+require "api_keys/version"
+require "api_keys/configuration"
 
-require "apikeys/models/concerns/has_api_keys"
+require "api_keys/models/concerns/has_api_keys"
 
-require "apikeys/models/api_key"
+require "api_keys/models/api_key"
 
 # Rails integration
-require "apikeys/engine" if defined?(Rails)
+require "api_keys/engine" if defined?(Rails)
 
 # Main module that serves as the primary interface to the gem.
 # Most methods here delegate to Configuration, which is the single source of truth for all config in the initializer
-module Apikeys
+module ApiKeys
   # Custom error classes
   class Error < StandardError; end
 
@@ -44,6 +44,6 @@ module Apikeys
 end
 
 # TODO: Require other necessary files like configuration, engine, etc.
-# require_relative "apikeys/configuration"
-# require_relative "apikeys/engine"
-# require_relative "apikeys/railtie" if defined?(Rails::Railtie)
+# require_relative "api_keys/configuration"
+# require_relative "api_keys/engine"
+# require_relative "api_keys/railtie" if defined?(Rails::Railtie)

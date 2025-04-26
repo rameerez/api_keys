@@ -2,7 +2,7 @@
 
 source "https://rubygems.org"
 
-# Specify your gem's dependencies in Apikeys.gemspec
+# Specify your gem's dependencies in ApiKeys.gemspec
 gemspec
 
 # Declare any dependencies that are still in development here instead of in

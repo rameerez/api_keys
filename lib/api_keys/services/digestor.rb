@@ -3,7 +3,7 @@
 require "bcrypt"
 require "digest"
 
-module Apikeys
+module ApiKeys
   module Services
     # Handles hashing (digesting) and verifying tokens based on configured strategy.
     class Digestor
@@ -13,7 +13,7 @@ module Apikeys
       # @param strategy [Symbol] The hashing strategy (:bcrypt or :sha256).
       # @return [Hash] A hash containing the digest and the algorithm used.
       #   e.g., { digest: "...", algorithm: "bcrypt" }
-      def self.digest(token:, strategy: Apikeys.configuration.hash_strategy)
+      def self.digest(token:, strategy: ApiKeys.configuration.hash_strategy)
         case strategy
         when :bcrypt
           # BCrypt handles salt generation internally
@@ -37,7 +37,7 @@ module Apikeys
       # @param strategy [Symbol] The hashing strategy used to create the stored_digest.
       # @param comparison_proc [Proc] The secure comparison function.
       # @return [Boolean] True if the token matches the digest, false otherwise.
-      def self.match?(token:, stored_digest:, strategy: Apikeys.configuration.hash_strategy, comparison_proc: Apikeys.configuration.secure_compare_proc)
+      def self.match?(token:, stored_digest:, strategy: ApiKeys.configuration.hash_strategy, comparison_proc: ApiKeys.configuration.secure_compare_proc)
         return false if token.blank? || stored_digest.blank?
 
         case strategy
@@ -55,12 +55,12 @@ module Apikeys
           comparison_proc.call(stored_digest, Digest::SHA256.hexdigest(token))
         else
           # Strategy mismatch or unsupported strategy should fail comparison safely
-          Rails.logger.error "[Apikeys] Digestor comparison failed: Unsupported hash strategy '#{strategy}' for digest check." if defined?(Rails.logger)
+          Rails.logger.error "[ApiKeys] Digestor comparison failed: Unsupported hash strategy '#{strategy}' for digest check." if defined?(Rails.logger)
           false
         end
       rescue ArgumentError => e
         # Catch potential errors from Digest or comparison proc
-        Rails.logger.error "[Apikeys] Digestor comparison error: #{e.message}" if defined?(Rails.logger)
+        Rails.logger.error "[ApiKeys] Digestor comparison error: #{e.message}" if defined?(Rails.logger)
         false
       end
     end

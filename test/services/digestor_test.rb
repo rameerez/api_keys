@@ -2,9 +2,9 @@
 
 require "test_helper"
 
-module Apikeys
+module ApiKeys
   module Services
-    class DigestorTest < Apikeys::Test
+    class DigestorTest < ApiKeys::Test
       def setup
         super
         @token = TokenGenerator.call # Generate a realistic token

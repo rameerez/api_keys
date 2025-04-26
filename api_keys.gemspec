@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-require_relative "lib/apikeys/version"
+require_relative "lib/api_keys/version"
 
 Gem::Specification.new do |spec|
-  spec.name = "apikeys"
-  spec.version = Apikeys::VERSION
+  spec.name = "api_keys"
+  spec.version = ApiKeys::VERSION
   spec.authors = ["rameerez"]
   spec.email = ["rubygems@rameerez.com"]
 
@@ -12,7 +12,7 @@ Gem::Specification.new do |spec|
   spec.description = "Turn any Rails app into an API platform in 5 minutes. Handles secure API key generation, authentication, revocation, expiration, scopes, and provides optional self-serve UI."
   spec.summary = "API key management"
   spec.description = " issue API keys / tokens to your users allows each user of your application to generate multiple API tokens for their account. imagine the account settings of your application has a screen where a user may generate an API token for their account. You may use Sanctum to generate and manage those tokens. These tokens typically have a very long expiration time (years), but may be manually revoked by the user anytime."
-  spec.homepage = "https://github.com/rameerez/apikeys"
+  spec.homepage = "https://github.com/rameerez/api_keys"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1.0"
 

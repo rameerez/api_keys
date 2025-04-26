@@ -2,7 +2,7 @@
 
 require "active_support/concern"
 
-module Apikeys
+module ApiKeys
   # Controller concern to resolve and provide access to the tenant
   # associated with the currently authenticated API key.
   module TenantResolution
@@ -29,11 +29,11 @@ module Apikeys
       return @current_api_tenant if defined?(@current_api_tenant)
       return nil unless current_api_key # Requires Authentication concern to be included first
 
-      resolver = Apikeys.configuration.tenant_resolver
+      resolver = ApiKeys.configuration.tenant_resolver
       @current_api_tenant = resolver&.call(current_api_key)
     rescue StandardError => e
       # Log error but don't break the request if resolver fails
-      Rails.logger.error "[Apikeys] Tenant resolution failed: #{e.message}" if defined?(Rails.logger)
+      Rails.logger.error "[ApiKeys] Tenant resolution failed: #{e.message}" if defined?(Rails.logger)
       @current_api_tenant = nil
     end
   end

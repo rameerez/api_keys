@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    apikeys (0.1.0)
+    api_keys (0.1.0)
       activerecord (>= 7.0)
       activesupport (>= 7.0)
       base58 (~> 0.2)
@@ -228,7 +228,7 @@ PLATFORMS
   x86_64-linux-musl
 
 DEPENDENCIES
-  apikeys!
+  api_keys!
   bundler (~> 2.0)
   minitest (~> 5.14)
   minitest-reporters (~> 1.4)

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
-require "apikeys"
+require "api_keys"
 
 # Core testing libraries
 require "minitest/autorun"
@@ -61,27 +61,27 @@ puts "Database schema loaded."
 # Simple User model for testing associations
 class User < ActiveRecord::Base
   # Simulate including the concern for testing purposes
-  include Apikeys::Models::Concerns::HasApiKeys
+  include ApiKeys::Models::Concerns::HasApiKeys
   has_api_keys # Basic association
 end
 
-# Base class for Apikeys tests
-class Apikeys::Test < Minitest::Test
+# Base class for ApiKeys tests
+class ApiKeys::Test < Minitest::Test
   # Reset configuration before each test
   def setup
-    Apikeys.reset_configuration!
+    ApiKeys.reset_configuration!
     # Clear any existing records between tests
-    Apikeys::ApiKey.delete_all
+    ApiKeys::ApiKey.delete_all
     User.delete_all
   end
 
-  # Helper to assert that a block raises a specific Apikeys error
-  def assert_apikeys_error(expected_error_class = Apikeys::Error, &block)
+  # Helper to assert that a block raises a specific ApiKeys error
+  def assert_api_keys_error(expected_error_class = ApiKeys::Error, &block)
     assert_raises(expected_error_class, &block)
   end
 
   def teardown
-    Apikeys::ApiKey.delete_all
+    ApiKeys::ApiKey.delete_all
     User.delete_all
   end
 end

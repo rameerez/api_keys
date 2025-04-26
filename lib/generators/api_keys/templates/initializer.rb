@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-Apikeys.configure do |config|
+ApiKeys.configure do |config|
   # === Core Authentication ===
 
   # The HTTP header name where the API key is expected.
@@ -96,7 +96,7 @@ Apikeys.configure do |config|
   # config.before_authentication = ->(request) { Rails.logger.info "Authenticating request: #{request.uuid}" }
 
   # A lambda/proc to run *after* authentication attempt (success or failure).
-  # Receives the Apikeys::Services::Authenticator::Result object.
+  # Receives the ApiKeys::Services::Authenticator::Result object.
   # Default: ->(result) { }
   # config.after_authentication = ->(result) { MyAnalytics.track_auth(result) }
 

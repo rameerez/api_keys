@@ -3,9 +3,9 @@
 require "test_helper"
 require "ostruct"
 
-module Apikeys
+module ApiKeys
   module Services
-    class AuthenticatorTest < Apikeys::Test
+    class AuthenticatorTest < ApiKeys::Test
       def setup
         super
         @user = User.create!(name: "Auth User")
@@ -35,7 +35,7 @@ module Apikeys
       test "authenticates successfully with valid token in Authorization header" do
         request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })
         mock_cache.expect(:read, nil) # Cache miss
-        mock_cache.expect(:write, true, ["apikeys:token:#{Digest::SHA1.hexdigest(@token)}", @api_key, { expires_in: 10 }]) # Cache write
+        mock_cache.expect(:write, true, ["api_keys:token:#{Digest::SHA1.hexdigest(@token)}", @api_key, { expires_in: 10 }]) # Cache write
 
         result = Authenticator.call(request)
 
@@ -46,10 +46,10 @@ module Apikeys
       end
 
       test "authenticates successfully with valid token in custom header" do
-        Apikeys.configure { |config| config.header = "X-Api-Key" }
+        ApiKeys.configure { |config| config.header = "X-Api-Key" }
         request = mock_request(headers: { "X-Api-Key" => @token })
         mock_cache.expect(:read, nil) # Cache miss
-        mock_cache.expect(:write, true, ["apikeys:token:#{Digest::SHA1.hexdigest(@token)}", @api_key, { expires_in: 10 }]) # Cache write
+        mock_cache.expect(:write, true, ["api_keys:token:#{Digest::SHA1.hexdigest(@token)}", @api_key, { expires_in: 10 }]) # Cache write
 
         result = Authenticator.call(request)
 
@@ -59,10 +59,10 @@ module Apikeys
       end
 
       test "authenticates successfully with valid token in query parameter" do
-        Apikeys.configure { |config| config.query_param = "token" }
+        ApiKeys.configure { |config| config.query_param = "token" }
         request = mock_request(query_params: { "token" => @token })
         mock_cache.expect(:read, nil) # Cache miss
-        mock_cache.expect(:write, true, ["apikeys:token:#{Digest::SHA1.hexdigest(@token)}", @api_key, { expires_in: 10 }]) # Cache write
+        mock_cache.expect(:write, true, ["api_keys:token:#{Digest::SHA1.hexdigest(@token)}", @api_key, { expires_in: 10 }]) # Cache write
 
         result = Authenticator.call(request)
 
@@ -73,7 +73,7 @@ module Apikeys
 
       test "authenticates successfully using cached result" do
         request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })
-        cache_key = "apikeys:token:#{Digest::SHA1.hexdigest(@token)}"
+        cache_key = "api_keys:token:#{Digest::SHA1.hexdigest(@token)}"
         mock_cache.expect(:read, @api_key) # Cache hit with the ApiKey object
         # No DB lookup or write expected
 
@@ -89,7 +89,7 @@ module Apikeys
       test "caches nil when token does not match any key" do
         invalid_token = "invalid_token_string"
         request = mock_request(headers: { "Authorization" => "Bearer #{invalid_token}" })
-        cache_key = "apikeys:token:#{Digest::SHA1.hexdigest(invalid_token)}"
+        cache_key = "api_keys:token:#{Digest::SHA1.hexdigest(invalid_token)}"
         mock_cache.expect(:read, nil) # Cache miss
         mock_cache.expect(:write, true, [cache_key, nil, { expires_in: 10 }]) # Cache write with nil
 
@@ -112,7 +112,7 @@ module Apikeys
       test "returns failure for invalid token" do
         request = mock_request(headers: { "Authorization" => "Bearer invalid_token" })
         mock_cache.expect(:read, nil) # Cache miss
-        mock_cache.expect(:write, true, ["apikeys:token:#{Digest::SHA1.hexdigest("invalid_token")}", nil, { expires_in: 10 }]) # Cache write nil
+        mock_cache.expect(:write, true, ["api_keys:token:#{Digest::SHA1.hexdigest("invalid_token")}", nil, { expires_in: 10 }]) # Cache write nil
 
         result = Authenticator.call(request)
 
@@ -128,7 +128,7 @@ module Apikeys
         mock_cache.expect(:read, nil) # Cache miss
         # Note: find_and_verify_key will still find the key, but it's inactive
         # It will cache the found (but inactive) key
-        mock_cache.expect(:write, true, ["apikeys:token:#{Digest::SHA1.hexdigest(@token)}", @api_key, { expires_in: 10 }])
+        mock_cache.expect(:write, true, ["api_keys:token:#{Digest::SHA1.hexdigest(@token)}", @api_key, { expires_in: 10 }])
 
         result = Authenticator.call(request)
 
@@ -142,7 +142,7 @@ module Apikeys
         @api_key.update_column(:expires_at, 1.hour.ago)
         request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })
         mock_cache.expect(:read, nil) # Cache miss
-        mock_cache.expect(:write, true, ["apikeys:token:#{Digest::SHA1.hexdigest(@token)}", @api_key, { expires_in: 10 }])
+        mock_cache.expect(:write, true, ["api_keys:token:#{Digest::SHA1.hexdigest(@token)}", @api_key, { expires_in: 10 }])
 
         result = Authenticator.call(request)
 
@@ -156,7 +156,7 @@ module Apikeys
         request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })
         mock_callback = Minitest::Mock.new
         mock_callback.expect(:call, nil, [request])
-        Apikeys.configure { |config| config.before_authentication = mock_callback }
+        ApiKeys.configure { |config| config.before_authentication = mock_callback }
 
         mock_cache.expect(:read, nil) # Cache miss
         mock_cache.expect(:write, true, [any_parameters]) # Ignore cache write params
@@ -170,7 +170,7 @@ module Apikeys
         mock_callback = Minitest::Mock.new
         # Expect call with a success Result object
         mock_callback.expect(:call, nil) { |result| result.success? && result.api_key == @api_key }
-        Apikeys.configure { |config| config.after_authentication = mock_callback }
+        ApiKeys.configure { |config| config.after_authentication = mock_callback }
 
         mock_cache.expect(:read, nil)
         mock_cache.expect(:write, true, [any_parameters])
@@ -184,7 +184,7 @@ module Apikeys
         mock_callback = Minitest::Mock.new
         # Expect call with a failure Result object
         mock_callback.expect(:call, nil) { |result| !result.success? && result.error_code == :invalid_token }
-        Apikeys.configure { |config| config.after_authentication = mock_callback }
+        ApiKeys.configure { |config| config.after_authentication = mock_callback }
 
         mock_cache.expect(:read, nil)
         mock_cache.expect(:write, true, [any_parameters])
