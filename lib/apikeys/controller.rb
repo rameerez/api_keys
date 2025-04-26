@@ -36,6 +36,13 @@ module Apikeys
       include Apikeys::Authentication
       include Apikeys::TenantResolution
 
+      # Alias for convenience and explicitness
+      alias_method :current_api_key_tenant, :current_api_tenant
+      alias_method :current_api_account, :current_api_tenant
+      alias_method :current_api_key_account, :current_api_tenant
+      alias_method :current_api_owner, :current_api_tenant
+      alias_method :current_api_key_owner, :current_api_tenant
+
       # You could add further convenience methods here if needed,
       # potentially combining logic from both included concerns.
     end
