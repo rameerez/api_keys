@@ -134,30 +134,49 @@ module Apikeys
         strategy = config.hash_strategy.to_sym
         log_debug "[Apikeys Auth] Using strategy: #{strategy}"
 
-        # 2. For bcrypt (or strategies needing secure compare): Find potential matches by prefix
+        # 2. Find and verify the key based on the strategy. For bcrypt (or strategies needing secure compare): Find potential matches by prefix
+
         verified_key = nil
         if strategy == :bcrypt
           # Match the standard prefix format: ak_{env}_ where {env} is one or more letters
           prefix_candidate = token[/^ak_[a-z]+_/i]
-          log_debug "[Apikeys Auth] Extracted prefix: #{prefix_candidate}"
+          log_debug "[Apikeys Auth] Extracted prefix for bcrypt lookup: #{prefix_candidate}"
 
           possible_keys_scope = if prefix_candidate
                                   Apikeys::ApiKey.where(prefix: prefix_candidate, digest_algorithm: 'bcrypt')
                                 else
-                                  log_warn "[Apikeys Auth] Token prefix missing or invalid, cannot perform DB lookup."
+                                  log_warn "[Apikeys Auth] Token prefix missing or invalid for bcrypt lookup, cannot perform DB lookup."
                                   Apikeys::ApiKey.none # Return an empty relation
                                 end
 
-          log_debug "[Apikeys Auth] DB Query Scope SQL: #{possible_keys_scope.to_sql}" if possible_keys_scope.respond_to?(:to_sql)
+          log_debug "[Apikeys Auth] DB Query Scope SQL (bcrypt): #{possible_keys_scope.to_sql}" if possible_keys_scope.respond_to?(:to_sql)
           possible_keys = possible_keys_scope.to_a
-          log_debug "[Apikeys Auth] Found #{possible_keys.count} potential key(s) with matching prefix and algorithm."
+          log_debug "[Apikeys Auth] Found #{possible_keys.count} potential key(s) with matching prefix and algorithm for bcrypt."
 
+          # Securely compare the provided token against the digests of potential keys
           verified_key = possible_keys.find do |key|
             match_result = Digestor.match?(token: token, stored_digest: key.token_digest, strategy: :bcrypt)
-            log_debug "[Apikeys Auth] Comparing with Key ID: #{key.id}. Match result: #{match_result}"
+            log_debug "[Apikeys Auth] Comparing with Key ID: #{key.id} (bcrypt). Match result: #{match_result}"
             match_result
           end
+
+        elsif strategy == :sha256
+          # For sha256, we hash the incoming token and look for an exact match
+          # Note: Prefix lookup isn't useful here as the full hash is needed for the query.
+          token_digest = Digest::SHA256.hexdigest(token)
+          log_debug "[Apikeys Auth] Calculated SHA256 digest for lookup: #{token_digest}"
+
+          # Find the key directly by the calculated digest and algorithm
+          verified_key = Apikeys::ApiKey.find_by(token_digest: token_digest, digest_algorithm: 'sha256')
+
+          if verified_key
+            log_debug "[Apikeys Auth] Found matching key by SHA256 digest. Key ID: #{verified_key.id}"
+          else
+            log_debug "[Apikeys Auth] No key found matching the SHA256 digest."
+          end
+
         else
+          # Log unsupported strategy
           log_warn "[Apikeys Auth] Authentication attempt with unsupported hash strategy: #{strategy}"
         end
 
