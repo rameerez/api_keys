@@ -29,7 +29,7 @@ module Apikeys
     # validates :scopes, presence: true # Default handled by attribute def
     # validates :metadata, presence: true # Default handled by attribute def
     validates :name, presence: true, if: :name_required?
-    validate :within_quota, on: :create, if: :owner_present_and_configured?
+    validate :within_quota, on: :create, if: -> { owner.present? && (owner_configured? || Apikeys.configuration.default_max_keys_per_owner.present?) }
 
     # TODO: Add validation for expires_at > Time.current if present
     validate :expiration_date_cannot_be_in_the_past, if: :expires_at?
@@ -97,6 +97,13 @@ module Apikeys
     def set_defaults
       # Defaults for scopes/metadata handled by `attribute` definitions in engine initializer.
       self.prefix ||= Apikeys.configuration.token_prefix.call
+
+      # Removed default scopes logic here. It's correctly handled in the
+      # HasApiKeys#create_api_key! helper method, which is the intended
+      # way to create keys with proper default scope application.
+      # if self.scopes.nil? && Apikeys.configuration.default_scopes.present?
+      #   self.scopes = Apikeys.configuration.default_scopes
+      # end
     end
 
     # Generates the secure token, hashes it, and sets relevant attributes.
@@ -149,14 +156,23 @@ module Apikeys
     end
 
     def within_quota
-      owner_settings = owner.class.apikeys_settings
-      return unless owner_settings && owner_settings[:max_keys].present?
+      # Determine the applicable limit: owner-specific setting first, then global config.
+      limit = if owner_configured?
+                owner.class.apikeys_settings[:max_keys]
+              else
+                Apikeys.configuration.default_max_keys_per_owner
+              end
 
-      # Count only *active* keys for the quota check
-      # Ensure `owner` association is loaded if needed, or use SQL count
+      # Only validate if a limit is actually set (either per-owner or globally).
+      return unless limit.present?
+
+      # Count only *active* keys for the quota check.
+      # Ensure `owner` association is loaded if needed, or use SQL count.
+      # Note: Ensure the owner association is set before this validation runs.
       current_active_keys = owner.api_keys.active.count
-      if current_active_keys >= owner_settings[:max_keys]
-        errors.add(:base, "exceeds maximum allowed API keys (#{owner_settings[:max_keys]}) for this owner")
+
+      if current_active_keys >= limit
+        errors.add(:base, "exceeds maximum allowed API keys (#{limit}) for this owner")
       end
     end
 
