@@ -33,6 +33,21 @@ module Apikeys
         config = Apikeys.configuration
         config.before_authentication&.call(request)
 
+        # === HTTPS Check (Production Only) ===
+        if defined?(Rails.env) && Rails.env.production? && config.https_only_production
+          if request.protocol == "http://"
+            warning_message = "[Apikeys Security] API key authentication attempted over insecure HTTP connection in production."
+            log_warn warning_message
+            if config.https_strict_mode
+              log_warn "[Apikeys Security] Strict mode enabled: Aborting authentication."
+              result = Result.failure(error_code: :insecure_connection, message: "API requests must be made over HTTPS in production.")
+              config.after_authentication&.call(result)
+              return result # Halt execution due to strict mode
+            end
+          end
+        end
+        # === End HTTPS Check ===
+
         token = extract_token(request, config)
 
         unless token
