@@ -22,6 +22,7 @@ module ApiKeys
           #     # Or using a block:
           #     has_api_keys do
           #       max_keys 10
+          #       token_prefix "cus_"
           #       require_name false
           #       default_scopes %w[read write]
           #     end
