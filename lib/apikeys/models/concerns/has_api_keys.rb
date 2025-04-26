@@ -102,7 +102,7 @@ module Apikeys
         # @param expires_at [Time, nil] Optional expiration timestamp.
         # @param metadata [Hash, nil] Optional metadata hash.
         # @return [String] The plaintext API key token (e.g., "ak_test_...").
-        def create_api_key!(name:, scopes: nil, expires_at: nil, metadata: nil)
+        def create_api_key!(name: nil, scopes: nil, expires_at: nil, metadata: nil)
           # Fetch default scopes from this owner class's settings, falling back to global config.
           owner_settings = self.class.apikeys_settings
           default_scopes = owner_settings&.[](:default_scopes) || Apikeys.configuration.default_scopes || []
