@@ -92,7 +92,36 @@ module Apikeys
         end
 
         # --- Instance Methods ---
-        # Add any instance methods needed on the owner model (e.g., User) here.
+        # Methods included in the owner model (e.g., User).
+
+        # Creates a new API key for this owner instance and returns the plaintext token.
+        # Raises ActiveRecord::RecordInvalid if creation fails.
+        #
+        # @param name [String] The name for the new API key (required).
+        # @param scopes [Array<String>, nil] Scopes for the key. Defaults to owner/global settings.
+        # @param expires_at [Time, nil] Optional expiration timestamp.
+        # @param metadata [Hash, nil] Optional metadata hash.
+        # @return [String] The plaintext API key token (e.g., "ak_test_...").
+        def create_api_key!(name:, scopes: nil, expires_at: nil, metadata: nil)
+          # Fetch default scopes from this owner class's settings, falling back to global config.
+          owner_settings = self.class.apikeys_settings
+          default_scopes = owner_settings&.[](:default_scopes) || Apikeys.configuration.default_scopes || []
+
+          # Use provided scopes if given, otherwise use the calculated defaults.
+          key_scopes = scopes.nil? ? default_scopes : Array(scopes)
+
+          # Create the key using the association, letting AR handle owner_id/type.
+          api_key = self.api_keys.create!(
+            name: name,
+            scopes: key_scopes,
+            expires_at: expires_at,
+            metadata: metadata || {} # Ensure metadata is at least an empty hash
+            # prefix, token_digest, digest_algorithm are set by ApiKey callbacks
+          )
+
+          # Return the plaintext token which is available via attr_reader after creation.
+          api_key.token
+        end
 
         # Example: Check if the owner has reached their API key limit.
         # def reached_api_key_limit?
