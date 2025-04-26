@@ -37,16 +37,6 @@ Apikeys.configure do |config|
   # Default: :bcrypt
   # config.hash_strategy = :sha256
 
-  # A lambda/proc used for securely comparing digests (especially for :sha256).
-  # Should perform a constant-time comparison.
-  # Default: ActiveSupport::SecurityUtils.secure_compare
-  # config.secure_compare_proc = ->(a, b) { MySecureComparator.compare(a, b) }
-
-  # Defines the storage backend for API keys. Currently only :active_record supported.
-  # Future: :vault, :dynamodb, custom_class
-  # Default: :active_record
-  # config.key_store_adapter = :active_record
-
   # Defines the authorization policy class used to check if a key is valid beyond basic checks.
   # Allows injecting custom logic (IP allow-listing, time-of-day checks, etc.).
   # Must be a class name (String or Class) responding to `.new(api_key, request).valid?`
