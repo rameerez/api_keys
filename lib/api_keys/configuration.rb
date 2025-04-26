@@ -7,6 +7,9 @@ module ApiKeys
   # Defines the configuration options for the ApiKeys gem.
   # These options can be set in an initializer, e.g., config/initializers/api_keys.rb
   class Configuration
+    # Default empty callback proc
+    DEFAULT_CALLBACK = ->(_context){}.freeze
+
     # == Accessors ==
 
     # Core Authentication
@@ -90,8 +93,8 @@ module ApiKeys
       @track_requests_count = false # Don't increment `requests_count` by default
 
       # Callbacks
-      @before_authentication = ->(_request) { }
-      @after_authentication = ->(_result) { }
+      @before_authentication = DEFAULT_CALLBACK
+      @after_authentication = DEFAULT_CALLBACK
 
       # Debugging
       @debug_logging = false # Disable debug logging by default (warn and error get logged regardless of this)

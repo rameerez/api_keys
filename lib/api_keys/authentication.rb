@@ -129,6 +129,19 @@ module ApiKeys
 
     # Helper to safely enqueue callback jobs.
     def enqueue_callback(callback_type, context)
+      # Determine the configuration method name (e.g., :before_authentication)
+      config_method = callback_type # Assuming callback_type directly matches config accessor
+
+      # Get the configured proc
+      callback_proc = ApiKeys.configuration.public_send(config_method)
+
+      # Skip enqueueing if the callback is the default empty proc
+      if callback_proc == ApiKeys::Configuration::DEFAULT_CALLBACK
+        log_debug "[ApiKeys Auth] Skipping enqueue for default empty callback: #{callback_type}"
+        return
+      end
+
+      # Proceed with enqueueing if it's a configured callback
       begin
         log_debug "[ApiKeys Auth] Enqueuing CallbacksJob for type: #{callback_type} with context: #{context.inspect}"
         ApiKeys::Jobs::CallbacksJob.perform_later(callback_type, context)
