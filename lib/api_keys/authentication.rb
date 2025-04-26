@@ -3,6 +3,8 @@
 require "active_support/concern"
 require_relative "services/authenticator"
 require_relative "logging"
+require_relative "jobs/update_stats_job"
+require_relative "jobs/callbacks_job"
 
 module ApiKeys
   # Controller concern for handling API key authentication.
@@ -39,34 +41,47 @@ module ApiKeys
 
     private
 
-    # The core authentication method. Runs the Authenticator service.
-    # If authentication fails, it renders a standard JSON error response and halts.
-    # If successful, it sets @current_api_key.
-    #
-    # @param scope [String, Array<String>, nil] Optional scope(s) required for this action.
+    # The core authentication method.
     def authenticate_api_key!(scope: nil)
       log_debug "[ApiKeys Auth] authenticate_api_key! started for request: #{request.uuid}"
+
+      # Enqueue before_authentication callback asynchronously
+      enqueue_callback(:before_authentication, { request_uuid: request.uuid })
+
+      # Perform synchronous authentication
       result = Services::Authenticator.call(request)
       log_debug "[ApiKeys Auth] Authenticator result: #{result.inspect}"
+
+      # Prepare context for after_authentication callback
+      after_auth_context = {
+        success: result.success?,
+        error_code: result.error_code,
+        message: result.message,
+        api_key_id: result.api_key&.id # Pass ID only, not the full object
+      }
 
       if result.success?
         @current_api_key = result.api_key
         log_debug "[ApiKeys Auth] Authentication successful. Key ID: #{@current_api_key.id}"
 
-        # Check required scope(s) if provided
         if scope && !check_api_key_scopes(scope)
           log_debug "[ApiKeys Auth] Scope check failed. Required: #{scope}, Key scopes: #{@current_api_key.scopes}"
-          render_unauthorized(error_code: :missing_scope, message: "API key does not have the required scope(s): #{scope}")
-          return # Halt chain
+          # Add required scope info to context before rendering/enqueueing
+          after_auth_context[:required_scope_check] = { required: scope, passed: false }
+          render_unauthorized(error_code: :missing_scope, message: "API key does not have the required scope(s): #{scope}", required_scope: scope)
+        else
+          after_auth_context[:required_scope_check] = { required: scope, passed: true } if scope
+          # Authentication and scope check successful, enqueue stats update
+          update_key_usage_stats # Enqueues UpdateStatsJob
         end
-        # Authentication successful, optionally update usage stats
-        update_key_usage_stats if ApiKeys.configuration.track_requests_count
       else
         # Authentication failed
         log_debug "[ApiKeys Auth] Authentication failed. Error: #{result.error_code}, Message: #{result.message}"
         render_unauthorized(error_code: result.error_code, message: result.message)
-        # Implicitly halts chain due to render
       end
+
+      # Enqueue after_authentication callback asynchronously regardless of success/failure
+      enqueue_callback(:after_authentication, after_auth_context)
     end
 
     # Checks if the current_api_key has the required scope(s).
@@ -84,46 +99,43 @@ module ApiKeys
     end
 
     # Renders a standard JSON error response for authentication failures.
-    #
-    # @param error_code [Symbol] The error code (e.g., :invalid_token).
-    # @param message [String] The error message.
-    # @param status [Symbol, Integer] The HTTP status code (defaults to :unauthorized / 401).
-    def render_unauthorized(error_code:, message:, status: :unauthorized)
-      # Translate error code using I18n if available, otherwise use message
-      # TODO: Add I18n locale file later
+    def render_unauthorized(error_code:, message:, status: :unauthorized, required_scope: nil)
       error_message = I18n.t("api_keys.errors.#{error_code}", default: message) rescue message
-
       response_body = { error: error_code, message: error_message }
-      # Add required scope info for missing_scope errors
-      response_body[:required_scope] = scope if error_code == :missing_scope && defined?(scope)
-
+      response_body[:required_scope] = required_scope if error_code == :missing_scope && required_scope
       render json: response_body, status: status
     end
 
-    # Updates the last_used_at timestamp and optionally increments requests_count.
-    # This should be efficient and avoid excessive DB writes if possible.
-    # Consider background jobs or batched updates for high traffic.
+    # Enqueues the UpdateStatsJob.
     def update_key_usage_stats
       return unless current_api_key
 
-      # Use update_columns for efficiency, skipping validations/callbacks
-      updates = { last_used_at: Time.current }
-      if ApiKeys.configuration.track_requests_count
-        # Use increment_counter for atomic updates if available and suitable
-        # Or fallback to update_columns with an increment expression
-        # Note: This simplistic approach might have race conditions at high concurrency.
-        # Consider database-specific atomic increments or background jobs.
-        current_api_key.class.increment_counter(:requests_count, current_api_key.id)
-        # If not using increment_counter, you might do:
-        # updates[:requests_count] = (current_api_key.requests_count || 0) + 1
-        # current_api_key.update_columns(updates) # Requires fetching count first
-      else
-        current_api_key.update_column(:last_used_at, updates[:last_used_at])
+      # Check ActiveJob configuration and warn if using suboptimal adapters
+      adapter = ActiveJob::Base.queue_adapter
+      if adapter.is_a?(ActiveJob::QueueAdapters::InlineAdapter)
+        log_warn "[ApiKeys] ActiveJob adapter is :inline. ApiKey stats updates will run synchronously within the request cycle, potentially impacting performance."
+      elsif adapter.is_a?(ActiveJob::QueueAdapters::AsyncAdapter)
+        log_warn "[ApiKeys] ActiveJob adapter is :async. ApiKey stats updates run in-process and may be lost on application restarts. Configure a persistent backend (Sidekiq, GoodJob, SolidQueue, etc.) for reliability."
       end
 
-    rescue ActiveRecord::ActiveRecordError => e
-      Rails.logger.error "[ApiKeys] Failed to update usage stats for key #{current_api_key.id}: #{e.message}" if defined?(Rails.logger)
-      # Don't let stat update failures break the request
+      begin
+        timestamp = Time.current # Capture time once for the job
+        log_debug "[ApiKeys Auth] Enqueuing UpdateStatsJob for ApiKey ID: #{current_api_key.id} at #{timestamp}"
+        ApiKeys::Jobs::UpdateStatsJob.perform_later(current_api_key.id, timestamp)
+      rescue StandardError => e
+        log_error "[ApiKeys Auth] Failed to enqueue UpdateStatsJob for key #{current_api_key.id}: #{e.message}"
+      end
+    end
+
+    # Helper to safely enqueue callback jobs.
+    def enqueue_callback(callback_type, context)
+      begin
+        log_debug "[ApiKeys Auth] Enqueuing CallbacksJob for type: #{callback_type} with context: #{context.inspect}"
+        ApiKeys::Jobs::CallbacksJob.perform_later(callback_type, context)
+      rescue StandardError => e
+        log_error "[ApiKeys Auth] Failed to enqueue CallbacksJob for type #{callback_type}: #{e.message}"
+        # Don't fail the request if callback enqueueing fails
+      end
     end
 
   end

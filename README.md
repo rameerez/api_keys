@@ -8,6 +8,12 @@
 
 See the [Product Requirements Document](.cursor/prd.md) for the full vision and features.
 
+
+///
+
+The synchronous request path (authenticate_api_key!) is significantly leaner, all writes are offloaded to background jobs and now occur asynchronously.
+ Using background jobs (with a proper backend) increases reliability for these non-critical-path updates compared to potentially failing synchronously or losing updates with :async.
+
 ## Installation
 
 Add this line to your application's Gemfile:

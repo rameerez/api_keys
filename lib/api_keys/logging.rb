@@ -23,6 +23,14 @@ module ApiKeys
       logger.warn(message) if logger
     end
 
+    # Helper for logging errors.
+    # Errors are logged regardless of debug flag, if logger available.
+    #
+    # @param message [String] The message to log.
+    def log_error(message)
+      logger.error(message) if logger
+    end
+
     # Provides access to the logger instance (Rails.logger if defined).
     #
     # @return [Logger, nil] The logger instance or nil.

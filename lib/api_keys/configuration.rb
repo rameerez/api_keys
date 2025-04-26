@@ -34,6 +34,9 @@ module ApiKeys
     # Callbacks (Placeholders for future extension)
     attr_accessor :before_authentication, :after_authentication
 
+    # Background Job Queues
+    attr_accessor :stats_job_queue, :callbacks_job_queue
+
     # Debugging
     attr_accessor :debug_logging
 
@@ -86,6 +89,10 @@ module ApiKeys
       # Callbacks
       @before_authentication = ->(_request) { }
       @after_authentication = ->(_result) { }
+
+      # Background Job Queues
+      @stats_job_queue = :api_keys_stats       # Default queue for stats updates
+      @callbacks_job_queue = :api_keys_callbacks # Default queue for callbacks
 
       # Debugging
       @debug_logging = false # Disable debug logging by default
