@@ -19,8 +19,8 @@ module Apikeys
     attr_accessor :hash_strategy, :secure_compare_proc, :key_store_adapter, :policy_provider
 
     # Optional Behaviors
-    attr_accessor :expire_after, :default_scopes, :track_requests_count
     attr_accessor :default_max_keys_per_owner, :require_key_name
+    attr_accessor :expire_after, :default_scopes, :track_requests_count
 
     # Performance
     attr_accessor :cache_ttl
@@ -59,15 +59,19 @@ module Apikeys
       @hash_strategy = :bcrypt # Recommended: :bcrypt or :sha256
       @secure_compare_proc = ->(a, b) { ActiveSupport::SecurityUtils.secure_compare(a, b) }
       @key_store_adapter = :active_record # Default storage backend
-      # TODO: Define Apikeys::BasePolicy later
+      # TODO: Define and implement Apikeys::BasePolicy in later versions
+      # This will define the authorization policy class used to check if a key is valid beyond basic checks.
+      # Allows injecting custom logic (IP allow-listing, time-of-day checks, etc.).
+      # Must be a class name (String or Class) responding to `.new(api_key, request).valid?`
+      # Default: "Apikeys::BasePolicy" (a basic implementation should be provided)
       @policy_provider = "Apikeys::BasePolicy" # Default authorization policy class name
 
       # Optional Behaviors
+      @default_max_keys_per_owner = nil # No global key limit per owner
+      @require_key_name = false # Don't require names for keys globally
       @expire_after = nil # Keys do not expire by default (e.g., 90.days)
       @default_scopes = [] # No default scopes assigned globally
       @track_requests_count = false # Don't increment `requests_count` by default
-      @default_max_keys_per_owner = nil # No global key limit per owner
-      @require_key_name = false # Don't require names for keys globally
 
       # Performance
       @cache_ttl = 10.seconds # Cache key lookups for 10 seconds (0 to disable)

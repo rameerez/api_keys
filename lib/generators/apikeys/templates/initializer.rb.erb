@@ -37,13 +37,18 @@ Apikeys.configure do |config|
   # Default: :bcrypt
   # config.hash_strategy = :sha256
 
-  # Defines the authorization policy class used to check if a key is valid beyond basic checks.
-  # Allows injecting custom logic (IP allow-listing, time-of-day checks, etc.).
-  # Must be a class name (String or Class) responding to `.new(api_key, request).valid?`
-  # Default: "Apikeys::BasePolicy" (a basic implementation will be provided)
-  # config.policy_provider = "MyCustomApiKeyPolicy"
-
   # === Optional Behaviors ===
+
+  # Global limit on the number of *active* keys an owner can have.
+  # Can be overridden by `max_keys` in the `has_api_keys` block.
+  # Set to nil for no global limit.
+  # Default: nil
+  # config.default_max_keys_per_owner = 10
+
+  # If true, requires a `name` when creating keys.
+  # Can be overridden by `require_name` in the `has_api_keys` block.
+  # Default: false
+  # config.require_key_name = true
 
   # Automatically expire keys after a certain period from creation.
   # Set to nil for no automatic expiration.
@@ -60,17 +65,6 @@ Apikeys.configure do |config|
   # Note: Incrementing counters frequently can impact DB performance.
   # Default: false
   # config.track_requests_count = true
-
-  # Global limit on the number of *active* keys an owner can have.
-  # Can be overridden by `max_keys` in the `has_api_keys` block.
-  # Set to nil for no global limit.
-  # Default: nil
-  # config.default_max_keys_per_owner = 10
-
-  # If true, requires the `name` attribute to be present when creating keys.
-  # Can be overridden by `require_name` in the `has_api_keys` block.
-  # Default: false
-  # config.require_key_name = true
 
   # === Performance ===
 
