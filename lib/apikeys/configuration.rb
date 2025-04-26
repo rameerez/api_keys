@@ -13,7 +13,7 @@ module Apikeys
     attr_accessor :header, :query_param
 
     # Token Generation
-    attr_accessor :env_prefix_map, :token_prefix, :token_length, :token_alphabet
+    attr_accessor :token_prefix, :token_length, :token_alphabet
 
     # Storage & Verification
     attr_accessor :hash_strategy, :secure_compare_proc, :key_store_adapter, :policy_provider
@@ -51,8 +51,7 @@ module Apikeys
       @query_param = nil # No query param lookup by default
 
       # Token Generation
-      @env_prefix_map = { production: "live", development: "test", test: "test" }
-      @token_prefix = -> { "ak_#{env_prefix_map.fetch(Rails.env.to_sym, Rails.env)}_" }
+      @token_prefix = -> { "ak_" }
       @token_length = 24 # Bytes of entropy
       @token_alphabet = :base58 # Avoid ambiguous chars (0, O, I, l)
 

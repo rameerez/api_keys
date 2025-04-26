@@ -14,13 +14,9 @@ Apikeys.configure do |config|
 
   # === Token Generation ===
 
-  # A hash mapping Rails environments to short codes used in the default token prefix.
-  # Default: { production: "live", development: "test", test: "test" }
-  # config.env_prefix_map = { production: "live", staging: "stage", development: "dev", test: "test" }
-
   # A lambda/proc that returns the prefix for newly generated tokens.
-  # Defaults to "ak_{env}_", using `env_prefix_map` or Rails.env.
-  # config.token_prefix = -> { "my_app_#{Rails.env.first}_" }
+  # Defaults to "ak_".
+  # config.token_prefix = -> { "my_app_" }
 
   # The number of random bytes to generate for the token (before encoding).
   # More bytes = more entropy = harder to guess.
