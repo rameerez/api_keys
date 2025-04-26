@@ -74,7 +74,7 @@ module Apikeys
       @track_requests_count = false # Don't increment `requests_count` by default
 
       # Performance
-      @cache_ttl = 10.seconds # Cache key lookups for 10 seconds (0 to disable)
+      @cache_ttl = 5.minutes # More sensible default TTL for authentication caching
 
       # Security
       @https_only_production = true # Warn if used over HTTP in production

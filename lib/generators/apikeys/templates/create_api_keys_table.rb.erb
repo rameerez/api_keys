@@ -44,6 +44,9 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       # Critical index for authentication performance
       t.index :token_digest, unique: true
 
+      # Index to optimize prefix-based lookups (especially for bcrypt)
+      t.index [:prefix, :digest_algorithm], name: "index_api_keys_on_prefix_and_digest_algorithm"
+
       # Optional indexes
       t.index :prefix
       t.index :owner_id if foreign_key_type # Index owner_id only if it's a separate column

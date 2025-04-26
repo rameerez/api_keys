@@ -69,10 +69,13 @@ Apikeys.configure do |config|
   # === Performance ===
 
   # Time-to-live (TTL) for caching ApiKey lookups.
+  # Higher values improve performance by reducing database lookups and
+  # expensive comparisons (like bcrypt), but increase the delay for changes
+  # (like revocation or expiration) to take effect for already cached keys.
   # Set to 0 or nil to disable caching.
   # Uses Rails.cache.
-  # Default: 10.seconds
-  # config.cache_ttl = 1.minute
+  # Default: 5.minutes
+  # config.cache_ttl = 15.minutes
 
   # === Security ===
 
