@@ -33,7 +33,7 @@ module ApiKeys
 
       # Displays helpful information to the user after installation.
       def display_post_install_message
-        say "\n🎉 ApiKeys gem successfully installed!", :green
+        say "\n🎉 api_keys gem successfully installed!", :green
         say "\nNext steps:"
         say "  1. Run `rails db:migrate` to create the `api_keys` table."
         say "     ☢️  Run migrations before starting your application!", :yellow
