@@ -15,6 +15,9 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       # Algorithm used for the digest (e.g., "bcrypt", "sha256")
       t.string   :digest_algorithm, null: false
 
+      # Last 4 characters of the random part of the token for display
+      t.string   :last4,            null: false, limit: 4
+
       # Optional, user-provided name for the key
       t.string   :name
 
@@ -49,6 +52,7 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
 
       # Optional indexes
       t.index :prefix
+      t.index :last4 # Index potentially useful for UI lookups/filtering by masked token
       t.index :owner_id if foreign_key_type # Index owner_id only if it's a separate column
       t.index :owner_type if foreign_key_type # Index owner_type only if it's a separate column
       t.index :expires_at

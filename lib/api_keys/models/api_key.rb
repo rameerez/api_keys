@@ -26,6 +26,7 @@ module ApiKeys
     validates :token_digest, presence: true, uniqueness: { case_sensitive: true }
     validates :prefix, presence: true
     validates :digest_algorithm, presence: true
+    validates :last4, presence: true, length: { is: 4 }
     # validates :scopes, presence: true # Default handled by attribute def
     # validates :metadata, presence: true # Default handled by attribute def
     validates :name, presence: true, if: :name_required?
@@ -82,10 +83,14 @@ module ApiKeys
     # Provides a masked version of the token for display (e.g., ak_live_••••rj4p)
     # Requires the plaintext token to be available (only right after creation).
     def masked_token
-      return "[Token not available]" unless token
+      # return "[Token not available]" unless token # No longer needed
       # Show prefix, 4 bullets, last 4 chars of the random part
-      random_part = token.delete_prefix(prefix)
-      "#{prefix}••••#{random_part.last(4)}"
+      # random_part = token.delete_prefix(prefix) # No longer needed
+      # "#{prefix}••••#{random_part.last(4)}" # No longer needed
+
+      # Use the stored prefix and last4 attributes
+      return "[Invalid Key Data]" unless prefix.present? && last4.present?
+      "#{prefix}••••#{last4}"
     end
 
     # == Class Methods ==
@@ -129,6 +134,10 @@ module ApiKeys
 
       self.token_digest = digest_result[:digest]
       self.digest_algorithm = digest_result[:algorithm]
+
+      # Extract and store the last 4 chars of the random part
+      random_part = @token.delete_prefix(self.prefix)
+      self.last4 = random_part.last(4) # Store last4
 
       # Set default expiration if configured globally and not set individually
       # Needs to happen here since it relies on Time.current
