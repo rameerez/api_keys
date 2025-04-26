@@ -108,6 +108,8 @@ module ApiKeys
 
     # Enqueues the UpdateStatsJob.
     def update_key_usage_stats
+      # Return early if async operations are globally disabled
+      return unless ApiKeys.configuration.enable_async_operations
       return unless current_api_key
 
       # Check ActiveJob configuration and warn if using suboptimal adapters
@@ -129,6 +131,9 @@ module ApiKeys
 
     # Helper to safely enqueue callback jobs.
     def enqueue_callback(callback_type, context)
+      # Return early if async operations are globally disabled
+      return unless ApiKeys.configuration.enable_async_operations
+
       # Determine the configuration method name (e.g., :before_authentication)
       config_method = callback_type # Assuming callback_type directly matches config accessor
 

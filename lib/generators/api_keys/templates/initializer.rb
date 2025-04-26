@@ -111,6 +111,15 @@ ApiKeys.configure do |config|
   # Default: :default
   # config.callbacks_job_queue = :api_keys_callbacks
 
+  # === Global Async Toggle ===
+
+  # Set to false to completely disable all background job enqueueing performed
+  # by this gem (stats updates and callbacks). If false, `last_used_at`,
+  # `requests_count`, and configured callbacks will NOT be processed.
+  # Useful if you handle these concerns externally or cannot use ActiveJob.
+  # Default: true
+  # config.enable_async_operations = false
+
   # === Usage Statistics ===
 
   # If true, automatically update `last_used_at` and increment `requests_count`

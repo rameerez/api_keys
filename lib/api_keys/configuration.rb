@@ -40,6 +40,9 @@ module ApiKeys
     # Background Job Queues
     attr_accessor :stats_job_queue, :callbacks_job_queue
 
+    # Global Async Toggle
+    attr_accessor :enable_async_operations
+
     # Debugging
     attr_accessor :debug_logging
 
@@ -88,6 +91,9 @@ module ApiKeys
       # Background Job Queues
       @stats_job_queue = :default
       @callbacks_job_queue = :default
+
+      # Global Async Toggle
+      @enable_async_operations = true # Default to true to enable jobs
 
       # Usage Statistics
       @track_requests_count = false # Don't increment `requests_count` by default
