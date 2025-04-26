@@ -96,4 +96,4 @@ Apikeys.configure do |config|
   # Receives the Apikeys::Services::Authenticator::Result object.
   # Default: ->(result) { }
   # config.after_authentication = ->(result) { MyAnalytics.track_auth(result) }
-end 
+end

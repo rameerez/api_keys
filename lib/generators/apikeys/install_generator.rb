@@ -28,7 +28,7 @@ module Apikeys
 
       # Creates the initializer file using the template.
       def create_initializer
-        template "initializer.rb.erb", "config/initializers/apikeys.rb"
+        template "initializer.rb", "config/initializers/apikeys.rb"
       end
 
       # Displays helpful information to the user after installation.
