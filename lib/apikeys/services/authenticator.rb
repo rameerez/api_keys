@@ -149,18 +149,30 @@ module Apikeys
         strategy = config.hash_strategy.to_sym
         log_debug "[Apikeys Auth] Using strategy: #{strategy}"
 
-        # 2. Find and verify the key based on the strategy. For bcrypt (or strategies needing secure compare): Find potential matches by prefix
-
+        # 2. Find and verify the key based on the strategy.
         verified_key = nil
         if strategy == :bcrypt
-          # Match the standard prefix format: ak_{env}_ where {env} is one or more letters
-          prefix_candidate = token[/^ak_[a-z]+_/i]
-          log_debug "[Apikeys Auth] Extracted prefix for bcrypt lookup: #{prefix_candidate}"
+          # Optimization: Check against the *configured* prefix first.
+          configured_prefix = config.token_prefix.call
+          matched_prefix = nil
 
-          possible_keys_scope = if prefix_candidate
-                                  Apikeys::ApiKey.where(prefix: prefix_candidate, digest_algorithm: 'bcrypt')
+          if token.start_with?(configured_prefix)
+            log_debug "[Apikeys Auth] Token matches configured prefix: #{configured_prefix}"
+            matched_prefix = configured_prefix
+          else
+            # Fallback: If no match, check against all known prefixes (cached).
+            log_debug "[Apikeys Auth] Token does not match configured prefix. Checking known prefixes."
+            known_prefixes = fetch_known_prefixes(config)
+            # Sort by length descending to find the longest match first
+            matched_prefix = known_prefixes.sort_by(&:length).reverse.find { |p| token.start_with?(p) }
+            log_debug "[Apikeys Auth] Known prefixes: #{known_prefixes}. Matched prefix for lookup: #{matched_prefix || 'None'}"
+          end
+
+          possible_keys_scope = if matched_prefix
+                                  Apikeys::ApiKey.where(prefix: matched_prefix, digest_algorithm: 'bcrypt')
                                 else
-                                  log_warn "[Apikeys Auth] Token prefix missing or invalid for bcrypt lookup, cannot perform DB lookup."
+                                  # This path is now less likely but covers cases where token matches no known prefix.
+                                  log_warn "[Apikeys Auth] Token does not start with the configured prefix or any known prefix. Cannot perform DB lookup."
                                   Apikeys::ApiKey.none # Return an empty relation
                                 end
 
@@ -205,6 +217,28 @@ module Apikeys
         end
 
         verified_key
+      end
+
+      # Helper to fetch (and cache) the distinct prefixes stored in the ApiKey table.
+      def self.fetch_known_prefixes(config)
+        cache_key = "apikeys:known_prefixes"
+        cache_ttl = config.cache_ttl.to_i # Use the same TTL as key lookup for consistency
+
+        if cache_ttl > 0
+          cached_prefixes = rails_cache&.read(cache_key)
+          return cached_prefixes if cached_prefixes.is_a?(Array)
+          log_debug "[Apikeys Auth] Known prefixes cache MISS. Fetching from DB."
+        end
+
+        # Fetch distinct, non-null prefixes from the database
+        prefixes = Apikeys::ApiKey.distinct.pluck(:prefix).compact
+
+        if cache_ttl > 0 && rails_cache
+          log_debug "[Apikeys Auth] Writing known prefixes to cache. Key: #{cache_key}, Value: #{prefixes.inspect}"
+          rails_cache.write(cache_key, prefixes, expires_in: cache_ttl)
+        end
+
+        prefixes
       end
 
       # Helper for accessing Rails cache safely
