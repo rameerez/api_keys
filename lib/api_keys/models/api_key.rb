@@ -29,7 +29,13 @@ module ApiKeys
     validates :last4, presence: true, length: { is: 4 }
     # validates :scopes, presence: true # Default handled by attribute def
     # validates :metadata, presence: true # Default handled by attribute def
-    validates :name, presence: true, if: :name_required?
+    validates :name,
+              length: { maximum: 60 },
+              # Allow letters, numbers, underscores, hyphens. No leading/trailing spaces.
+              format: { with: /\A[a-zA-Z0-9_-]+\z/, message: "can only contain letters, numbers, underscores, and hyphens" },
+              allow_blank: true # Apply length and format only if name is present
+
+    validates :name, presence: true, if: :name_required? # Only require presence conditionally
     validate :within_quota, on: :create, if: -> { owner.present? && (owner_configured? || ApiKeys.configuration.default_max_keys_per_owner.present?) }
 
     # TODO: Add validation for expires_at > Time.current if present
