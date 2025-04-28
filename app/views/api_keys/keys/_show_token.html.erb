@@ -16,8 +16,8 @@
 <div style="padding: 1em; margin: 1em 0; border-radius: 4px;">
   <div class="card bd-primary">
     <div class="row">
-      <div class="col-7">
-        <pre id="api-key-token" style="font-size: 1.1em; word-wrap: break-word;"><%= plaintext_token %></pre>
+      <div class="col-7 is-vertical-align is-center">
+        <pre id="api-key-token" style="word-wrap: break-word;"><%= plaintext_token %></pre>
       </div>
 
       <div class="col is-vertical-align is-center">
@@ -34,7 +34,14 @@
   <% if api_key.scopes.present? %>
     <div style="margin-top: 2em;">
       <p><strong>Permissions</strong></p>
-      <p><%= api_key.scopes.join(", ") %></p>
+
+      <% if api_key.scopes.present? %>
+        <% api_key.scopes.each do |scope| %>
+          <kbd class="tag is-small"><%= scope %></kbd>
+        <% end %>
+      <% else %>
+        &mdash;
+      <% end %>
     </div>
   <% end %>
 </div>
