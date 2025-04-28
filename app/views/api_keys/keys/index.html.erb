@@ -1,0 +1,23 @@
+<header>
+  <div class="row">
+    <div class="col">
+      <h1>API Keys</h1>
+    </div>
+
+    <div class="col api-keys-align-center is-right">
+      <%= link_to new_key_path, class: "button primary api-keys-align-center", role: "button" do %>
+        <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 5a1 1 0 0 1 1 1v5h5a1 1 0 1 1 0 2h-5v5a1 1 0 1 1-2 0v-5H6a1 1 0 1 1 0-2h5V6a1 1 0 0 1 1-1Z" clip-rule="evenodd"></path></svg>
+        <span>&nbsp;Create new secret key</span>
+      <% end %>
+    </div>
+
+</header>
+
+<div>
+
+  <p>Do not share your API key with others or expose it in the browser or other client-side code. To protect your account's security, we may automatically disable any API key that has leaked publicly.</p>
+
+  <%# Render the reusable table partial %>
+  <%= render partial: 'keys_table', locals: { active_keys: @api_keys, inactive_keys: @inactive_api_keys } %>
+
+</div>

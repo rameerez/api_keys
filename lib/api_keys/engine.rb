@@ -8,6 +8,10 @@ module ApiKeys
   class Engine < ::Rails::Engine
     isolate_namespace ApiKeys
 
+    # Allows configuring the parent controller for the engine's controllers
+    # Defaults to ::ApplicationController, assuming a standard Rails app structure.
+    config.parent_controller = '::ApplicationController'
+
     # Ensure our models load first
     config.autoload_paths << File.expand_path("../models", __dir__)
     config.autoload_paths << File.expand_path("../models/concerns", __dir__)
@@ -28,19 +32,17 @@ module ApiKeys
       end
     end
 
-    # Define JSON attributes after ActiveRecord is loaded and connected.
+
+    # Load JSON attribute types after ActiveRecord initialization
+    # and database connection is established.
     initializer "api_keys.model_attributes" do
       ActiveSupport.on_load(:active_record) do
-        # Ensure the ApiKey model class is loaded before reopening
-        # Use require_dependency for development/test, rely on autoloading in production
-        # Or simply let Zeitwerk handle loading if structure is correct.
-        require_dependency "api_keys/models/api_key" if defined?(Rails) && !Rails.env.production?
-
         ApiKeys::ApiKey.class_eval do
-          # Define attributes using :json type for proper serialization
-          # This runs after the DB connection is likely established.
-          attribute :scopes, :json, default: []
-          attribute :metadata, :json, default: {}
+          # Define JSON attributes for ApiKey model
+          # Ensure the ApiKey model class is loaded before reopening
+          # Use require_dependency for development/test, rely on autoloading in production
+          # Or simply let Zeitwerk handle loading if structure is correct.
+          require_dependency "api_keys/models/api_key" if defined?(Rails) && !Rails.env.production?
 
           # == JSON Attribute Casting ==
           # Make the gem work in any database (postgres, sqlite3, mysql...)
@@ -48,15 +50,10 @@ module ApiKeys
           # according to the migration (jsonb = postgres; text = elsewhere)
           # So that the JSON attributes work in any database
           # and the gem works everywhere, transparent to end users
-          adapter_name = ActiveRecord::Base.connection.adapter_name.downcase rescue "sqlite" # fallback to sqlite
+          json_col_type = ApiKeys::ApiKey.connection.adapter_name.downcase.include?('postg') ? :jsonb : :json
+          ApiKeys::ApiKey.attribute :scopes, json_col_type, default: []
+          ApiKeys::ApiKey.attribute :metadata, json_col_type, default: {}
 
-          if adapter_name.include?("postgresql")
-            attribute :scopes, :jsonb, default: []
-            attribute :metadata, :jsonb, default: {}
-          else
-            attribute :scopes, :json, default: []
-            attribute :metadata, :json, default: {}
-          end
         end
       end
     end

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🔑 API Keys</title>
+  <%# Note: No CSS included here to keep it CSS-framework-agnostic %>
+  <link rel="stylesheet" href="https://unpkg.com/chota@latest">
+  <%# Host application is expected to provide styling %>
+  <%= csrf_meta_tags %>
+  <%= csp_meta_tag %>
+</head>
+<body>
+  <style>
+    body {
+      /* grid-template-columns: 1fr min(100rem, 90%) 1fr !important; */
+    }
+
+    @media (prefers-color-scheme: dark) {
+      body {
+        /* Define dark mode variables directly */
+        --bg-color:rgb(14, 14, 14);
+        --bg-secondary-color: #131316;
+        --font-color: #f5f5f5;
+        --color-grey: #ccc;
+        --color-darkGrey: #777;
+      }
+    }
+
+    .api-keys-align-center {
+      display: inline-flex;
+      align-items: center;
+    }
+
+    form > div {
+      margin-top: 2.5em;
+    }
+
+    a {
+      color: var(--font-color);
+    }
+
+    .api-keys-action-buttons form {
+      display: inline;
+    }
+
+    .api-keys-action-buttons button {
+      background: none;
+      padding: 0;
+      color: #c23539
+    }
+
+    .api-keys-button-text {
+      padding-left: 0.2em;
+    }
+
+    #api-keys-flash-container {
+      margin-top: 1em;
+    }
+    
+    .api-keys-flash-message {
+      background-color: rgba(255, 255, 255, 0.15);
+      padding: 0.8em 0;
+      height: 100;
+    }
+
+    article h2, article li {
+      margin-top: 1.5em;
+    }
+
+    article h3 {
+      margin-top: 2.4em;
+    }
+
+  </style>
+
+  <aside id="api-keys-flash-container" class="container text-center">
+    <%# Flash Messages %>
+    <% flash.each do |type, msg| %>
+      <div class="api-keys-flash-message api-keys-flash-<%= type %>">
+        <%= msg %>
+      </div>
+    <% end %>
+  </aside>
+
+  <main class="container">
+    <%= yield %>
+  </main>
+
+  <footer>
+    <%# Footer content %>
+  </footer>
+
+  <%# Add any necessary JS includes if needed later %>
+
+</body>
+</html> 

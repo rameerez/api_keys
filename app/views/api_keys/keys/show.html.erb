@@ -1,0 +1,11 @@
+<div class="col-5">
+
+  <%# Renders the block showing the newly created token %>
+  <%= render partial: 'show_token', locals: { api_key: @api_key, plaintext_token: @plaintext_token } %>
+
+  <%# Add navigation links %>
+  <p style="margin-top: 2em;">
+    <%= link_to "Done", keys_path, class: "button" %>
+  </p>
+
+</div>

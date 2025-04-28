@@ -1,0 +1,81 @@
+<%# Partial for displaying the newly created API key token %>
+<%# Locals: api_key (ApiKey instance), plaintext_token (String) %>
+
+<h2>Save your key</h2>
+
+<p>Please save your secret key in a safe place since <strong>you won't be able to view it again</strong>. Keep it secure, as anyone with your API key can make requests on your behalf. If you do lose it, you'll need to generate a new one.</p>
+
+<p>
+  <%= link_to api_keys.security_best_practices_path, class: "text-primary api-keys-align-center" do %>
+    Learn more about API key best practices&nbsp;
+    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M15 5a1 1 0 1 1 0-2h5a1 1 0 0 1 1 1v5a1 1 0 1 1-2 0V6.414l-5.293 5.293a1 1 0 0 1-1.414-1.414L17.586 5H15ZM4 7a3 3 0 0 1 3-3h3a1 1 0 1 1 0 2H7a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-3a1 1 0 1 1 2 0v3a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V7Z" clip-rule="evenodd"></path></svg>
+  <% end %>
+</p>
+
+
+<div style="padding: 1em; margin: 1em 0; border-radius: 4px;">
+  <div class="card bd-primary">
+    <div class="row">
+      <div class="col-7">
+        <pre id="api-key-token" style="font-size: 1.1em; word-wrap: break-word;"><%= plaintext_token %></pre>
+      </div>
+
+      <div class="col is-vertical-align is-center">
+        <button id="copy-api-key-button" onclick="copyTokenToClipboard()" class="button primary api-keys-align-center">
+          <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M7 5a3 3 0 0 1 3-3h9a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3h-2v2a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3v-9a3 3 0 0 1 3-3h2V5Zm2 2h5a3 3 0 0 1 3 3v5h2a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1h-9a1 1 0 0 0-1 1v2ZM5 9a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1H5Z" clip-rule="evenodd"></path></svg>
+          <span class="api-keys-button-text">Copy</span>
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+
+  <% if api_key.scopes.present? %>
+    <div style="margin-top: 2em;">
+      <p><strong>Permissions</strong></p>
+      <p><%= api_key.scopes.join(", ") %></p>
+    </div>
+  <% end %>
+</div>
+
+<%# Simple JavaScript for copy-to-clipboard functionality %>
+<%# Ensure this script is loaded only once if rendering multiple components %>
+<script>
+function copyTokenToClipboard() {
+  const tokenElement = document.getElementById('api-key-token');
+  const copyButton = document.getElementById('copy-api-key-button');
+  const buttonTextElement = copyButton.querySelector('.api-keys-button-text'); // Target the span containing the text
+  const originalButtonText = buttonTextElement.innerHTML; // Store original HTML
+
+  if (navigator.clipboard && tokenElement && copyButton && buttonTextElement) {
+    navigator.clipboard.writeText(tokenElement.textContent || '').then(() => {
+      buttonTextElement.innerHTML = 'Copied!'; // Update text
+      copyButton.classList.add('success'); // Optional: Add class for styling
+      setTimeout(() => {
+        buttonTextElement.innerHTML = originalButtonText; // Revert text
+        copyButton.classList.remove('success'); // Optional: Remove class
+      }, 2000);
+    }).catch(err => {
+      buttonTextElement.innerHTML = 'Failed'; // Update text on error
+      copyButton.classList.add('error'); // Optional: Add class for styling
+      console.error('Failed to copy text: ', err);
+      setTimeout(() => {
+        buttonTextElement.innerHTML = originalButtonText; // Revert text
+        copyButton.classList.remove('error'); // Optional: Remove class
+      }, 2000);
+    });
+  } else {
+    // Fallback or indicate unavailability more clearly if needed
+    buttonTextElement.innerHTML = 'Cannot Copy';
+    copyButton.classList.add('error'); // Optional: Add class for styling
+    console.warn('Clipboard API not available or element missing.');
+    setTimeout(() => {
+      buttonTextElement.innerHTML = originalButtonText; // Revert text
+      copyButton.classList.remove('error'); // Optional: Remove class
+    }, 2000);
+  }
+}
+// Automatically try to copy when the partial is rendered, if desired?
+// document.addEventListener('DOMContentLoaded', copyTokenToClipboard); // Example
+</script> 

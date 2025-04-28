@@ -102,14 +102,16 @@ module ApiKeys
         # --- Instance Methods ---
         # Methods included in the owner model (e.g., User).
 
-        # Creates a new API key for this owner instance and returns the plaintext token.
+        # Creates a new API key for this owner instance and returns the ApiKey instance.
         # Raises ActiveRecord::RecordInvalid if creation fails.
         #
         # @param name [String] The name for the new API key (required).
         # @param scopes [Array<String>, nil] Scopes for the key. Defaults to owner/global settings.
         # @param expires_at [Time, nil] Optional expiration timestamp.
         # @param metadata [Hash, nil] Optional metadata hash.
-        # @return [String] The plaintext API key token (e.g., "ak_test_...").
+        # @return [ApiKeys::ApiKey] The newly created ApiKey instance. The plaintext token
+        #                           is available via the `#token` attribute on this instance
+        #                           *only until it's reloaded*.
         def create_api_key!(name: nil, scopes: nil, expires_at: nil, metadata: nil)
           # Fetch default scopes from this owner class's settings, falling back to global config.
           owner_settings = self.class.api_keys_settings
@@ -127,8 +129,9 @@ module ApiKeys
             # prefix, token_digest, digest_algorithm are set by ApiKey callbacks
           )
 
-          # Return the plaintext token which is available via attr_reader after creation.
-          api_key.token
+          # Return the ApiKey instance itself.
+          # The plaintext token is available via `api_key.token` immediately after this.
+          api_key
         end
 
         # Example: Check if the owner has reached their API key limit.

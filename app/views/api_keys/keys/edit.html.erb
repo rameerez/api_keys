@@ -1,0 +1,5 @@
+<div class="col-5">
+  <h2>Edit API Key: <%= @api_key.name.presence || @api_key.masked_token %></h2>
+
+  <%= render 'form', api_key: @api_key %> 
+</div>

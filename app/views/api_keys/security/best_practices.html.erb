@@ -1,0 +1,70 @@
+<header>
+  <h1>API Key Security Best Practices</h1>
+  <p>Protecting your API keys is crucial for maintaining the security and integrity of your account and data.</p>
+</header>
+
+<article class="col-5">
+
+  <section>
+    <h3>1. Treat API Keys Like Passwords</h3>
+    <p>Your API keys grant access to your account and potentially sensitive operations. Handle them with the same level of security you would apply to your account password or other critical credentials.</p>
+  </section>
+
+  <section>
+    <h3>2. Use Unique Keys for Different Applications & Environments</h3>
+    <p>Generate distinct API keys for different applications, services, or integrations that need access. If a key for one application is compromised, you can revoke it without disrupting others. Use separate keys for development, staging, and production environments.</p>
+    <p><em>Tip:</em> Use the "Name" field when creating keys to easily identify their purpose (e.g., "Production Zapier Integration", "Staging iOS App").</p>
+  </section>
+
+  <section>
+    <h3>3. Never Expose Keys in Client-Side Code</h3>
+    <p><strong>Never</strong> embed API keys directly in mobile apps (iOS, Android), browser-side JavaScript, desktop applications, or any code that resides on a user's device. Exposed keys can be easily extracted by malicious actors.</p>
+    <p><strong>Solution:</strong> Route API requests through your own backend server. Your server can securely store and use the API key to communicate with the target API on behalf of the client.</p>
+  </section>
+
+  <section>
+    <h3>4. Never Commit Keys to Version Control (e.g., Git)</h3>
+    <p>Committing keys to your source code repository (like Git, Mercurial, etc.) is a common and dangerous mistake. Even in private repositories, accidental pushes or repository breaches can leak your keys.</p>
+    <p><strong>Solution:</strong> Store keys in environment variables or use a dedicated secrets management system. Access the key in your code via these secure methods.</p>
+  </section>
+
+  <section>
+    <h3>5. Securely Store Keys on Your Backend</h3>
+    <ul>
+      <li><strong>Environment Variables:</strong> The simplest secure method for many applications. Set an environment variable (e.g., `YOUR_SERVICE_API_KEY`) on your server and access it in your code (e.g., `ENV['YOUR_SERVICE_API_KEY']` in Ruby/Rails).</li>
+      <li><strong>Secrets Management Services:</strong> For more robust needs, especially in production or team environments, use dedicated services like HashiCorp Vault, AWS Secrets Manager, Google Secret Manager, Doppler, etc. These provide encrypted storage, access control, auditing, and often automated rotation capabilities.</li>
+      <li><strong>Encrypted Configuration Files:</strong> If using configuration files, ensure they are encrypted (e.g., Rails encrypted credentials `config/credentials.yml.enc`).</li>
+    </ul>
+  </section>
+
+  <section>
+    <h3>6. Implement the Principle of Least Privilege (Scopes)</h3>
+    <p>If the API service supports it (and this `api_keys` gem allows for scopes), create keys with only the minimum permissions (scopes) required for their specific task. Avoid using a key with full access if only read access is needed.</p>
+    <p><em>Note:</em> Scope availability and enforcement depend on how the host application integrates and utilizes the `scopes` attribute provided by this gem.</p>
+  </section>
+
+  <section>
+    <h3>7. Monitor Usage and Rotate Keys Regularly</h3>
+    <ul>
+      <li><strong>Monitor Usage:</strong> Regularly check API usage logs or dashboards (if provided by the service or your monitoring tools). Look for unexpected spikes in activity or requests from unusual locations, which could indicate a compromised key.</li>
+      <li><strong>Rotate Keys:</strong> Periodically generate new keys and revoke old ones (key rotation). This limits the window of opportunity for attackers if a key is ever leaked undetected. How often you rotate depends on your security requirements (e.g., every 90 days, annually).
+        <br><em>Tip:</em> This dashboard allows creating multiple keys, facilitating rotation. Create a new key, update your application(s), verify they work, and then revoke the old key.</li>
+      <li><strong>Revoke Immediately if Compromised:</strong> If you suspect a key has been leaked or compromised, revoke it immediately using the "Revoke" button on your keys dashboard.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h3>8. Use HTTPS Exclusively</h3>
+    <p>Ensure all API requests are made over HTTPS to encrypt the connection and prevent eavesdropping. Transmitting keys over unencrypted HTTP is highly insecure.</p>
+  </section>
+
+  <hr>
+
+  <p>By following these best practices, you significantly reduce the risk associated with API key management.</p>
+
+  <%# Link back to the keys index if appropriate %>
+  <% if defined?(api_keys.keys_path) %>
+    <p><%= link_to "Back to API Keys", api_keys.keys_path %></p>
+  <% end %>
+
+</article>

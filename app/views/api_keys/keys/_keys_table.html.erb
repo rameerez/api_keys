@@ -1,0 +1,52 @@
+<%# Partial for displaying the API keys table %>
+<%# Locals: active_keys (Active keys collection), inactive_keys (Inactive keys collection) %>
+
+<%# Combine active and inactive keys for a unified table view %>
+<% all_keys = active_keys + inactive_keys %>
+
+<section aria-labelledby="api-keys-heading">
+
+  <div class="api-keys-table-wrapper">
+    <% if all_keys.any? %>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Secret Key</th>
+            <th>Created</th>
+            <th>Expires</th>
+            <th>Last Used</th>
+            <th>Permissions</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <%# Render active keys first %>
+          <% active_keys.each do |key| %>
+            <%= render partial: 'api_keys/keys/key_row', locals: { key: key } %>
+          <% end %>
+
+          <%# Render inactive keys below, visually distinct %>
+          <% if inactive_keys.any? %>
+            <%# Optional: Add a visual separator if desired %>
+            <%# <tr><td colspan="7" style="border-top: 2px solid #ccc; text-align: center; padding-top: 1em; color: #555;">Inactive Keys</td></tr> %>
+
+            <% inactive_keys.each do |key| %>
+              <%= render partial: 'api_keys/keys/key_row', locals: { key: key, inactive: true } %>
+            <% end %>
+          <% end %>
+        </tbody>
+      </table>
+    <% else %>
+      <div style="text-align: center; padding: 2em;">
+        <h4>You don't have any API keys yet!</h4>
+        <p>Create your first API key to get started.</p>
+        <%# Consider adding a primary "Create Key" button here %>
+        <%#= link_to "Create New API Key", new_key_path, class: "button primary" %>
+      </div>
+    <% end %>
+  </div>
+
+</section>
+
+<%# The separate inactive keys section is now removed as they are integrated above. %>

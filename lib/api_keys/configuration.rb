@@ -21,6 +21,9 @@ module ApiKeys
     # Storage & Verification
     attr_accessor :hash_strategy, :secure_compare_proc, :key_store_adapter, :policy_provider
 
+    # Engine Configuration
+    attr_accessor :parent_controller
+
     # Optional Behaviors
     attr_accessor :default_max_keys_per_owner, :require_key_name
     attr_accessor :expire_after, :default_scopes, :track_requests_count
@@ -74,6 +77,9 @@ module ApiKeys
       # Must be a class name (String or Class) responding to `.new(api_key, request).valid?`
       # Default: "ApiKeys::BasePolicy" (a basic implementation should be provided)
       @policy_provider = "ApiKeys::BasePolicy" # Default authorization policy class name
+
+      # Engine Configuration
+      @parent_controller = '::ApplicationController'
 
       # Optional Behaviors
       @default_max_keys_per_owner = nil # No global key limit per owner

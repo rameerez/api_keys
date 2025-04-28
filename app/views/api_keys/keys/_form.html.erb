@@ -1,0 +1,106 @@
+<%# Shared form for creating and editing API Keys %>
+<%= form_with(model: [:keys, api_key], url: (api_key.persisted? ? key_path(api_key) : keys_path), local: true) do |form| %>
+  <% if api_key.errors.any? %>
+    <div style="color: red;">
+      <strong><%= pluralize(api_key.errors.count, "error") %> prohibited this API key from being saved:</strong>
+      <ul>
+        <% api_key.errors.full_messages.each do |message| %>
+          <li><%= message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <%# Fields only available on NEW %>
+  <% unless api_key.persisted? %>
+    <div>
+      <%= form.label :name, "Name (optional)" %>
+      <%= form.text_field :name, placeholder: "e.g., My Test Key" %>
+    </div>
+
+    <div>
+      <%= form.label :expires_at_preset, "Expiration" %>
+      <%= form.select :expires_at_preset,
+          options_for_select([
+            ["No Expiration", "no_expiration"],
+            ["7 days", "7_days"],
+            ["30 days", "30_days"],
+            ["60 days", "60_days"],
+            ["90 days", "90_days"],
+            ["365 days", "365_days"] # Common presets
+          ], api_key.expires_at.present? ? nil : "no_expiration"), # Default selection
+          {}, # html options
+          {} # data attributes
+      %>
+    </div>
+
+    <%# This assumes a variable `@available_scopes` is passed to the view, %>
+    <%# containing an array of scope strings allowed for this context. %>
+    <%# This list might come from global configuration or owner-specific settings. %>
+    <%# Example: @available_scopes = ["read", "write", "admin"] %>
+    <% @available_scopes = current_api_keys_user.class.api_keys_settings.dig(:default_scopes) %>
+    <% if defined?(@available_scopes) && @available_scopes.present? %>
+      <div>
+        <%= form.label :scopes, "Permissions" %>
+        <% @available_scopes.each do |scope| %>
+          <div class="form-check">
+            <%= form.check_box :scopes,
+                               { multiple: true, # Submits as an array
+                                 class: "form-check-input",
+                                 checked: true,
+                                 id: "api_key_scopes_#{scope.parameterize}" }, # Unique ID
+                               scope, # Value submitted when checked
+                               nil # Value submitted when unchecked (not needed here)
+                               %>
+            <%= form.label "scopes_#{scope.parameterize}", scope.humanize, class: "form-check-label" %>
+          </div>
+        <% end %>
+      </div>
+    <% end %>
+
+  <% end %>
+
+  <%# Fields editable on EDIT %>
+  <% if api_key.persisted? %>
+    <div>
+      <%= form.label :name, "Key Name (optional)" %>
+      <%= form.text_field :name %>
+    </div>
+
+    <%# Define available scopes for the edit form context %>
+    <%# This assumes the available scopes are the same as the default ones. %>
+    <%# Consider passing @available_scopes from the controller if logic is more complex. %>
+    <% @available_scopes = current_api_keys_user.class.api_keys_settings.dig(:default_scopes) %>
+    <% if defined?(@available_scopes) && @available_scopes.present? %>
+      <div>
+        <%= form.label :scopes, "Permissions / Scopes" %>
+        <% @available_scopes.each do |scope| %>
+          <div class="form-check">
+            <%= form.check_box :scopes,
+                               { multiple: true, # Submits as an array
+                                 class: "form-check-input",
+                                 checked: api_key.scopes&.include?(scope), # Check if scope is already assigned
+                                 id: "api_key_scopes_#{scope.parameterize}_edit" }, # Unique ID for edit form
+                               scope, # Value submitted when checked
+                               nil # Value submitted when unchecked (not needed here)
+                               %>
+            <%# Using the scope name directly for the label's `for` attribute requires matching the checkbox ID %>
+            <%= form.label "scopes_#{scope.parameterize}_edit", scope.humanize, class: "form-check-label" %>
+          </div>
+        <% end %>
+      </div>
+    <% end %>
+  <% end %>
+
+  <div>
+    <% if api_key.persisted? %>
+      <%= form.submit "Update Key" %>
+      <%= link_to "Cancel", keys_path %>
+    <% else %>
+      <h4><strong>Keep it safe</strong></h4>
+      <p>Your API key will only be shown once after creation. <strong>Your key cannot be recovered:</strong> copy it immediately and store it securely.</p>
+      <%= form.submit "Create API Key" %>
+      <%= link_to "Cancel", keys_path %>
+    <% end %>
+  </div>
+<% end %> 
