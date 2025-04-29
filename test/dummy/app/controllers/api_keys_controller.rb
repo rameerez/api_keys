@@ -1,10 +1,7 @@
 # frozen_string_literal: true
 
 class ApiKeysController < ApplicationController
-  # Include the core authentication logic from the gem
-  include ApiKeys::Authentication
-  # Include tenant resolution helpers (optional, but good for demo)
-  include ApiKeys::TenantResolution
+  include ApiKeys::Controller # provides authenticate_api_key! and current_api_key_owner
 
   # ====
   # Demonstration Endpoints for API Key Authentication
@@ -29,7 +26,7 @@ class ApiKeysController < ApplicationController
       message: "Authenticated action successful!",
       key_id: current_api_key&.id,
       key_name: current_api_key&.name,
-      owner_email: current_api_owner&.email, # Use owner helper
+      owner_email: current_api_key_owner&.email, # Use owner helper
       timestamp: Time.current
     }, status: :ok
   end
@@ -44,7 +41,7 @@ class ApiKeysController < ApplicationController
       key_id: current_api_key&.id,
       key_name: current_api_key&.name,
       key_scopes: current_api_key&.scopes,
-      owner_email: current_api_owner&.email,
+      owner_email: current_api_key_owner&.email,
       timestamp: Time.current
     }, status: :ok
   end
@@ -59,7 +56,7 @@ class ApiKeysController < ApplicationController
       key_id: current_api_key&.id,
       key_name: current_api_key&.name,
       key_scopes: current_api_key&.scopes,
-      owner_email: current_api_owner&.email,
+      owner_email: current_api_key_owner&.email,
       timestamp: Time.current
     }, status: :ok
   end
@@ -74,7 +71,7 @@ class ApiKeysController < ApplicationController
       key_id: current_api_key&.id,
       key_name: current_api_key&.name,
       key_scopes: current_api_key&.scopes,
-      owner_email: current_api_owner&.email,
+      owner_email: current_api_key_owner&.email,
       timestamp: Time.current
     }, status: :ok
   end
@@ -93,7 +90,7 @@ class ApiKeysController < ApplicationController
       message: "Rate limited action successful! You have not hit the limit yet.",
       key_id: current_api_key&.id,
       key_name: current_api_key&.name,
-      owner_email: current_api_owner&.email,
+      owner_email: current_api_key_owner&.email,
       timestamp: Time.current
     }, status: :ok
   end
