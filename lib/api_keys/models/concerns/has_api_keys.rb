@@ -22,7 +22,6 @@ module ApiKeys
           #     # Or using a block:
           #     has_api_keys do
           #       max_keys 10
-          #       token_prefix "cus_"
           #       require_name false
           #       default_scopes %w[read write]
           #     end
@@ -49,8 +48,7 @@ module ApiKeys
               # Default to global config values first
               max_keys: ApiKeys.configuration&.default_max_keys_per_owner,
               require_name: ApiKeys.configuration&.require_key_name,
-              default_scopes: ApiKeys.configuration&.default_scopes || [],
-              token_prefix: ApiKeys.configuration&.token_prefix # Add token_prefix default
+              default_scopes: ApiKeys.configuration&.default_scopes || []
             }.merge(options) # Merge keyword arguments first
 
             # Apply DSL block if provided, allowing overrides
@@ -83,11 +81,6 @@ module ApiKeys
 
           def default_scopes(value)
             @settings[:default_scopes] = Array(value)
-          end
-
-          def token_prefix(value)
-            # Store the string or proc provided
-            @settings[:token_prefix] = value
           end
 
           # Placeholder for future scope definitions
