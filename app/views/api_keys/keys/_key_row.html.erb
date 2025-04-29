@@ -1,5 +1,6 @@
 <tr>
   <td>
+    <%# Status indicator (no text originally, keeping it that way unless specified otherwise) %>
     <% if key.active? %>
       <span style="color: green;"></span>
     <% elsif key.revoked? %>
@@ -10,26 +11,42 @@
     <%= key.name.presence || "Secret key" %>
   </td>
   <td><code><%= key.masked_token %></code></td>
-  <td><%= time_ago_in_words(key.created_at) %> ago</td>
+
+
+  <td title="<%= key.created_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
+    <%= time_ago_in_words(key.created_at) %> ago
+  </td>
+
+
   <td>
     <% if key.expires_at? %>
       <% if key.expired? %>
-        <strong style="color: red;">Expired <%= time_ago_in_words(key.expires_at) %> ago</strong>
+        <strong style="color: red;" title="<%= key.expires_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
+          Expired <%= time_ago_in_words(key.expires_at) %> ago
+        </strong>
       <% else %>
-        Expires in <%= time_ago_in_words(key.expires_at) %>
+        <span title="<%= key.expires_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
+          Expires in <%= time_ago_in_words(key.expires_at) %>
+        </span>
       <% end %>
     <% else %>
       <em>Never expires</em>
     <% end %>
   </td>
+
+
   <td>
     <% if key.last_used_at? %>
-      <%= time_ago_in_words(key.last_used_at) %> ago
+      <span title="<%= key.last_used_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
+        <%= time_ago_in_words(key.last_used_at) %> ago
+      </span>
       <%# TODO: Add relative time check (e.g., "within last 3 months") %>
     <% else %>
       <em>Never used</em>
     <% end %>
   </td>
+
+
   <td>
     <% if key.scopes.present? %>
       <% key.scopes.each do |scope| %>
