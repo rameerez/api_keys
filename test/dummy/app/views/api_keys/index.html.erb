@@ -1,0 +1,140 @@
+<header class="demo-header">
+  <h1>🔑 <code>api_keys</code></h1>
+  <p>Demo app for the 🔑 <a href="http://github.com/rameerez/api_keys">api_keys</a> Ruby gem.</p>
+</header>
+
+<section class="get-api-key">
+  <h2>🔑 Get an API Key</h2>
+
+  <aside class="demo-user-info">
+    <strong>🔑 Your API Keys</strong>
+    <% if @api_keys.any? %>
+      <ul class="api-keys-list">
+        <% @api_keys.each do |key| %>
+          <li class="api-key-item <%= key.active? ? 'active' : 'inactive' %>">
+            <code class="masked-token"><%= key.masked_token %></code>
+          </li>
+        <% end %>
+      </ul>
+    <% else %>
+      <p>No API keys found. To start, get an API key!</p>
+    <% end %>
+  </aside>
+
+  <p>The <code>api_keys</code> gem provides a dashboard where your users can self-issue API keys and manage them. Simply mount it in your <code>routes.rb</code> and you're ready to go:</p>
+
+  <%= link_to "➡️ Go to the API Keys hosted portal to get an API key", api_keys_path, class: "button button-primary" %>
+</section>
+
+<main class="demo-main">
+
+  <section class="demo-tester">
+    <h2>🧪 API Key Tester</h2>
+    <p>After you've gotten an API key, you can use it here to test the demo API endpoints:</p>
+
+    <div data-controller="apikey-tester">
+      <div class="form-group">
+        <label for="api-token-input">Your API Key:</label>
+        <input id="api-token-input" type="text" data-apikey-tester-target="tokenInput" placeholder="Paste full token here (e.g., ak_live_...)" data-action="input->apikey-tester#updateCurlDisplay">
+      </div>
+
+      <div class="form-group radio-group">
+        <span>Send Via:</span>
+        <label>
+          <input type="radio" name="sendMethod" value="header" data-apikey-tester-target="sendMethodInput" checked data-action="change->apikey-tester#updateCurlDisplay">
+          Header (<code>Authorization: Bearer TOKEN</code>) <span class="recommended">(Recommended)</span>
+        </label>
+        <label>
+          <input type="radio" name="sendMethod" value="query" data-apikey-tester-target="sendMethodInput" data-action="change->apikey-tester#updateCurlDisplay">
+          Query Param (<code>?api_key=TOKEN</code>)
+        </label>
+        <small>(Query param requires <code>config.query_param</code> setting in initializer)</small>
+      </div>
+
+      <div class="button-group">
+        <strong>Test API Endpoints:</strong>
+        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/public" data-apikey-tester-method-param="GET">
+          GET /public (No Auth)
+        </button>
+        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/authenticated">
+          GET /authenticated (Any Valid Key)
+        </button>
+        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/scoped/read">
+          GET /scoped/read (Scope: 'read')
+        </button>
+        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/scoped/write" data-apikey-tester-method-param="POST">
+          POST /scoped/write (Scope: 'write')
+        </button>
+        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/scoped/admin">
+          GET /scoped/admin (Scope: 'admin', will always fail)
+        </button>
+      </div>
+
+      <div class="result-section">
+        <h4>Result for <code data-apikey-tester-target="testedUrl">(no request yet)</code>:</h4>
+        <pre data-apikey-tester-target="output" class="api-output">
+(Click a button above to test an endpoint)
+        </pre>
+      </div>
+
+      <div class="curl-section">
+        <h4>Equivalent cURL:</h4>
+        <pre data-apikey-tester-target="curlOutput" class="curl-command">
+(Select an action and enter a token to see the cURL command)
+        </pre>
+        <button class="button-tiny copy-button" data-target="curlOutput">Copy cURL</button>
+      </div>
+
+    </div>
+  </section>
+</main>
+
+<footer class="demo-footer">
+  <p>Current demo user ID: <kbd><%= session[:demo_user_identifier][0..4] %></kbd> <em>(a unique demo user is created per session)</em></p>
+  <hr/>
+  The <a href="https://github.com/rameerez/api_keys"><code>api_keys</code></a> Ruby gem was created by <a href="https://x.com/rameerez">@rameerez</a> and is licensed under the MIT license.
+</footer>
+
+<style>
+  .demo-user-info {
+    padding: 1.5em 1em;
+  }
+
+  .demo-user-info ul {
+    padding-left: 1em;
+  }
+
+  .demo-main input[type="text"] {
+    width: 100%;
+  }
+
+  .demo-main .form-group,
+  .demo-main .button-group {
+    margin-top: 2.4em;
+  }
+
+  .demo-main .button-group button {
+    display: block;
+    margin-top: 0.9em;
+  }
+</style>
+
+<script>
+  // Simple copy-to-clipboard for buttons
+  document.addEventListener('click', function(event) {
+    // Handle cURL command copying
+    if (event.target.matches('.copy-button[data-target="curlOutput"]')) {
+      const curlPre = document.querySelector('pre[data-apikey-tester-target="curlOutput"]');
+      if (curlPre) {
+        navigator.clipboard.writeText(curlPre.textContent).then(() => {
+          const originalText = event.target.textContent;
+          event.target.textContent = 'Copied!';
+          setTimeout(() => { event.target.textContent = originalText; }, 1500);
+        }).catch(err => {
+          console.error('Failed to copy cURL command: ', err);
+          alert('Failed to copy cURL command.');
+        });
+      }
+    }
+  });
+</script>
