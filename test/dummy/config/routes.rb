@@ -29,6 +29,9 @@ Rails.application.routes.draw do
     post "/scoped/write", to: "api_keys#write_action"
     get "/scoped/admin", to: "api_keys#admin_action"
 
+    # New route for rate limiting demo
+    get "/rate_limited", to: "api_keys#rate_limited_action"
+
     # Potentially add routes for testing tenant resolution later
     # get "/tenant_info", to: "api_keys#tenant_action"
   end

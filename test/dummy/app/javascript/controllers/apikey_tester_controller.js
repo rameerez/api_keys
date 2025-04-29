@@ -174,6 +174,12 @@ export default class extends Controller {
         `❌ Error (${response.status})\n\n` +
         outputMessage.substring(outputMessage.indexOf("\n") + 2);
       this.outputTarget.style.color = "red";
+    } else if (response.status === 429) {
+      // Explicit handling for Rate Limiting
+      outputMessage =
+        `⏱️ Rate Limited (${response.status})\n\n` +
+        outputMessage.substring(outputMessage.indexOf("\n") + 2);
+      this.outputTarget.style.color = "orange"; // Or maybe blue?
     } else {
       outputMessage =
         `⚠️ Response (${response.status})\n\n` +

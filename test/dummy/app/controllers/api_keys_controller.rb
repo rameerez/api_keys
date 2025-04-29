@@ -79,6 +79,25 @@ class ApiKeysController < ApplicationController
     }, status: :ok
   end
 
+  # --- Rate Limited Action --- (Requires Valid Key)
+  # GET /demo_api/rate_limited
+  # NOTE: Requires Rails 8+, Kredis 1.7+, and Redis
+  before_action -> { authenticate_api_key! }, only: [:rate_limited_action]
+  rate_limit to: 2, within: 10.seconds,
+             by: -> { current_api_key&.id }, # Limit per API key ID
+             with: -> { render json: { error: "rate_limited", message: "Too many requests (max 2 per 10 seconds per key). Please wait.", key_id: current_api_key&.id }, status: :too_many_requests },
+             only: [:rate_limited_action]
+  def rate_limited_action
+    render json: {
+      status: "success",
+      message: "Rate limited action successful! You have not hit the limit yet.",
+      key_id: current_api_key&.id,
+      key_name: current_api_key&.name,
+      owner_email: current_api_owner&.email,
+      timestamp: Time.current
+    }, status: :ok
+  end
+
 
   # ====
   # Index page for the demo app

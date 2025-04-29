@@ -65,8 +65,11 @@
         <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/scoped/write" data-apikey-tester-method-param="POST">
           POST /scoped/write (Scope: 'write')
         </button>
-        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/scoped/admin">
-          GET /scoped/admin (Scope: 'admin', will always fail)
+        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/scoped/admin" data-apikey-tester-method-param="POST">
+          POST /scoped/admin (Scope: 'admin')
+        </button>
+        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/rate_limited">
+          GET /rate_limited (Max: 2 calls every 10 seconds, per key)
         </button>
       </div>
 
