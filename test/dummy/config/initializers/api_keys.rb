@@ -10,13 +10,13 @@ ApiKeys.configure do |config|
   # The query parameter name to check as a fallback if the header is missing.
   # Set to nil to disable query parameter lookup (recommended for security).
   # Default: nil
-  # config.query_param = "api_key"
+  config.query_param = "api_key"
 
   # === Token Generation ===
 
   # A lambda/proc that returns the prefix for newly generated tokens.
   # Defaults to "ak_".
-  # config.token_prefix = -> { "ak_" }
+  config.token_prefix = -> { "ak_demo_" }
 
   # The number of random bytes to generate for the token (before encoding).
   # More bytes = more entropy = harder to guess.
