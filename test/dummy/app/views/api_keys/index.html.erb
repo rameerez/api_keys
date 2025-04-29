@@ -59,14 +59,14 @@
         <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/authenticated">
           GET /authenticated (Any Valid Key)
         </button>
-        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/scoped/read">
-          GET /scoped/read (Scope: 'read')
+        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/read">
+          GET /read (Scope: 'read')
         </button>
-        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/scoped/write" data-apikey-tester-method-param="POST">
-          POST /scoped/write (Scope: 'write')
+        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/write" data-apikey-tester-method-param="POST">
+          POST /write (Scope: 'write')
         </button>
-        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/scoped/admin" data-apikey-tester-method-param="POST">
-          POST /scoped/admin (Scope: 'admin')
+        <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/admin" data-apikey-tester-method-param="POST">
+          POST /admin (Scope: 'admin'; always fails)
         </button>
         <button data-action="click->apikey-tester#testAction" data-apikey-tester-url-param="/demo_api/rate_limited">
           GET /rate_limited (Max: 2 calls every 10 seconds, per key)

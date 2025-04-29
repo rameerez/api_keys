@@ -35,7 +35,7 @@ class ApiKeysController < ApplicationController
   end
 
   # --- Read Action --- (Requires 'read' scope)
-  # GET /demo_api/scoped/read
+  # GET /demo_api/read
   before_action -> { authenticate_api_key!(scope: "read") }, only: [:read_action]
   def read_action
     render json: {
@@ -50,7 +50,7 @@ class ApiKeysController < ApplicationController
   end
 
   # --- Write Action --- (Requires 'write' scope)
-  # GET or POST /demo_api/scoped/write
+  # GET or POST /demo_api/write
   before_action -> { authenticate_api_key!(scope: "write") }, only: [:write_action]
   def write_action
     render json: {
@@ -65,7 +65,7 @@ class ApiKeysController < ApplicationController
   end
 
   # --- Admin Action --- (Requires 'admin' scope)
-  # GET or POST /demo_api/scoped/admin
+  # POST /demo_api/admin
   before_action -> { authenticate_api_key!(scope: "admin") }, only: [:admin_action]
   def admin_action
     render json: {

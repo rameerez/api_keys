@@ -24,10 +24,10 @@ Rails.application.routes.draw do
   scope "/demo_api", controller: :api_keys do
     get "/public", to: "api_keys#public_action"
     get "/authenticated", to: "api_keys#authenticated_action"
-    get "/scoped/read", to: "api_keys#read_action"
+    get "/read", to: "api_keys#read_action"
     # Add a POST endpoint for write/admin to show method handling
-    post "/scoped/write", to: "api_keys#write_action"
-    get "/scoped/admin", to: "api_keys#admin_action"
+    post "/write", to: "api_keys#write_action"
+    post "/admin", to: "api_keys#admin_action"
 
     # New route for rate limiting demo
     get "/rate_limited", to: "api_keys#rate_limited_action"
