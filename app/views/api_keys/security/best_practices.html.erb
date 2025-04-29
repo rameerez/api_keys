@@ -33,7 +33,7 @@
     <ul>
       <li><strong>Environment Variables:</strong> The simplest secure method for many applications. Set an environment variable (e.g., `YOUR_SERVICE_API_KEY`) on your server and access it in your code (e.g., `ENV['YOUR_SERVICE_API_KEY']` in Ruby/Rails).</li>
       <li><strong>Secrets Management Services:</strong> For more robust needs, especially in production or team environments, use dedicated services like HashiCorp Vault, AWS Secrets Manager, Google Secret Manager, Doppler, etc. These provide encrypted storage, access control, auditing, and often automated rotation capabilities.</li>
-      <li><strong>Encrypted Configuration Files:</strong> If using configuration files, ensure they are encrypted (e.g., Rails encrypted credentials `config/credentials.yml.enc`).</li>
+      <li><strong>Encrypted Configuration Files:</strong> If using configuration files, ensure they are encrypted (e.g., Rails encrypted credentials `config/credentials.yml.enc` and `Rails.application.credentials`). <%= link_to "More info here", "https://guides.rubyonrails.org/security.html#custom-credentials", target: "_blank", rel: "noopener noreferrer", class: "text-primary" %>.</li>
     </ul>
   </section>
 
@@ -64,7 +64,7 @@
 
   <%# Link back to the keys index if appropriate %>
   <% if defined?(api_keys.keys_path) %>
-    <p><%= link_to "Back to API Keys", api_keys.keys_path %></p>
+    <p><%= link_to "Back to API Keys", api_keys.keys_path, class: "text-primary" %></p>
   <% end %>
 
 </article>
