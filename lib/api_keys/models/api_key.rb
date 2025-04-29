@@ -31,8 +31,8 @@ module ApiKeys
     # validates :metadata, presence: true # Default handled by attribute def
     validates :name,
               length: { maximum: 60 },
-              # Allow letters, numbers, underscores, hyphens. No leading/trailing spaces.
-              format: { with: /\A[a-zA-Z0-9_-]+\z/, message: "can only contain letters, numbers, underscores, and hyphens" },
+              # Allow letters, numbers, underscores, hyphens, and spaces. No leading/trailing spaces.
+              format: { with: /\A[a-zA-Z0-9_ -]+\z/, message: "can only contain letters, numbers, underscores, hyphens, and spaces (no leading / trailing spaces)" },
               allow_blank: true # Apply length and format only if name is present
 
     validates :name, presence: true, if: :name_required? # Only require presence conditionally
