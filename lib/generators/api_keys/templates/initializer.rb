@@ -141,6 +141,17 @@ ApiKeys.configure do |config|
   # Default: ->(result) { }
   # config.after_authentication = ->(result) { MyAnalytics.track_auth(result) }
 
+  # === Engine UI Configuration ===
+
+  # The URL or path helper method (as a string) to link back to from the engine's UI.
+  # Useful when embedding the engine within a larger application context.
+  # Default: "/" (Root path)
+  # config.return_url = "/app/settings"
+
+  # The text displayed for the return link.
+  # Default: "‹ Home"
+  # config.return_text = "‹ Back to Settings"
+
   # === Debugging ===
 
   # Enable verbose logging for debugging purposes.

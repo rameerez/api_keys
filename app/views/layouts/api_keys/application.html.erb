@@ -79,6 +79,19 @@
 
   </style>
 
+  <nav class="nav container">
+    <div class="nav-left">
+      <%# Use configured return URL and text %>
+      <%= link_to ApiKeys.configuration.return_text, ApiKeys.configuration.return_url %>
+      <%# Link to keys index using engine's path helper %>
+      <%= link_to "My API Keys", api_keys.keys_path, class: "active" %>
+    </div>
+    <div class="nav-center">
+    </div>
+    <div class="nav-right">
+    </div>
+  </nav>
+
   <aside id="api-keys-flash-container" class="container text-center">
     <%# Flash Messages %>
     <% flash.each do |type, msg| %>

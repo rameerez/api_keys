@@ -46,6 +46,9 @@ module ApiKeys
     # Global Async Toggle
     attr_accessor :enable_async_operations
 
+    # Engine UI Configuration
+    attr_accessor :return_url, :return_text
+
     # Debugging
     attr_accessor :debug_logging
 
@@ -107,6 +110,10 @@ module ApiKeys
       # Callbacks
       @before_authentication = DEFAULT_CALLBACK
       @after_authentication = DEFAULT_CALLBACK
+
+      # Engine UI Configuration
+      @return_url = "/" # Default fallback path
+      @return_text = "‹ Home" # Default link text
 
       # Debugging
       @debug_logging = false # Disable debug logging by default (warn and error get logged regardless of this)

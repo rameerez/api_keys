@@ -5,7 +5,8 @@
 
   <%# Add navigation links %>
   <p style="margin-top: 2em;">
-    <%= link_to "Done", keys_path, class: "button" %>
+    <%= link_to ApiKeys.configuration.return_text, ApiKeys.configuration.return_url, class: "button outline" %>
+    <%= link_to "All API Keys", keys_path, class: "button" %>
   </p>
 
 </div>
