@@ -16,6 +16,7 @@ ApiKeys.configure do |config|
 
   # A lambda/proc that returns the prefix for newly generated tokens.
   # Defaults to "ak_".
+  # Once set, do NOT change or all previously generated keys may become invalid!
   # config.token_prefix = -> { "ak_" }
 
   # The number of random bytes to generate for the token (before encoding).
