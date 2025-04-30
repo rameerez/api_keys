@@ -1,12 +1,14 @@
-# 🔑 `api_keys` – Add API keys to your Rails app
+# 🔑 `api_keys` – Gate your Rails API with secure, self-serve API keys
 
 [![Gem Version](https://badge.fury.io/rb/pay.svg)](https://badge.fury.io/rb/pay)
 
-`api_keys` turns your Rails app into a secure, public-ready API. It manages API key generation, authentication, revocation, expiration, per-key permissions; and provides a self-serve dashboard for your users to self-issue and manage their API keys themselves.
+`api_keys` makes it dead simple to add secure, production-ready API key authentication to your Rails app. Generate keys, restrict scopes, auto-expire tokens, revoke tokens. It also provides a self-serve dashboard for your users to self-issue and manage their API keys themselves. All tokens are hashed with bcrypt by default, and never stored in plaintext.
 
 ![API Keys Dashboard](api_keys_dashboard.webp)
 
 [ 🟢 [Live interactive demo website](https://apikeys.rameerez.com) ]
+
+Check out my other 💎 Ruby gems: [`allgood`](https://github.com/rameerez/allgood) · [`usage_credits`](https://github.com/rameerez/usage_credits) · [`profitable`](https://github.com/rameerez/profitable) · [`nondisposable`](https://github.com/rameerez/nondisposable)
 
 ## Installation
 
@@ -25,7 +27,7 @@ rails db:migrate
 
 And you're done!
 
-## Usage
+## Quick Start
 
 Just add `has_api_keys` to your desired model. For example, if you want your `User`s to have API keys, you'd have:
 
@@ -58,13 +60,13 @@ To achieve that, the gem provides a ready-to-go dashboard you can just mount in 
 mount ApiKeys::Engine => '/settings/api-keys'
 ```
 
-The dashboard provides an easy way for your users to:
+Now your users can:
 - self-issue new API keys
-- set expiration dates for keys
-- choose permission scopes for keys
-- add and edit the name of keys,
-- revoke keys
-- see the status of all keys
+- set expiration dates
+- attach scopes / permissions to individual keys
+- add and edit the key names
+- revoke instantly
+- see the status of all their keys
 
 It provides an UI with everything you'd expect from an API keys dashboard, working right out of the box:
 
@@ -74,13 +76,16 @@ To make the experience between your app and the `api_keys` dashboard more seamle
 
 You can check out the dashboard on the [live demo website](https://apikeys.rameerez.com).
 
+
+## How it works
+
 ### Issuing new API keys
 
 If you want to write your own front-end instead of using the provided dashboard, or just want to issue API keys at any point, you can:
 
 ```ruby
 @api_key = @user.create_api_key!(
-  name: "my-project",
+  name: "my-key",
   scopes: "['demo:read', 'demo:write']",
   expires_at: 42.days.from_now
 )
@@ -170,7 +175,7 @@ class User < ApplicationRecord
 end
 ```
 
-You can get as granular with your scopes as you'd like, think for example AWS-like strings of the form: `"s3:GetObject"` – this is all up to you!
+You can get as granular with your scopes as you'd like, think for example AWS-like strings of the form: `"s3:GetObject"` – this is all up to you! We recommend sticking to simple verbs ("read", "write") or "resource:action", though.
 
 You can check if an API key is allowed to do actions by checking its scopes:
 ```ruby
@@ -264,7 +269,7 @@ This `rate_limit` feature depends on Rails 8+ and an active, well-configured cac
 
 The gem installation creates an initializer at `config/initializers/api_keys.rb`
 
-The default initializer is self-explainatory and self-documented, please consider spending a bit of time reading through it if you want to fine-tune the gem.
+The default initializer is self-explanatory and self-documented, please consider spending a bit of time reading through it if you want to fine-tune the gem.
 
 Some highlights:
 
@@ -320,6 +325,25 @@ There's also a `track_requests_count` config option that you can turn on so the 
 ```
 
 But again, this is turned off by default for performance purposes, and depends on having a working, well-configured Active Job backend.
+
+## Enterprise-ready by design
+The `api_keys` gem ships with:
+
+ - Flexible storage
+ - Async hooks
+ - ActiveJob support
+ - Polymorphic ownership (User, Org, etc.)
+ - Custom scopes
+ - Production caching
+ - Tracking of last time each key was used
+ - Usage tracking
+ - SHA256 fallback
+
+Making it enterprise-ready, built with extensibility and compliance in mind.
+
+## Roadmap
+  - [ ] Automatic rotation policy helpers
+  - [ ] Key-pair / HMAC option
 
 ## Demo Rails app
 
