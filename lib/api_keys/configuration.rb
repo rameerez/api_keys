@@ -71,7 +71,7 @@ module ApiKeys
       @token_alphabet = :base58 # Avoid ambiguous chars (0, O, I, l)
 
       # Storage & Verification
-      @hash_strategy = :bcrypt # Recommended: :bcrypt or :sha256
+      @hash_strategy = :sha256 # sha256 or :bcrypt
       @secure_compare_proc = ->(a, b) { ActiveSupport::SecurityUtils.secure_compare(a, b) }
       @key_store_adapter = :active_record # Default storage backend
       # TODO: Define and implement ApiKeys::BasePolicy in later versions

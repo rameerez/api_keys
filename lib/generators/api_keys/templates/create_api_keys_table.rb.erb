@@ -9,7 +9,7 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       # Identifiable prefix (e.g., "ak_live_", "ak_test_") for env/debugging
       t.string   :prefix,        null: false
 
-      # Secure, salted digest of the token (e.g., bcrypt hash, 60 chars)
+      # Secure digest of the token (e.g., sha256 or bcrypt hash)
       t.string   :token_digest,  null: false
 
       # Algorithm used for the digest (e.g., "bcrypt", "sha256")

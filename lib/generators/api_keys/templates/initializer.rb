@@ -33,10 +33,10 @@ ApiKeys.configure do |config|
   # === Storage & Verification ===
 
   # The hashing strategy used to store token digests in the database.
-  # :bcrypt (recommended) - includes salt, computationally expensive
-  # :sha256 - faster, but less secure if database is compromised (no salt by default here)
-  # Default: :bcrypt
-  # config.hash_strategy = :sha256
+  # :sha256 (recommended) - fast, performant, O(1) lookups, but less secure if database is compromised (salted with prefix only)
+  # :bcrypt - for security-critical tokens: includes salt, computationally expensive, can cause lags, 10x-50x slower than sha256
+  # Default: :sha256
+  # config.hash_strategy = :bcrypt
 
   # === Optional Behaviors ===
 
