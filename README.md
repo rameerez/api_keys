@@ -1,4 +1,4 @@
-# 🔑 `api_keys` – Protect your Rails API with secure, self-serve API keys
+# 🔑 `api_keys` – Secure, self-serve API keys for your Rails app
 
 [![Gem Version](https://badge.fury.io/rb/pay.svg)](https://badge.fury.io/rb/pay)
 
