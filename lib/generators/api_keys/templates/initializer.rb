@@ -69,8 +69,8 @@ ApiKeys.configure do |config|
   # (like revocation or expiration) to take effect for already cached keys.
   # Set to 0 or nil to disable caching.
   # Uses Rails.cache.
-  # Default: 5.minutes
-  # config.cache_ttl = 15.minutes
+  # Default: 5.seconds
+  # config.cache_ttl = 30.seconds # Higher TTL = higher risk of “revoked-but-still-valid” edge cases
 
   # === Security ===
 

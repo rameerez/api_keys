@@ -91,7 +91,7 @@ module ApiKeys
       @default_scopes = [] # No default scopes assigned globally
 
       # Performance
-      @cache_ttl = 5.minutes # More sensible default TTL for authentication caching
+      @cache_ttl = 5.seconds # Good balance: fast revocation, mostly-cached – still allows most repeated requests to benefit from cache
 
       # Security
       @https_only_production = true # Warn if used over HTTP in production
