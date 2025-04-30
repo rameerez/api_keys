@@ -1,8 +1,8 @@
-# 🔑 `api_keys` – Gate your Rails API with secure, self-serve API keys
+# 🔑 `api_keys` – Protect your Rails API with secure, self-serve API keys
 
 [![Gem Version](https://badge.fury.io/rb/pay.svg)](https://badge.fury.io/rb/pay)
 
-`api_keys` makes it dead simple to add secure, production-ready API key authentication to your Rails app. Generate keys, restrict scopes, auto-expire tokens, revoke tokens. It also provides a self-serve dashboard for your users to self-issue and manage their API keys themselves. All tokens are hashed securely by default, and never stored in plaintext.
+`api_keys` makes it simple to add secure, production-ready API key authentication to any Rails app. Generate keys, restrict scopes, auto-expire tokens, revoke tokens. It also provides a self-serve dashboard for your users to self-issue and manage their API keys themselves. All tokens are hashed securely by default, and never stored in plaintext.
 
 [ 🟢 [Live interactive demo website](https://apikeys.rameerez.com) ]
 
