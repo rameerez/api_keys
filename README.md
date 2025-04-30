@@ -29,7 +29,7 @@ And you're done!
 
 ## Quick Start
 
-Just add `has_api_keys` to your desired model. For example, if you want your `User`s to have API keys, you'd have:
+Just add `has_api_keys` to your desired model. For example, if you want your `User` records to have API keys, you'd have:
 
 ```ruby
 class User < ApplicationRecord
@@ -48,7 +48,7 @@ class User < ApplicationRecord
 end
 ```
 
-It'd work the same if you want your `Organization`s or your `Project`s to have API keys.
+It'd work the same if you want your `Organization` or your `Project` records to have API keys.
 
 ### Mount the dashboard engine
 
@@ -81,12 +81,12 @@ You can check out the dashboard on the [live demo website](https://apikeys.ramee
 
 ### Issuing new API keys
 
-If you want to write your own front-end instead of using the provided dashboard, or just want to issue API keys at any point, you can:
+If you want to write your own front-end instead of using the provided dashboard, or just want to issue API keys at any point, you can do it with `create_api_key!`:
 
 ```ruby
 @api_key = @user.create_api_key!(
   name: "my-key",
-  scopes: "['demo:read', 'demo:write']",
+  scopes: "['read', 'write']",
   expires_at: 42.days.from_now
 )
 
@@ -151,7 +151,7 @@ And for any API key, you can always display a safe, user-friendly masked token t
 # => "ak_demo_••••yZn9"
 ```
 
-### Scopes: API Key permissions
+### Scopes: define and verify API Key permissions
 
 Users can limit what each API key does by selecting scopes, and you can define those scopes.
 
@@ -175,7 +175,7 @@ class User < ApplicationRecord
 end
 ```
 
-You can get as granular with your scopes as you'd like, think for example AWS-like strings of the form: `"s3:GetObject"` – this is all up to you! We recommend sticking to simple verbs ("read", "write") or "resource:action", though.
+You can get as granular with your scopes as you'd like, think for example AWS-like strings of the form: `"s3:GetObject"` – how you set this up is up to you! Scopes take any string: we recommend sticking to simple verbs (`"read"`, `"write"`) or `"resource:action"` (case-sensitive!)
 
 You can check if an API key is allowed to do actions by checking its scopes:
 ```ruby
