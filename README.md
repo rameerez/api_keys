@@ -2,11 +2,11 @@
 
 [![Gem Version](https://badge.fury.io/rb/pay.svg)](https://badge.fury.io/rb/pay)
 
-`api_keys` makes it dead simple to add secure, production-ready API key authentication to your Rails app. Generate keys, restrict scopes, auto-expire tokens, revoke tokens. It also provides a self-serve dashboard for your users to self-issue and manage their API keys themselves. All tokens are hashed with bcrypt by default, and never stored in plaintext.
-
-![API Keys Dashboard](api_keys_dashboard.webp)
+`api_keys` makes it dead simple to add secure, production-ready API key authentication to your Rails app. Generate keys, restrict scopes, auto-expire tokens, revoke tokens. It also provides a self-serve dashboard for your users to self-issue and manage their API keys themselves. All tokens are hashed securely by default, and never stored in plaintext.
 
 [ 🟢 [Live interactive demo website](https://apikeys.rameerez.com) ]
+
+![API Keys Dashboard](api_keys_dashboard.webp)
 
 Check out my other 💎 Ruby gems: [`allgood`](https://github.com/rameerez/allgood) · [`usage_credits`](https://github.com/rameerez/usage_credits) · [`profitable`](https://github.com/rameerez/profitable) · [`nondisposable`](https://github.com/rameerez/nondisposable)
 
@@ -97,7 +97,7 @@ plaintext_token = @api_key.token
 
 For security reasons, the **gem does not store the generated key** in the database.
 
-We only store a salted bcrypt hash, so the API key / API token itself is only available in plaintext immediately after creation, as `@api_key.token` – the `.token` method won't work any other time.
+We only store a salted hash, so the API key / API token itself is only available in plaintext immediately after creation, as `@api_key.token` – the `.token` method won't work any other time.
 
 With this token, your users can make calls to your endpoints by attaching it as an `"Authorization: Bearer ak_123abc..."` in their HTTP calls headers, like this:
 
@@ -264,6 +264,8 @@ end
 
 This `rate_limit` feature depends on Rails 8+ and an active, well-configured cache store, like [`solid_cache`](https://github.com/rails/solid_cache), which comes by default in Rails 8.
 
+If you're still on early versions of Rails, you can still use `api_keys`! No need to implement `rate_limit` – just an idea if you're already on Rails 8!
+
 
 ## Configuration and settings
 
@@ -287,19 +289,42 @@ This is not recommended security-wise because you'll be leaking API tokens every
 config.query_param = "api_key"
 ```
 
-### Changing the hashing function to SHA256
+### Changing the hashing function to `bcrypt` for maximum security
 
-By default, the `api_keys` gem hashes tokens using `bcrypt`, because the token gets salted and it's considered a secure storage for password-like strings.
+By default, the `api_keys` gem hashes tokens using `sha256`, for fast token lookup and low-latency API authentication. Tokens are salted via their prefix, and only stored as secure digests.
 
-The downside is that it's computationally more expensive, especially when searching a database.
-
-In particular, you may see performance issues when trying to find the API Key Active Record for a particular token. We cache all lookup results to alleviate this issue and make this gem production-ready.
-
-However, if you're hitting performance issues, you can change the hashing function from `bcrypt` to `sha256` easily with:
+If you need slower, password-grade hashing (e.g., for extremely sensitive tokens), you can switch to bcrypt:
 
 ```ruby
-config.hash_strategy = :sha256
+config.hash_strategy = :bcrypt
 ```
+
+Note: bcrypt is ~50–100x slower than SHA256. For most API use cases, sha256 is more than sufficient.
+
+`sha256` has O(1) lookup, `bcrypt` doesn't. This means that if you switch to `bcrypt`, you may observe ~100ms lags on every API call, for every token auth that's not cached.
+
+For 99% of APIs, `sha256` is more than secure enough — and far better for performance.
+
+### Increase cache TTL
+
+We cache token lookups to improve performance, especially for repeated requests. This keeps `bcrypt` and `sha256` strategies fast under load.
+
+By default, we use a 5-second TTL, which offers a strong balance: most requests benefit from caching, while revoked keys stop working almost immediately.
+
+If security is your top priority (e.g. rapid revocation after suspected key compromise), you can disable caching entirely:
+
+```ruby
+config.cache_ttl = 0.seconds # disables caching
+```
+
+If performance matters more than real-time revocation, increase the TTL to reduce DB hits:
+
+```ruby
+config.cache_ttl = 2.minutes # boosts performance at cost of slower revocation
+```
+
+⚠️ Security note: Revoked keys may remain valid for up to cache_ttl. For strict real-time revocation, set cache_ttl = 0.
+
 
 ## Callbacks: analytics, logging, usage monitoring & auditing
 
