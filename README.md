@@ -41,6 +41,7 @@ You can also customize how many maximum keys your users can have by passing a bl
 class User < ApplicationRecord
   has_api_keys do
     max_keys 10 # only 10 active API keys per user allowed
+    require_name true # always require users to set a name for each API key
   end
 end
 ```
@@ -196,9 +197,20 @@ If you just want to check the presence of a valid (active, non-expired, non-revo
 before_action :authenticate_api_key!
 ```
 
-This will return `401 Unauthenticated` for anything that's not a valid API key.
+And of course, if you want to have unauthenticated endpoints:
 
-This will also load the valid API key, if any, to a `current_api_key` variable, that returns an API Key object (`ApiKeys::ApiKey`) on which you can call all the methods we've outlined above, and access any attribute (like `current_api_key.expires_at`)
+```ruby
+before_action :authenticate_api_key!, except: [:unauthenticated_endpoint]
+```
+
+`authenticate_api_key!` will return `401 Unauthenticated` for anything that's not a valid API key.
+
+It will also load the valid API key, if any, to a `current_api_key` variable, that returns an API Key object (`ApiKeys::ApiKey`) on which you can call all the methods we've outlined above, and access any attribute, like:
+
+```ruby
+current_api_key.expires_at
+# => 2025-05-25 05:25:05.250525000 UTC +00:00
+```
 
 If the API key has an owner, you can also access it either with `current_api_key.owner` or with the helper method `current_api_key_owner`
 
@@ -284,7 +296,7 @@ However, if you're hitting performance issues, you can change the hashing functi
 config.hash_strategy = :sha256
 ```
 
-## Callbacks: logging, usage monitoring & auditing
+## Callbacks: analytics, logging, usage monitoring & auditing
 
 The gem offers two callbacks that get executed every single time an API key is checked and authenticated (through `authenticate_api_key!` in controllers, for example)
 
@@ -312,10 +324,6 @@ But again, this is turned off by default for performance purposes, and depends o
 ## Demo Rails app
 
 There's a demo Rails app showcasing the features in the `api_keys` gem under `test/dummy`. It's currently deployed to `apikeys.rameerez.com`. If you want to run it yourself locally, you can just clone this repo, `cd` into the `test/dummy` folder, and then `bundle` and `rails s` to launch it. You can examine the code of the demo app to better understand the gem.
-
-## TODO
-
-- [ ] 
 
 ## Testing
 
