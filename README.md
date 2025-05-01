@@ -52,7 +52,7 @@ It'd work the same if you want your `Organization` or your `Project` records to 
 
 ### Mount the dashboard engine
 
-The goal of `api_keys` is to allow you to turn your Rails app into an API platform with secure key authentication in minutes, as in: drop in this gem and you're pretty much done.
+The goal of `api_keys` is to allow you to turn your Rails app into an API platform with secure key authentication in minutes, as in: drop in this gem and you're pretty much done with API key management.
 
 To achieve that, the gem provides a ready-to-go dashboard you can just mount in your `routes.rb` like this:
 
