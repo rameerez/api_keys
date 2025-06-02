@@ -54,6 +54,9 @@ module ApiKeys
         say "         before_action :authenticate_api_key! # Enforce authentication"
         say "         # ..."
         say "       end"
+        say "\n  5. Optionally, mount the API keys dashboard in your `routes.rb` to provide a self-serve interface for your users:"
+        say "       # In config/routes.rb"
+        say "       mount ApiKeys::Engine => '/settings/api-keys'"
         say "\nSee the api_keys README for detailed usage and examples.
 ", :cyan
         say "Happy coding! 🚀", :green
