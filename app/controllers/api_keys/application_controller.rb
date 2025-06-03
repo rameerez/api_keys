@@ -13,50 +13,44 @@ module ApiKeys
     # Include the main controller concern which bundles authentication and tenant resolution
     include ApiKeys::Controller
 
-    # Ensure user is authenticated for all actions within this engine
-    # IMPORTANT: This assumes the host application provides a `current_user` method
-    # and potentially a `authenticate_user!` method (like Devise).
-    # You might need to adjust this based on the host app's authentication system.
-    before_action :authenticate_api_keys_user!
+    # Ensure the owner is authenticated for all actions within this engine
+    # This uses the configured authentication method (defaults to authenticate_user!)
+    before_action :authenticate_api_keys_owner!
 
     private
 
-    # Placeholder method to authenticate the user accessing the engine.
-    # Relies on the host application providing `authenticate_user!` and `current_user`.
-    # Developers might need to override this in their application or configure
-    # the authentication method if it differs from standard Devise/similar patterns.
-    def authenticate_api_keys_user!
-      # Try common authentication methods
-      if defined?(authenticate_user!)
-        authenticate_user!
-      elsif defined?(require_login)
-        require_login # Common in Sorcery
+    # Authenticates the owner accessing the engine.
+    # Uses the configured authentication method from ApiKeys.configuration
+    def authenticate_api_keys_owner!
+      auth_method = ApiKeys.configuration.authenticate_owner_method
+
+      # Try to call the configured authentication method
+      if auth_method && respond_to?(auth_method, true)
+        send(auth_method)
+      elsif auth_method && defined?(auth_method)
+        send(auth_method)
       else
-        # Fallback or raise error if no known authentication method is found
-        unless current_api_keys_user
-          # Redirect or render error if no user context is available
-          # Choose the appropriate action based on expected host app behavior
-          redirect_to main_app.root_path, alert: "You need to sign in or sign up before continuing." rescue render plain: "Unauthorized", status: :unauthorized
+        # Fallback: check if owner is present
+        unless current_api_keys_owner
+          redirect_to main_app.root_path, alert: "You need to sign in before continuing." rescue render plain: "Unauthorized", status: :unauthorized
         end
       end
     end
 
-    # Helper method to access the current user from the host application.
-    # Assumes the host app provides `current_user`.
-    def current_api_keys_user
-      # Use `super` if the parent controller defines `current_user`
-      # Otherwise, try calling `current_user` directly on self if it's mixed in.
-      if defined?(super)
-        super
-      elsif defined?(current_user)
-        current_user
+    # Helper method to access the current owner from the host application.
+    # Uses the configured method name (defaults to :current_user)
+    def current_api_keys_owner
+      owner_method = ApiKeys.configuration.current_owner_method
+
+      if owner_method && respond_to?(owner_method, true)
+        send(owner_method)
       else
-        nil # No user context found
+        nil # No owner context found
       end
     end
 
-    # Expose current_api_keys_user as a helper method for views
-    helper_method :current_api_keys_user
+    # Expose current_api_keys_owner as a helper method for views
+    helper_method :current_api_keys_owner
 
   end
 end

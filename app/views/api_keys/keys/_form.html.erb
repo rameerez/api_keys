@@ -38,7 +38,7 @@
     <%# containing an array of scope strings allowed for this context. %>
     <%# This list might come from global configuration or owner-specific settings. %>
     <%# Example: @available_scopes = ["read", "write", "admin"] %>
-    <% @available_scopes = current_api_keys_user.class.api_keys_settings.dig(:default_scopes) %>
+    <% @available_scopes = current_api_keys_owner.class.api_keys_settings.dig(:default_scopes) %>
     <% if defined?(@available_scopes) && @available_scopes.present? %>
       <div>
         <%= form.label :scopes, "Permissions" %>
@@ -70,7 +70,7 @@
     <%# Define available scopes for the edit form context %>
     <%# This assumes the available scopes are the same as the default ones. %>
     <%# Consider passing @available_scopes from the controller if logic is more complex. %>
-    <% @available_scopes = current_api_keys_user.class.api_keys_settings.dig(:default_scopes) %>
+    <% @available_scopes = current_api_keys_owner.class.api_keys_settings.dig(:default_scopes) %>
     <% if defined?(@available_scopes) && @available_scopes.present? %>
       <div>
         <%= form.label :scopes, "Permissions / Scopes" %>

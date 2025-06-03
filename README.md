@@ -50,7 +50,7 @@ end
 
 It'd work the same if you want your `Organization` or your `Project` records to have API keys.
 
-### Mount the dashboard engine
+### Mount the dashboard engine so your users can self-serve API keys
 
 The goal of `api_keys` is to allow you to turn your Rails app into an API platform with secure key authentication in minutes, as in: drop in this gem and you're pretty much done with API key management.
 
@@ -60,7 +60,70 @@ To achieve that, the gem provides a ready-to-go dashboard you can just mount in 
 mount ApiKeys::Engine => '/settings/api-keys'
 ```
 
-Now your users can:
+#### Default behavior (User-owned keys)
+
+By default, the dashboard expects:
+- A `current_user` method that returns the currently logged-in user
+- An `authenticate_user!` method that ensures a user is logged in
+
+This works out-of-the-box with Devise and most authentication solutions where `User` owns the API keys.
+
+#### Custom owner models (Organization, Team, etc.)
+
+If your API keys belong to a different model (e.g., `Organization`), you **must** configure the dashboard in your initializer:
+
+```ruby
+# config/initializers/api_keys.rb
+ApiKeys.configure do |config|
+  # Tell the dashboard how to find the current API key owner
+  config.current_owner_method = :current_organization
+  
+  # Tell the dashboard how to ensure the owner is authenticated
+  config.authenticate_owner_method = :authenticate_organization!
+end
+```
+
+These methods must exist in your `ApplicationController` (or wherever the engine is mounted). For example:
+
+```ruby
+class ApplicationController < ActionController::Base
+  def current_organization
+    # Your logic to return the current organization
+    @current_organization ||= Organization.find(session[:organization_id])
+  end
+  
+  def authenticate_organization!
+    redirect_to login_path unless current_organization
+  end
+end
+```
+
+#### Common scenarios
+
+**Organization with user membership:**
+```ruby
+# When organizations own keys but users manage them
+config.current_owner_method = :current_organization
+config.authenticate_owner_method = :require_organization_member!
+```
+
+**Multi-tenant applications:**
+```ruby
+# When each tenant/account owns keys
+config.current_owner_method = :current_account
+config.authenticate_owner_method = :authenticate_account!
+```
+
+**Team-based ownership:**
+```ruby
+# When teams own keys
+config.current_owner_method = :current_team  
+config.authenticate_owner_method = :ensure_team_access!
+```
+
+#### What the dashboard provides
+
+Once configured, your users can:
 - self-issue new API keys
 - set expiration dates
 - attach scopes / permissions to individual keys

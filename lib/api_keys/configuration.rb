@@ -24,6 +24,9 @@ module ApiKeys
     # Engine Configuration
     attr_accessor :parent_controller
 
+    # Owner Context Configuration
+    attr_accessor :current_owner_method, :authenticate_owner_method
+
     # Optional Behaviors
     attr_accessor :default_max_keys_per_owner, :require_key_name
     attr_accessor :expire_after, :default_scopes, :track_requests_count
@@ -83,6 +86,10 @@ module ApiKeys
 
       # Engine Configuration
       @parent_controller = '::ApplicationController'
+
+      # Owner Context Configuration
+      @current_owner_method = :current_user # Default to current_user for backward compatibility
+      @authenticate_owner_method = :authenticate_user! # Default to authenticate_user! for Devise compatibility
 
       # Optional Behaviors
       @default_max_keys_per_owner = nil # No global key limit per owner

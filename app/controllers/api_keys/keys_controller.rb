@@ -1,16 +1,16 @@
 # frozen_string_literal: true
 
 module ApiKeys
-  # Controller for managing API keys belonging to the current user.
+  # Controller for managing API keys belonging to the current owner.
   class KeysController < ApplicationController
     before_action :set_api_key, only: [:show, :edit, :update, :revoke]
 
     # GET /keys
     def index
       # Fetch only active keys for the main list, maybe sorted by creation date
-      @api_keys = current_api_keys_user.api_keys.active.order(created_at: :desc)
+      @api_keys = current_api_keys_owner.api_keys.active.order(created_at: :desc)
       # Optionally, fetch inactive ones for a separate section or filter
-      @inactive_api_keys = current_api_keys_user.api_keys.inactive.order(created_at: :desc)
+      @inactive_api_keys = current_api_keys_owner.api_keys.inactive.order(created_at: :desc)
     end
 
     # GET /keys/:id
@@ -30,7 +30,7 @@ module ApiKeys
 
     # GET /keys/new
     def new
-      @api_key = current_api_keys_user.api_keys.build
+      @api_key = current_api_keys_owner.api_keys.build
     end
 
     # POST /keys
@@ -38,7 +38,7 @@ module ApiKeys
       # Use the HasApiKeys helper method to create the key
       begin
         # create_api_key! now returns the ApiKey instance
-        @api_key = current_api_keys_user.create_api_key!(
+        @api_key = current_api_keys_owner.create_api_key!(
           name: api_key_params[:name],
           scopes: api_key_params[:scopes],
           expires_at: parse_expiration(api_key_params[:expires_at_preset])
@@ -59,7 +59,7 @@ module ApiKeys
         render :new, status: :unprocessable_entity
       rescue => e # Catch other potential errors
         flash.now[:alert] = "An unexpected error occurred: #{e.message}"
-        @api_key = current_api_keys_user.api_keys.build(api_key_params) # Rebuild form
+        @api_key = current_api_keys_owner.api_keys.build(api_key_params) # Rebuild form
         render :new, status: :unprocessable_entity
       end
     end
@@ -93,7 +93,7 @@ module ApiKeys
 
     # Use callbacks to share common setup or constraints between actions.
     def set_api_key
-      @api_key = current_api_keys_user.api_keys.find(params[:id])
+      @api_key = current_api_keys_owner.api_keys.find(params[:id])
     rescue ActiveRecord::RecordNotFound
       redirect_to keys_path, alert: "API key not found."
     end

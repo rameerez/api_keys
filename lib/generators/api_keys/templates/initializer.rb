@@ -38,6 +38,30 @@ ApiKeys.configure do |config|
   # Default: :sha256
   # config.hash_strategy = :bcrypt
 
+  # === Dashboard Configuration ===
+
+  # IMPORTANT: Owner Context Configuration
+  # The api_keys dashboard needs to know how to find the current owner
+  # of API keys in your application. By default, it assumes you have
+  # a User model with current_user/authenticate_user! methods (Devise-style).
+  #
+  # If your API keys belong to a different model (e.g., Organization),
+  # you MUST configure these methods:
+
+  # The method that returns the current API key owner in your controllers.
+  # This should return the object that has_api_keys (e.g., current_organization).
+  # Default: :current_user
+  # config.current_owner_method = :current_organization
+
+  # The method that authenticates/requires login for the dashboard.
+  # This should ensure the owner is logged in before accessing the dashboard.
+  # Default: :authenticate_user!
+  # config.authenticate_owner_method = :authenticate_organization!
+
+  # Example for Organization-owned keys:
+  # config.current_owner_method = :current_organization
+  # config.authenticate_owner_method = :authenticate_organization!
+
   # === Optional Behaviors ===
 
   # Global limit on the number of *active* keys an owner can have.
@@ -70,7 +94,7 @@ ApiKeys.configure do |config|
   # Set to 0 or nil to disable caching.
   # Uses Rails.cache.
   # Default: 5.seconds
-  # config.cache_ttl = 30.seconds # Higher TTL = higher risk of “revoked-but-still-valid” edge cases
+  # config.cache_ttl = 30.seconds # Higher TTL = higher risk of "revoked-but-still-valid" edge cases
 
   # === Security ===
 
