@@ -1,3 +1,8 @@
+## [0.2.1] - 2025-08-04
+
+- Fix SecurityController callback reference from :authenticate_api_keys_user! to :authenticate_api_keys_owner!
+- Resolves ArgumentError in production environments with eager loading (#2)
+
 ## [0.2.0] - 2025-06-03
 
 - Make gem owner-agnostic: API keys can now belong to any model (User, Organization, Team, etc.)
