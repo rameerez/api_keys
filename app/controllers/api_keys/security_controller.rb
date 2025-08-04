@@ -5,7 +5,7 @@ module ApiKeys
   class SecurityController < ApplicationController
     # Skip the user authentication requirement for these static pages
     # as they contain general information.
-    skip_before_action :authenticate_api_keys_user!, only: [:best_practices]
+    skip_before_action :authenticate_api_keys_owner!, only: [:best_practices]
 
     # GET /security/best-practices
     def best_practices
