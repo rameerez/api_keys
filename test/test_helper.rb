@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+ENV["RAILS_ENV"] ||= "test"
 $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 require "api_keys"
 
@@ -7,6 +8,10 @@ require "api_keys"
 require "minitest/autorun"
 require "minitest/reporters"
 require "mocha/minitest"
+
+# ActiveSupport test case and helpers
+require "active_support/test_case"
+require "active_support/testing/time_helpers"
 
 # Database setup
 require "active_record"
@@ -45,6 +50,7 @@ ActiveRecord::Schema.define do
     t.datetime :last_used_at
     t.bigint   :requests_count, default: 0, null: false
     t.datetime :revoked_at
+    t.string   :last4, null: false, default: ""
     t.timestamps
 
     t.index :token_digest, unique: true
@@ -56,6 +62,11 @@ ActiveRecord::Schema.define do
   end
 end
 
+# Mirror engine initializer behavior for attribute casting in tests
+json_col_type = :json
+ApiKeys::ApiKey.attribute :scopes, json_col_type, default: []
+ApiKeys::ApiKey.attribute :metadata, json_col_type, default: {}
+
 puts "Database schema loaded."
 
 # Simple User model for testing associations
@@ -66,7 +77,9 @@ class User < ActiveRecord::Base
 end
 
 # Base class for ApiKeys tests
-class ApiKeys::Test < Minitest::Test
+class ApiKeys::Test < ActiveSupport::TestCase
+  include ActiveSupport::Testing::TimeHelpers
+
   # Reset configuration before each test
   def setup
     ApiKeys.reset_configuration!

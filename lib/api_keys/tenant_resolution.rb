@@ -33,7 +33,9 @@ module ApiKeys
       @current_api_tenant = resolver&.call(current_api_key)
     rescue StandardError => e
       # Log error but don't break the request if resolver fails
-      Rails.logger.error "[ApiKeys] Tenant resolution failed: #{e.message}" if defined?(Rails.logger)
+      if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+        Rails.logger.error "[ApiKeys] Tenant resolution failed: #{e.message}"
+      end
       @current_api_tenant = nil
     end
   end

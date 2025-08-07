@@ -1,9 +1,9 @@
 PATH
   remote: .
   specs:
-    api_keys (0.1.0)
-      activerecord (>= 7.0)
-      activesupport (>= 7.0)
+    api_keys (0.2.1)
+      activerecord (>= 6.0)
+      activesupport (>= 6.0)
       base58 (~> 0.2)
       bcrypt (~> 3.1)
       rails (>= 6.1)
@@ -88,6 +88,8 @@ GEM
     bcrypt (3.1.20)
     benchmark (0.4.0)
     bigdecimal (3.1.9)
+    bootsnap (1.18.6)
+      msgpack (~> 1.2)
     builder (3.3.0)
     concurrent-ruby (1.3.5)
     connection_pool (2.5.1)
@@ -115,7 +117,6 @@ GEM
       net-smtp
     marcel (1.0.4)
     mini_mime (1.1.5)
-    mini_portile2 (2.8.8)
     minitest (5.25.5)
     minitest-reporters (1.7.1)
       ansi
@@ -124,6 +125,7 @@ GEM
       ruby-progressbar
     mocha (2.7.1)
       ruby2_keywords (>= 0.0.5)
+    msgpack (1.8.0)
     net-imap (0.5.7)
       date
       net-protocol
@@ -202,8 +204,14 @@ GEM
     ruby-progressbar (1.13.0)
     ruby2_keywords (0.0.5)
     securerandom (0.4.1)
-    sqlite3 (1.7.3)
-      mini_portile2 (~> 2.8.0)
+    sqlite3 (2.7.3-aarch64-linux-gnu)
+    sqlite3 (2.7.3-aarch64-linux-musl)
+    sqlite3 (2.7.3-arm-linux-gnu)
+    sqlite3 (2.7.3-arm-linux-musl)
+    sqlite3 (2.7.3-arm64-darwin)
+    sqlite3 (2.7.3-x86_64-darwin)
+    sqlite3 (2.7.3-x86_64-linux-gnu)
+    sqlite3 (2.7.3-x86_64-linux-musl)
     stringio (3.1.7)
     thor (1.3.2)
     timeout (0.4.3)
@@ -229,12 +237,13 @@ PLATFORMS
 
 DEPENDENCIES
   api_keys!
+  bootsnap
   bundler (~> 2.0)
   minitest (~> 5.14)
   minitest-reporters (~> 1.4)
   mocha (~> 2.0)
   rake (~> 13.0)
-  sqlite3 (~> 1.4)
+  sqlite3 (>= 2.1)
 
 BUNDLED WITH
    2.6.4

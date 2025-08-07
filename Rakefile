@@ -16,17 +16,22 @@ RDoc::Task.new(:rdoc) do |rdoc|
   rdoc.rdoc_files.include("lib/**/*.rb")
 end
 
-APP_RAKEFILE = File.expand_path("test/dummy/Rakefile", __dir__)
-load "rails/tasks/engine.rake"
+# Removed loading of engine tasks to avoid pulling in dummy app/vendor tests
+# APP_RAKEFILE = File.expand_path("test/dummy/Rakefile", __dir__)
+# load "rails/tasks/engine.rake"
 
-load "rails/tasks/statistics.rake"
+# Removed Rails statistics task; not needed for gem tests
+# load "rails/tasks/statistics.rake"
 
 require "rake/testtask"
 
+# Ensure any test task created by engine.rake is cleared so only this suite runs
+Rake::Task[:test].clear if Rake::Task.task_defined?(:test)
+
 Rake::TestTask.new(:test) do |t|
   t.libs << "test"
-  t.pattern = "test/**/*_test.rb"
   t.verbose = false
+  t.test_files = FileList['test/**/*_test.rb'].exclude('test/dummy/**/*')
 end
 
 task default: :test

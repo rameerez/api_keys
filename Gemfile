@@ -28,7 +28,10 @@ gem "mocha", "~> 2.0"
 
 # For testing against a Rails app (later)
 # gem "rails", "~> 7.0"
-gem "sqlite3", "~> 1.4"
+ gem "sqlite3", ">= 2.1"
 
 # Debugging
 # gem "debug"
+
+# Speed up boot time for the dummy app when engine tasks load
+ gem "bootsnap", require: false
