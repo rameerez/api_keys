@@ -52,13 +52,43 @@ module ApiKeys
       end
 
       test "creates with sha256 digest if configured" do
-        original_strategy = ApiKeys.configuration.hash_strategy
-        ApiKeys.configuration.hash_strategy = :sha256
-        api_key = ApiKeys::ApiKey.create!(owner: @user, name: "SHA256 Key")
-        assert_equal "sha256", api_key.digest_algorithm
-        assert ApiKeys::Services::Digestor.match?(token: api_key.instance_variable_get(:@token), stored_digest: api_key.token_digest, strategy: :sha256)
-      ensure
-        ApiKeys.configuration.hash_strategy = original_strategy
+        with_hash_strategy(:sha256) do
+          api_key = ApiKeys::ApiKey.create!(owner: @user, name: "SHA256 Key")
+          assert_equal "sha256", api_key.digest_algorithm
+          assert ApiKeys::Services::Digestor.match?(token: api_key.instance_variable_get(:@token), stored_digest: api_key.token_digest, strategy: :sha256)
+        end
+      end
+
+      # === Bcrypt strategy ===
+      test "creates with bcrypt digest if configured" do
+        with_hash_strategy(:bcrypt) do
+          api_key = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Key")
+          assert_equal "bcrypt", api_key.digest_algorithm
+          assert BCrypt::Password.valid_hash?(api_key.token_digest)
+          assert BCrypt::Password.new(api_key.token_digest) == api_key.instance_variable_get(:@token)
+        end
+      end
+
+      test "bcrypt digest format and length look valid" do
+        with_hash_strategy(:bcrypt) do
+          api_key = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Format Key")
+          digest = api_key.token_digest
+          # Typical bcrypt hashes look like: $2a$12$... or $2b$...
+          assert_match(/^\$2[aby]\$\d{2}\$/ , digest)
+          assert_operator digest.length, :>=, 55 # common bcrypt length ~60
+        end
+      end
+
+      test "masked_token and last4 correct under bcrypt" do
+        with_hash_strategy(:bcrypt) do
+          api_key = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Masked")
+          token = api_key.instance_variable_get(:@token)
+          random_part = token.delete_prefix(api_key.prefix)
+          expected_last4 = random_part.last(4)
+
+          assert_equal expected_last4, api_key.last4
+          assert_equal "#{api_key.prefix}••••#{api_key.last4}", api_key.masked_token
+        end
       end
 
       test ".active scope works" do

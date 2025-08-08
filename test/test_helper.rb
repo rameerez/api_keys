@@ -97,6 +97,16 @@ class ApiKeys::Test < ActiveSupport::TestCase
     ApiKeys::ApiKey.delete_all
     User.delete_all
   end
+
+  # Temporarily set the configured hash strategy for the duration of the block
+  # Ensures the original strategy is restored afterwards
+  def with_hash_strategy(strategy)
+    original = ApiKeys.configuration.hash_strategy
+    ApiKeys.configuration.hash_strategy = strategy
+    yield
+  ensure
+    ApiKeys.configuration.hash_strategy = original
+  end
 end
 
 puts "Test helper setup complete."

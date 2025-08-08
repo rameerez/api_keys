@@ -60,6 +60,45 @@ module ApiKeys
         assert_nil result.error_code
       end
 
+      test "authenticates successfully with bcrypt strategy" do
+        with_hash_strategy(:bcrypt) do
+          key = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Auth Key")
+          token = key.token
+          key = ApiKeys::ApiKey.find(key.id)
+
+          request = mock_request(headers: { "Authorization" => "Bearer #{token}" })
+          mock_cache
+
+          result = ApiKeys::Services::Authenticator.call(request)
+          assert result.success?
+          assert_equal key, result.api_key
+        end
+      end
+
+      test "authenticates with bcrypt when configured prefix mismatch triggers known prefixes scan" do
+        with_hash_strategy(:bcrypt) do
+          original_prefix = ApiKeys.configuration.token_prefix
+          begin
+            ApiKeys.configuration.token_prefix = -> { "pfx1_" }
+            key = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Prefix Key")
+            token = key.token
+            key = ApiKeys::ApiKey.find(key.id)
+
+            # Change configured prefix to force known-prefix path
+            ApiKeys.configuration.token_prefix = -> { "otherpfx_" }
+
+            request = mock_request(headers: { "Authorization" => "Bearer #{token}" })
+            mock_cache
+
+            result = ApiKeys::Services::Authenticator.call(request)
+            assert result.success?
+            assert_equal key, result.api_key
+          ensure
+            ApiKeys.configuration.token_prefix = original_prefix
+          end
+        end
+      end
+
       test "authenticates successfully with valid token in custom header" do
         ApiKeys.configure { |config| config.header = "X-Api-Key" }
         request = mock_request(headers: { "X-Api-Key" => @token })
