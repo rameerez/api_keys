@@ -55,12 +55,16 @@ module ApiKeys
           comparison_proc.call(stored_digest, Digest::SHA256.hexdigest(token))
         else
           # Strategy mismatch or unsupported strategy should fail comparison safely
-          Rails.logger.error "[ApiKeys] Digestor comparison failed: Unsupported hash strategy '#{strategy}' for digest check." if defined?(Rails.logger)
+          if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+            Rails.logger.error "[ApiKeys] Digestor comparison failed: Unsupported hash strategy '#{strategy}' for digest check."
+          end
           false
         end
       rescue ArgumentError => e
         # Catch potential errors from Digest or comparison proc
-        Rails.logger.error "[ApiKeys] Digestor comparison error: #{e.message}" if defined?(Rails.logger)
+        if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+          Rails.logger.error "[ApiKeys] Digestor comparison error: #{e.message}"
+        end
         false
       end
     end

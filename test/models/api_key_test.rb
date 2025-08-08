@@ -45,26 +45,56 @@ module ApiKeys
         assert_not api_key.allows_scope?("admin")
       end
 
-      test "creates with bcrypt digest by default" do
-        api_key = ApiKeys::ApiKey.create!(owner: @user, name: "Bcrypt Key")
-        assert_equal "bcrypt", api_key.digest_algorithm
-        assert ApiKeys::Services::Digestor.match?(token: api_key.instance_variable_get(:@token), digest: api_key.token_digest)
+      test "creates with sha256 digest by default" do
+        api_key = ApiKeys::ApiKey.create!(owner: @user, name: "SHA256 Default")
+        assert_equal "sha256", api_key.digest_algorithm
+        assert ApiKeys::Services::Digestor.match?(token: api_key.instance_variable_get(:@token), stored_digest: api_key.token_digest, strategy: :sha256)
       end
 
       test "creates with sha256 digest if configured" do
-        original_strategy = ApiKeys.configuration.hash_strategy
-        ApiKeys.configuration.hash_strategy = :sha256
-        api_key = ApiKeys::ApiKey.create!(owner: @user, name: "SHA256 Key")
-        assert_equal "sha256", api_key.digest_algorithm
-        assert ApiKeys::Services::Digestor.match?(token: api_key.instance_variable_get(:@token), digest: api_key.token_digest)
-      ensure
-        ApiKeys.configuration.hash_strategy = original_strategy
+        with_hash_strategy(:sha256) do
+          api_key = ApiKeys::ApiKey.create!(owner: @user, name: "SHA256 Key")
+          assert_equal "sha256", api_key.digest_algorithm
+          assert ApiKeys::Services::Digestor.match?(token: api_key.instance_variable_get(:@token), stored_digest: api_key.token_digest, strategy: :sha256)
+        end
+      end
+
+      # === Bcrypt strategy ===
+      test "creates with bcrypt digest if configured" do
+        with_hash_strategy(:bcrypt) do
+          api_key = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Key")
+          assert_equal "bcrypt", api_key.digest_algorithm
+          assert BCrypt::Password.valid_hash?(api_key.token_digest)
+          assert BCrypt::Password.new(api_key.token_digest) == api_key.instance_variable_get(:@token)
+        end
+      end
+
+      test "bcrypt digest format and length look valid" do
+        with_hash_strategy(:bcrypt) do
+          api_key = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Format Key")
+          digest = api_key.token_digest
+          # Typical bcrypt hashes look like: $2a$12$... or $2b$...
+          assert_match(/^\$2[aby]\$\d{2}\$/ , digest)
+          assert_operator digest.length, :>=, 55 # common bcrypt length ~60
+        end
+      end
+
+      test "masked_token and last4 correct under bcrypt" do
+        with_hash_strategy(:bcrypt) do
+          api_key = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Masked")
+          token = api_key.instance_variable_get(:@token)
+          random_part = token.delete_prefix(api_key.prefix)
+          expected_last4 = random_part.last(4)
+
+          assert_equal expected_last4, api_key.last4
+          assert_equal "#{api_key.prefix}••••#{api_key.last4}", api_key.masked_token
+        end
       end
 
       test ".active scope works" do
         active_key = ApiKeys::ApiKey.create!(owner: @user, name: "Active")
         revoked_key = ApiKeys::ApiKey.create!(owner: @user, name: "Revoked").tap(&:revoke!)
-        expired_key = ApiKeys::ApiKey.create!(owner: @user, name: "Expired", expires_at: 1.day.ago)
+        expired_key = ApiKeys::ApiKey.create!(owner: @user, name: "Expired").tap { |k| k.update_column(:expires_at, 1.day.ago) }
 
         active_keys = ApiKeys::ApiKey.active.to_a
         assert_includes active_keys, active_key
@@ -83,7 +113,7 @@ module ApiKeys
 
       test ".expired scope works" do
         active_key = ApiKeys::ApiKey.create!(owner: @user, name: "Active")
-        expired_key = ApiKeys::ApiKey.create!(owner: @user, name: "Expired", expires_at: 1.day.ago)
+        expired_key = ApiKeys::ApiKey.create!(owner: @user, name: "Expired").tap { |k| k.update_column(:expires_at, 1.day.ago) }
 
         expired_keys = ApiKeys::ApiKey.expired.to_a
         assert_includes expired_keys, expired_key
@@ -103,7 +133,7 @@ module ApiKeys
 
       test "expired? and active? check expiry date" do
         future_key = ApiKeys::ApiKey.create!(owner: @user, name: "Future", expires_at: 1.day.from_now)
-        past_key = ApiKeys::ApiKey.create!(owner: @user, name: "Past", expires_at: 1.day.ago)
+        past_key = ApiKeys::ApiKey.create!(owner: @user, name: "Past").tap { |k| k.update_column(:expires_at, 1.day.ago) }
         nil_key = ApiKeys::ApiKey.create!(owner: @user, name: "Nil")
 
         assert_not future_key.expired?
@@ -138,7 +168,7 @@ module ApiKeys
 
       test "should require name if globally configured" do
         ApiKeys.configuration.require_key_name = true
-        api_key = ApiKeys::ApiKey.new(owner: @user)
+        api_key = ApiKeys::ApiKey.new # no owner, global config applies
         assert_not api_key.valid?
         assert_includes api_key.errors[:name], "can't be blank"
       ensure
@@ -147,17 +177,16 @@ module ApiKeys
 
       test "should validate max_keys quota if owner configured" do
         @user.class.api_keys_settings = @user.class.api_keys_settings.merge(max_keys: 1)
-        ApiKeys::ApiKey.create!(owner: @user, name: "Key 1") # First key is fine
+        first_key = ApiKeys::ApiKey.create!(owner: @user, name: "Key 1") # First key is fine
 
         api_key2 = ApiKeys::ApiKey.new(owner: @user, name: "Key 2")
         assert_not api_key2.valid?
         assert_includes api_key2.errors[:base], "exceeds maximum allowed API keys (1) for this owner"
 
-        # Revoked keys should not count towards quota
-        revoked_key = ApiKeys::ApiKey.create!(owner: @user, name: "Revoked Key").tap(&:revoke!)
-        assert revoked_key.persisted?
-        api_key2 = ApiKeys::ApiKey.new(owner: @user, name: "Active Key")
-        assert api_key2.valid?, "Revoked key should not count towards quota. Errors: #{api_key2.errors.full_messages}"
+        # Revoked keys should not count towards quota: revoke the existing key
+        first_key.revoke!
+        api_key3 = ApiKeys::ApiKey.new(owner: @user, name: "Active Key")
+        assert api_key3.valid?, "Revoked key should not count towards quota. Errors: #{api_key3.errors.full_messages}"
       ensure
         @user.class.api_keys_settings = @user.class.api_keys_settings.merge(max_keys: nil)
       end

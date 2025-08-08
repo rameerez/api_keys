@@ -16,14 +16,22 @@ test/dummy/node_modules/
 test/dummy/config/master.key
 test/dummy/storage
 test/dummy/storage/*.sqlite3*
+# Ignore dummy app vendored bundles completely
+test/dummy/vendor/
+test/dummy/.bundle/
 .DS_Store
 
 /dist/
 
 .vscode
 .cursor
+.claude
 
 TODO
 
 **/.kamal/
 deploy.yml
+
+# Global bundler/vendor ignores
+vendor/
+vendor/bundle/
