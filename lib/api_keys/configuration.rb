@@ -77,48 +77,53 @@ module ApiKeys
       @hash_strategy = :sha256 # sha256 or :bcrypt
       @secure_compare_proc = ->(a, b) { ActiveSupport::SecurityUtils.secure_compare(a, b) }
       @key_store_adapter = :active_record # Default storage backend
+      # TODO: Define and implement ApiKeys::BasePolicy in later versions
+      # This will define the authorization policy class used to check if a key is valid beyond basic checks.
+      # Allows injecting custom logic (IP allow-listing, time-of-day checks, etc.).
+      # Must be a class name (String or Class) responding to `.new(api_key, request).valid?`
+      # Default: "ApiKeys::BasePolicy" (a basic implementation should be provided)
       @policy_provider = "ApiKeys::BasePolicy" # Default authorization policy class name
 
       # Engine Configuration
       @parent_controller = '::ApplicationController'
 
       # Owner Context Configuration
-      @current_owner_method = :current_user
-      @authenticate_owner_method = :authenticate_user!
+      @current_owner_method = :current_user # Default to current_user for backward compatibility
+      @authenticate_owner_method = :authenticate_user! # Default to authenticate_user! for Devise compatibility
 
       # Optional Behaviors
-      @default_max_keys_per_owner = nil
-      @require_key_name = false
-      @expire_after = nil
-      @default_scopes = []
+      @default_max_keys_per_owner = nil # No global key limit per owner
+      @require_key_name = false # Don't require names for keys globally
+      @expire_after = nil # Keys do not expire by default (e.g., 90.days)
+      @default_scopes = [] # No default scopes assigned globally
 
       # Performance
-      @cache_ttl = 5.seconds
+      @cache_ttl = 5.seconds # Good balance: fast revocation, mostly-cached – still allows most repeated requests to benefit from cache
 
       # Security
-      @https_only_production = true
-      @https_strict_mode = false
+      @https_only_production = true # Warn if used over HTTP in production
+      @https_strict_mode = false # Don't raise error, just warn
 
       # Background Job Queues
       @stats_job_queue = :default
       @callbacks_job_queue = :default
 
       # Global Async Toggle
-      @enable_async_operations = true
+      @enable_async_operations = true # Default to true to enable jobs
 
       # Usage Statistics
-      @track_requests_count = false
+      @track_requests_count = false # Don't increment `requests_count` by default
 
       # Callbacks
       @before_authentication = DEFAULT_CALLBACK
       @after_authentication = DEFAULT_CALLBACK
 
       # Engine UI Configuration
-      @return_url = "/"
-      @return_text = "‹ Home"
+      @return_url = "/" # Default fallback path
+      @return_text = "‹ Home" # Default link text
 
       # Debugging
-      @debug_logging = false
+      @debug_logging = false # Disable debug logging by default (warn and error get logged regardless of this)
 
       # Tenant Resolution
       @tenant_resolver = ->(api_key) { api_key.owner if api_key.respond_to?(:owner) }
