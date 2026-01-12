@@ -2,6 +2,9 @@
 
 [![Gem Version](https://badge.fury.io/rb/api_keys.svg)](https://badge.fury.io/rb/api_keys)
 
+> [!TIP]
+> **🚀 Ship your next Rails app 10x faster!** I've built **[RailsFast](https://railsfast.com)**, a production-ready Rails boilerplate template that comes with everything you need to launch a software business in days, not weeks.
+
 `api_keys` makes it simple to add secure, production-ready API key authentication to any Rails app. Generate keys, restrict scopes, auto-expire tokens, revoke tokens, gate endpoints. It also provides a self-serve dashboard for your users to self-issue and manage their API keys themselves. All tokens are hashed securely by default, and never stored in plaintext.
 
 [ 🟢 [Live interactive demo website](https://apikeys.rameerez.com) ]
