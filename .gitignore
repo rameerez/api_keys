@@ -7,6 +7,11 @@
 /spec/reports/
 /tmp/
 
+# For gems, ignore all lockfiles (root and appraisal) to allow flexible dependency resolution
+# But commit the Appraisal Gemfiles themselves (not the .lock files)
+Gemfile.lock
+gemfiles/*.lock
+
 test/dummy/db/*.sqlite3*
 test/dummy/log/*.log
 test/dummy/tmp/
@@ -26,6 +31,7 @@ test/dummy/.bundle/
 .vscode
 .cursor
 .claude
+.aux
 
 TODO
 
