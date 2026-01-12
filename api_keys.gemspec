@@ -35,21 +35,11 @@ Gem::Specification.new do |spec|
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
 
-  # Prevent pushing this gem to RubyGems.org by setting 'allowed_push_host', or
-  # delete this section to allow pushing this gem to any host.
-  # spec.metadata["allowed_push_host"] = "TODO: Set to your gem server host" # TODO: Configure if needed
-
-  # Runtime Dependencies
-  spec.add_dependency "rails", ">= 6.1" # Requires Rails 6+
-  spec.add_dependency "activerecord", ">= 6.0"
-  spec.add_dependency "activesupport", ">= 6.0"
+  # Runtime Dependencies (only what end-users need to run the gem)
+  spec.add_dependency "rails", ">= 6.1"
   spec.add_dependency "base58", "~> 0.2"    # For Base58 token alphabet
   spec.add_dependency "bcrypt", "~> 3.1"    # For secure token hashing
 
-  # Development Dependencies
-  spec.add_development_dependency "bundler", "~> 2.0"
-  spec.add_development_dependency "rake", "~> 13.0"
-  # TODO: Add testing framework (e.g., minitest or rspec)
-  # TODO: Add linter (e.g., rubocop)
-  # TODO: Add Rails itself for the dummy app testing
+  # Development dependencies should go in Gemfile, not gemspec
+  # See: https://guides.rubygems.org/patterns/
 end

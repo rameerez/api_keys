@@ -2,36 +2,37 @@
 
 source "https://rubygems.org"
 
-# Specify your gem's dependencies in ApiKeys.gemspec
+# Load runtime dependencies from the gemspec
 gemspec
 
-# Declare any dependencies that are still in development here instead of in
-# your gemspec. These might include edge Rails or gems from your path or
-# Git. Remember to move these dependencies to your gemspec before releasing
-# your gem to rubygems.org.
-
-# Development dependencies
+# Rake is used by both development and test environments
 gem "rake", "~> 13.0"
 
-# Testing
-gem "minitest", "~> 5.14"
-gem "minitest-reporters", "~> 1.4"
-gem "mocha", "~> 2.0"
-# Or:
-# gem "rspec"
+group :development do
+  # Appraisal for testing against multiple Rails versions
+  gem "appraisal"
 
-# Linting
-# gem "rubocop"
-# gem "rubocop-rails"
-# gem "rubocop-performance"
-# gem "rubocop-rake"
+  # Add development-only tools here (linting, profiling, etc.)
+  # gem "rubocop", "~> 1.0"
+  # gem "rubocop-rails"
+  # gem "rubocop-performance"
+  # gem "rubocop-rake"
 
-# For testing against a Rails app (later)
-# gem "rails", "~> 7.0"
- gem "sqlite3", ">= 2.1"
+  # Speed up boot time for the dummy app
+  gem "bootsnap", require: false
+end
 
-# Debugging
-# gem "debug"
+group :test do
+  # Testing framework and utilities
+  gem "minitest", "~> 5.14"
+  gem "minitest-reporters", "~> 1.4"
+  gem "mocha", "~> 2.0"
 
-# Speed up boot time for the dummy app when engine tasks load
- gem "bootsnap", require: false
+  # Database for test dummy app
+  gem "sqlite3", ">= 2.1"
+
+  # Add test coverage, VCR, webmock, etc. as needed
+  # gem "simplecov", require: false
+  # gem "vcr"
+  # gem "webmock"
+end
