@@ -28,6 +28,9 @@ group :test do
   gem "minitest-reporters", "~> 1.4"
   gem "mocha", "~> 2.0"
 
+  # Ruby 4.0+ compatibility: ostruct removed from stdlib
+  gem "ostruct"
+
   # Database for test dummy app
   gem "sqlite3", ">= 2.1"
 
