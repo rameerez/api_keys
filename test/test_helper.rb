@@ -1,11 +1,16 @@
 # frozen_string_literal: true
 
+# SimpleCov must be loaded BEFORE any application code
+# Configuration is auto-loaded from .simplecov file
+require "simplecov"
+
 ENV["RAILS_ENV"] ||= "test"
 $LOAD_PATH.unshift File.expand_path("../lib", __dir__)
 require "api_keys"
 
 # Core testing libraries
 require "minitest/autorun"
+require "minitest/mock"
 require "minitest/reporters"
 require "mocha/minitest"
 
