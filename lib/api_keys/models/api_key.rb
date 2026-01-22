@@ -266,6 +266,8 @@ module ApiKeys
     end
 
     # Check if creating this key would exceed the limit for this key type/environment
+    # Uses row-level locking to prevent race conditions when multiple requests
+    # try to create keys concurrently.
     def within_key_type_limit
       return unless key_types_feature_enabled?
 
@@ -275,8 +277,11 @@ module ApiKeys
       limit = config[:limit]
       return unless limit # nil limit = unlimited
 
-      # Count existing active keys of this type for this owner in this environment
+      # Use pessimistic locking to prevent race conditions.
+      # Lock the owner's existing keys of this type/environment while counting.
+      # This ensures atomic check-then-create semantics.
       existing_count = owner.api_keys
+                            .lock("FOR UPDATE")
                             .active
                             .where(key_type: key_type.to_s)
                             .where(environment: environment.to_s)

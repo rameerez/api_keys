@@ -82,7 +82,32 @@ module ApiKeys
     #
     # @!attribute [rw] strict_environment_isolation
     #   @return [Boolean] If true, keys only work in their matching environment
-    attr_accessor :key_types, :environments, :current_environment, :strict_environment_isolation
+    attr_accessor :environments, :current_environment, :strict_environment_isolation
+
+    # Custom writer for key_types that validates prefix uniqueness
+    attr_reader :key_types
+
+    # Sets the key types configuration with prefix collision validation.
+    # @param value [Hash] Key type definitions
+    # @raise [ArgumentError] If multiple key types share the same prefix
+    def key_types=(value)
+      validate_key_type_prefixes!(value) if value.is_a?(Hash) && value.any?
+      @key_types = value
+    end
+
+    private
+
+    # Validates that all key type prefixes are unique to prevent token collision
+    def validate_key_type_prefixes!(key_types_hash)
+      prefixes = key_types_hash.map { |_type, config| config[:prefix] }.compact
+      duplicates = prefixes.group_by(&:itself).select { |_k, v| v.size > 1 }.keys
+
+      if duplicates.any?
+        raise ArgumentError, "Key type prefixes must be unique. Duplicate prefix(es): #{duplicates.join(', ')}"
+      end
+    end
+
+    public
 
     # == Initialization ==
 

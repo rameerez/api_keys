@@ -92,6 +92,28 @@ class KeyTypesTest < ApiKeys::Test
     assert_equal true, ApiKeys.configuration.strict_environment_isolation
   end
 
+  test "key_types validates unique prefixes" do
+    assert_raises(ArgumentError) do
+      ApiKeys.configure do |config|
+        config.key_types = {
+          publishable: { prefix: "pk", permissions: %w[read] },
+          public: { prefix: "pk", permissions: %w[read] }  # Same prefix!
+        }
+      end
+    end
+  end
+
+  test "key_types allows different prefixes" do
+    assert_nothing_raised do
+      ApiKeys.configure do |config|
+        config.key_types = {
+          publishable: { prefix: "pk", permissions: %w[read] },
+          secret: { prefix: "sk", permissions: :all }
+        }
+      end
+    end
+  end
+
   # =============================================================================
   # Prefix Building Tests
   # =============================================================================
@@ -371,6 +393,38 @@ class KeyTypesTest < ApiKeys::Test
     result = authenticate_with_environment_check(test_key.token)
 
     assert result.success?
+  end
+
+  test "isolation check skipped when current_environment returns nil" do
+    configure_key_types_and_environments!
+    ApiKeys.configuration.strict_environment_isolation = true
+    ApiKeys.configuration.current_environment = -> { nil }  # Returns nil!
+
+    user = User.create!(name: "Nil Env User")
+    test_key = user.create_api_key!(name: "Test Key", key_type: :secret, environment: :test)
+
+    # Should pass isolation check since current_environment is nil
+    api_key = find_key_by_token(test_key.token)
+    result = ApiKeys::Services::Authenticator.send(:check_environment_isolation, api_key, ApiKeys.configuration)
+
+    # Should return nil (check passed) not an error
+    assert_nil result
+  end
+
+  test "isolation check skipped when current_environment returns empty string" do
+    configure_key_types_and_environments!
+    ApiKeys.configuration.strict_environment_isolation = true
+    ApiKeys.configuration.current_environment = -> { "" }  # Returns empty string!
+
+    user = User.create!(name: "Empty Env User")
+    test_key = user.create_api_key!(name: "Test Key", key_type: :secret, environment: :test)
+
+    # Should pass isolation check since current_environment is blank
+    api_key = find_key_by_token(test_key.token)
+    result = ApiKeys::Services::Authenticator.send(:check_environment_isolation, api_key, ApiKeys.configuration)
+
+    # Should return nil (check passed) not an error
+    assert_nil result
   end
 
   # =============================================================================

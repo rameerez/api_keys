@@ -266,8 +266,14 @@ module ApiKeys
         # Get current environment
         current_env_config = config.current_environment
         current_env = current_env_config.respond_to?(:call) ? current_env_config.call : current_env_config
-        current_env = current_env.to_s
 
+        # Handle nil/blank current environment - skip isolation check if not configured
+        if current_env.nil? || (current_env.respond_to?(:blank?) && current_env.blank?)
+          log_debug "[ApiKeys Auth] Current environment is nil/blank, skipping environment isolation check"
+          return nil
+        end
+
+        current_env = current_env.to_s
         key_env = key_env.to_s
 
         if current_env != key_env
