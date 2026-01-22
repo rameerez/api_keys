@@ -312,13 +312,17 @@ module ApiKeys
       # Use pessimistic locking to prevent race conditions.
       # Lock the owner's existing keys of this type/environment while counting.
       # This ensures atomic check-then-create semantics.
-      # Note: .lock(true) generates "FOR UPDATE" in SQL but is the Rails-idiomatic approach.
+      #
+      # Note: We use .ids.size instead of .count because PostgreSQL doesn't allow
+      # FOR UPDATE with aggregate functions (COUNT). By selecting IDs with the
+      # lock and counting in Ruby, we achieve the same race condition protection.
       existing_count = owner.api_keys
-                            .lock(true)
                             .active
                             .where(key_type: key_type.to_s)
                             .where(environment: environment.to_s)
-                            .count
+                            .lock(true)
+                            .ids
+                            .size
 
       if existing_count >= limit
         errors.add(:base, "Maximum number of #{key_type} keys (#{limit}) reached for #{environment} environment")
