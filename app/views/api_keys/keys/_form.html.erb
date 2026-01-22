@@ -81,7 +81,7 @@
                                scope, # Value submitted when checked
                                nil # Value submitted when unchecked (not needed here)
                                %>
-            <%= form.label "scopes_#{scope.parameterize}", scope.humanize, class: "form-check-label" %>
+            <%= form.label "scopes_#{scope.parameterize}", class: "form-check-label" do %><code><%= scope %></code><% end %>
           </div>
         <% end %>
       </div>
@@ -114,7 +114,7 @@
                                nil # Value submitted when unchecked (not needed here)
                                %>
             <%# Using the scope name directly for the label's `for` attribute requires matching the checkbox ID %>
-            <%= form.label "scopes_#{scope.parameterize}_edit", scope.humanize, class: "form-check-label" %>
+            <%= form.label "scopes_#{scope.parameterize}_edit", class: "form-check-label" do %><code><%= scope %></code><% end %>
           </div>
         <% end %>
       </div>
