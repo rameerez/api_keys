@@ -82,7 +82,19 @@ module ApiKeys
     #
     # @!attribute [rw] strict_environment_isolation
     #   @return [Boolean] If true, keys only work in their matching environment
-    attr_accessor :environments, :current_environment, :strict_environment_isolation
+    #
+    # @!attribute [rw] default_key_type
+    #   @return [Symbol, nil] Default key type when not specified in create_api_key!
+    #   @example
+    #     config.default_key_type = :secret
+    #
+    # @!attribute [rw] dashboard_allow_cross_environment
+    #   @return [Boolean] If true, dashboard shows keys from all environments.
+    #     If false (default), dashboard only shows keys matching current_environment.
+    #   @example
+    #     config.dashboard_allow_cross_environment = false
+    attr_accessor :environments, :current_environment, :strict_environment_isolation,
+                  :default_key_type, :dashboard_allow_cross_environment
 
     # Custom writer for key_types that validates prefix uniqueness
     attr_reader :key_types
@@ -187,6 +199,8 @@ module ApiKeys
       @environments = {}  # Empty = no environment-based prefixes
       @current_environment = -> { :default }  # Default environment detection
       @strict_environment_isolation = false  # Don't enforce environment isolation by default
+      @default_key_type = nil  # No default key type (must be specified explicitly)
+      @dashboard_allow_cross_environment = false  # Dashboard shows only current environment's keys
     end
   end
 end

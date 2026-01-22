@@ -568,6 +568,113 @@ class KeyTypesTest < ApiKeys::Test
     assert_equal "test", config[:prefix_segment]
   end
 
+  # =============================================================================
+  # Permissions Alias Tests
+  # =============================================================================
+
+  test "permissions is an alias for scopes" do
+    configure_key_types_and_environments!
+
+    user = User.create!(name: "Permissions Alias User")
+    key = user.create_api_key!(
+      name: "Test Key",
+      key_type: :secret,
+      environment: :test,
+      scopes: %w[read write admin]
+    )
+
+    # permissions should return the same as scopes
+    assert_equal key.scopes, key.permissions
+    assert_equal %w[read write admin], key.permissions
+  end
+
+  test "allows_permission? works like allows_scope?" do
+    configure_key_types_and_environments!
+
+    user = User.create!(name: "Permissions Check User")
+    key = user.create_api_key!(
+      name: "Test Key",
+      key_type: :secret,
+      environment: :test,
+      scopes: %w[read write]
+    )
+
+    assert key.allows_permission?("read")
+    assert key.allows_permission?("write")
+    refute key.allows_permission?("admin")
+  end
+
+  # =============================================================================
+  # Default Key Type Tests
+  # =============================================================================
+
+  test "default_key_type configuration option exists" do
+    assert_respond_to ApiKeys.configuration, :default_key_type
+  end
+
+  test "default_key_type defaults to nil" do
+    assert_nil ApiKeys.configuration.default_key_type
+  end
+
+  test "default_key_type is used when key_type not specified" do
+    configure_key_types_and_environments!
+    ApiKeys.configuration.default_key_type = :secret
+
+    user = User.create!(name: "Default Type User")
+    key = user.create_api_key!(name: "Auto Type Key")
+
+    assert_equal "secret", key.key_type
+    assert key.token.start_with?("sk_test_")
+  end
+
+  test "explicit key_type overrides default_key_type" do
+    configure_key_types_and_environments!
+    ApiKeys.configuration.default_key_type = :secret
+
+    user = User.create!(name: "Override Type User")
+    key = user.create_api_key!(name: "Explicit Type Key", key_type: :publishable)
+
+    assert_equal "publishable", key.key_type
+    assert key.token.start_with?("pk_test_")
+  end
+
+  # =============================================================================
+  # Dashboard Environment Filtering Tests
+  # =============================================================================
+
+  test "dashboard_allow_cross_environment configuration option exists" do
+    assert_respond_to ApiKeys.configuration, :dashboard_allow_cross_environment
+  end
+
+  test "dashboard_allow_cross_environment defaults to false" do
+    assert_equal false, ApiKeys.configuration.dashboard_allow_cross_environment
+  end
+
+  test "dashboard_allow_cross_environment can be set to true" do
+    ApiKeys.configure do |config|
+      config.dashboard_allow_cross_environment = true
+    end
+
+    assert_equal true, ApiKeys.configuration.dashboard_allow_cross_environment
+  end
+
+  # =============================================================================
+  # Migration Required Error Tests
+  # =============================================================================
+
+  test "MigrationRequiredError class exists" do
+    assert_kind_of Class, ApiKeys::Errors::MigrationRequiredError
+  end
+
+  test "MigrationRequiredError includes helpful message" do
+    error = ApiKeys::Errors::MigrationRequiredError.new(missing_columns: %w[key_type environment])
+
+    assert_includes error.message, "key_type"
+    assert_includes error.message, "environment"
+    assert_includes error.message, "rails generate api_keys:add_key_types"
+    assert_includes error.message, "rails db:migrate"
+  end
+
   private
 
   def configure_key_types_and_environments!

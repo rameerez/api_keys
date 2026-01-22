@@ -122,6 +122,22 @@ module ApiKeys
       scopes.blank? || scopes.include?(required_scope.to_s)
     end
 
+    # Alias for scopes - provides a more user-friendly API that matches
+    # the configuration DSL where key types use `permissions` for scope ceiling.
+    # Note: We use a method instead of alias_method because `scopes` is defined
+    # dynamically via the `attribute` API in the engine initializer.
+    # @return [Array<String>] The permissions (scopes) assigned to this key
+    def permissions
+      scopes
+    end
+
+    # Check if this key has a specific permission (alias for allows_scope?)
+    # @param required_permission [String, Symbol] The permission to check
+    # @return [Boolean] true if the key has this permission or has no restrictions
+    def allows_permission?(required_permission)
+      allows_scope?(required_permission)
+    end
+
     # Provides a masked version of the token for display (e.g., ak_live_••••rj4p)
     # Requires the plaintext token to be available (only right after creation).
     def masked_token

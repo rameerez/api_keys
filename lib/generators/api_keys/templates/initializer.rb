@@ -242,4 +242,18 @@ ApiKeys.configure do |config|
   # Default: false
   #
   # config.strict_environment_isolation = true
+
+  # Default key type when not specified in create_api_key!
+  # When set and key_types feature is enabled, keys created without explicit
+  # key_type will use this default.
+  # Default: nil (must specify key_type explicitly)
+  #
+  # config.default_key_type = :secret
+
+  # Allow dashboard to show keys from all environments.
+  # When false (default), dashboard only shows keys matching current_environment.
+  # When true, dashboard shows all keys regardless of environment.
+  # Default: false
+  #
+  # config.dashboard_allow_cross_environment = false
 end

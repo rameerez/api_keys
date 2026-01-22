@@ -114,13 +114,24 @@ module ApiKeys
         def create_api_key!(name: nil, scopes: nil, expires_at: nil, metadata: nil, key_type: nil, environment: nil)
           config = ApiKeys.configuration
 
+          # Check for missing columns if key_types feature is enabled
+          if key_types_feature_enabled?(config)
+            check_required_columns!
+          end
+
+          # Use default_key_type if not specified and key_types feature is enabled
+          resolved_key_type = key_type
+          if resolved_key_type.nil? && key_types_feature_enabled?(config) && config.default_key_type.present?
+            resolved_key_type = config.default_key_type
+          end
+
           # Validate key_type if provided and key_types feature is enabled
-          if key_type.present?
-            validate_key_type!(key_type, config)
+          if resolved_key_type.present?
+            validate_key_type!(resolved_key_type, config)
           end
 
           # Determine environment: use provided, or default from config
-          resolved_environment = resolve_environment(environment, key_type, config)
+          resolved_environment = resolve_environment(environment, resolved_key_type, config)
 
           # Validate environment if key_types feature is enabled
           if resolved_environment.present? && key_types_feature_enabled?(config)
@@ -135,8 +146,8 @@ module ApiKeys
           key_scopes = scopes.nil? ? default_scopes : Array(scopes)
 
           # Filter scopes based on key type permissions ceiling
-          if key_type.present?
-            key_scopes = filter_scopes_by_permissions(key_scopes, key_type, config)
+          if resolved_key_type.present?
+            key_scopes = filter_scopes_by_permissions(key_scopes, resolved_key_type, config)
           end
 
           # Create the key using the association, letting AR handle owner_id/type.
@@ -145,7 +156,7 @@ module ApiKeys
             scopes: key_scopes,
             expires_at: expires_at,
             metadata: metadata || {}, # Ensure metadata is at least an empty hash
-            key_type: key_type&.to_s,
+            key_type: resolved_key_type&.to_s,
             environment: resolved_environment&.to_s
             # prefix, token_digest, digest_algorithm are set by ApiKey callbacks
           )
@@ -207,6 +218,19 @@ module ApiKeys
           return [] if permissions.nil? || permissions.empty?
 
           scopes.select { |scope| permissions.include?(scope.to_s) }
+        end
+
+        # Check that required columns exist for key_types feature
+        # Raises MigrationRequiredError if columns are missing
+        def check_required_columns!
+          required_columns = %w[key_type environment]
+          existing_columns = ApiKeys::ApiKey.column_names
+
+          missing_columns = required_columns - existing_columns
+
+          if missing_columns.any?
+            raise ApiKeys::Errors::MigrationRequiredError.new(missing_columns: missing_columns)
+          end
         end
 
         # Example: Check if the owner has reached their API key limit.

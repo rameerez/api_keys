@@ -56,5 +56,18 @@ module ApiKeys
         super("Maximum number of #{key_type} keys (#{limit}) reached for #{environment} environment")
       end
     end
+
+    # Raised when key_types are configured but required database columns are missing
+    class MigrationRequiredError < BaseError
+      attr_reader :missing_columns
+
+      def initialize(missing_columns:)
+        @missing_columns = missing_columns
+        super(
+          "Key types are configured but required database columns are missing: #{missing_columns.join(', ')}. " \
+          "Run: rails generate api_keys:add_key_types && rails db:migrate"
+        )
+      end
+    end
   end
 end
