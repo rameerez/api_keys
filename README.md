@@ -163,7 +163,7 @@ plaintext_token = @api_key.token
 
 For security reasons, the **gem does not store the generated key** in the database.
 
-We only store a salted hash, so the API key / API token itself is only available in plaintext immediately after creation, as `@api_key.token` – the `.token` method won't work any other time.
+We only store a secure hash (SHA256 by default), so the API key / API token itself is only available in plaintext immediately after creation, as `@api_key.token` – the `.token` method won't work any other time.
 
 With this token, your users can make calls to your endpoints by attaching it as an `"Authorization: Bearer ak_123abc..."` in their HTTP calls headers, like this:
 
@@ -339,6 +339,45 @@ The gem installation creates an initializer at `config/initializers/api_keys.rb`
 
 The default initializer is self-explanatory and self-documented, please consider spending a bit of time reading through it if you want to fine-tune the gem.
 
+### Token prefixes
+
+API keys are generated with a prefix followed by random characters:
+
+```
+ak_7Hq2mJ6vK9pRs3xYz9...
+^^        ^^^^^^^^^^^
+prefix    random part
+```
+
+The prefix makes it easy to identify API keys at a glance (in logs, code reviews, etc.) and helps services like GitHub detect leaked credentials.
+
+**Simple mode (default):** All keys use the same prefix from `token_prefix`:
+```ruby
+config.token_prefix = -> { "myapp_" }  # → myapp_abc123...
+```
+
+**Key types mode:** When you configure `key_types`, different key types get different prefixes based on their type and environment (Stripe-style):
+```ruby
+# With key_types configured, prefixes come from the type configuration:
+# publishable + test → pk_test_abc123...
+# secret + live → sk_live_xyz789...
+```
+
+#### Prefix precedence
+
+When using key types, here's how the prefix is determined:
+
+| `key_types` Config | `key_type` Param | Resulting Prefix |
+|-------------------|------------------|------------------|
+| `{}` (disabled) | any | Uses `token_prefix` → `"ak_..."` |
+| Configured | `nil` | Uses `token_prefix` → `"ak_..."` |
+| Configured | `:publishable` | Uses type config → `"pk_test_..."` |
+| Configured | `:secret` | Uses type config → `"sk_live_..."` |
+
+In short: `token_prefix` is only used when key types are not configured OR when creating a key without specifying a `key_type`. When you specify both `key_types` config and a `key_type` parameter, the prefix comes entirely from the key type configuration.
+
+See the [Key Types](#key-types-stripe-style-publishable--secret-keys) section below for full details.
+
 Some highlights:
 
 ### Accept API keys via query params instead of Authentication HTTP headers
@@ -357,7 +396,7 @@ config.query_param = "api_key"
 
 ### Changing the hashing function to `bcrypt` for maximum security
 
-By default, the `api_keys` gem hashes tokens using `sha256`, for fast token lookup and low-latency API authentication. Tokens are salted via their prefix, and only stored as secure digests.
+By default, the `api_keys` gem hashes tokens using `sha256`, which is the industry standard for API keys (used by Stripe, GitHub, AWS). SHA256 is secure for high-entropy tokens because the 192 bits of randomness make brute-force attacks computationally infeasible. We use SHA256 and not other hasing algorithms for fast token lookup and low-latency API authentication.
 
 If you need slower, password-grade hashing (e.g., for extremely sensitive tokens), you can switch to bcrypt:
 
