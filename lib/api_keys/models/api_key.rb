@@ -40,6 +40,8 @@ module ApiKeys
 
     # TODO: Add validation for expires_at > Time.current if present
     validate :expiration_date_cannot_be_in_the_past, if: :expires_at?
+    validate :within_key_type_limit, on: :create, if: -> { key_type.present? && owner.present? }
+    validate :non_revocable_keys_cannot_expire, if: -> { key_type.present? && expires_at.present? }
 
     # TODO: Add validation for scope string format
     # TODO: Add validation for prefix format (e.g., must end with _)
@@ -56,11 +58,13 @@ module ApiKeys
     scope :inactive, -> { revoked.or(expired) }
     scope :for_prefix, ->(prefix) { where(prefix: prefix) }
     scope :for_owner, ->(owner) { where(owner: owner) }
-    # TODO: Add more scopes as needed (e.g., for_owner)
+    scope :for_key_type, ->(key_type) { where(key_type: key_type.to_s) }
+    scope :for_environment, ->(environment) { where(environment: environment.to_s) }
 
     # == Instance Methods ==
 
     def revoke!
+      raise ApiKeys::Errors::KeyNotRevocableError unless revocable?
       update!(revoked_at: Time.current)
     end
 
@@ -76,6 +80,39 @@ module ApiKeys
       !revoked? && !expired?
     end
 
+    # Returns true if this key can be revoked/destroyed
+    # Keys without a key_type (legacy) are always revocable
+    # Keys with a key_type check the configuration
+    def revocable?
+      return true if key_type.blank?
+      config = key_type_config
+      return true if config.nil?
+      config.fetch(:revocable, true)
+    end
+
+    # Returns the configuration hash for this key's type
+    def key_type_config
+      return nil if key_type.blank?
+      ApiKeys.configuration.key_types&.dig(key_type.to_sym)
+    end
+
+    # Returns the configuration hash for this key's environment
+    def environment_config
+      return nil if environment.blank?
+      ApiKeys.configuration.environments&.dig(environment.to_sym)
+    end
+
+    # Override destroy to prevent destroying non-revocable keys
+    def destroy
+      raise ApiKeys::Errors::KeyNotRevocableError unless revocable?
+      super
+    end
+
+    def destroy!
+      raise ApiKeys::Errors::KeyNotRevocableError unless revocable?
+      super
+    end
+
     # Basic scope check. Assumes scopes are stored as an array of strings.
     # Returns true if the key has no specific scopes (allowing all) or includes the required scope.
     def allows_scope?(required_scope)
@@ -84,6 +121,22 @@ module ApiKeys
       # Check if the attribute method exists before calling .blank? or .include?
       return true unless respond_to?(:scopes) # Guard clause if loaded before attribute definition
       scopes.blank? || scopes.include?(required_scope.to_s)
+    end
+
+    # Alias for scopes - provides a more user-friendly API that matches
+    # the configuration DSL where key types use `permissions` for scope ceiling.
+    # Note: We use a method instead of alias_method because `scopes` is defined
+    # dynamically via the `attribute` API in the engine initializer.
+    # @return [Array<String>] The permissions (scopes) assigned to this key
+    def permissions
+      scopes
+    end
+
+    # Check if this key has a specific permission (alias for allows_scope?)
+    # @param required_permission [String, Symbol] The permission to check
+    # @return [Boolean] true if the key has this permission or has no restrictions
+    def allows_permission?(required_permission)
+      allows_scope?(required_permission)
     end
 
     # Provides a masked version of the token for display (e.g., ak_live_••••rj4p)
@@ -108,23 +161,47 @@ module ApiKeys
     def set_defaults
       # NOTE: Defaults for scopes/metadata handled by `attribute` definitions in engine initializer.
 
-      # Determine the prefix: owner-specific setting > global config
-      # Note: `owner` might not be set yet if called outside normal AR flow.
-      owner_prefix_config = nil
-      if owner.present? && owner.class.respond_to?(:api_keys_settings)
-        owner_prefix_config = owner.class.api_keys_settings[:token_prefix]
+      # If key_types feature is enabled (non-empty key_types config), use type+env prefix
+      if key_types_feature_enabled? && key_type.present?
+        self.prefix ||= build_typed_prefix
+      else
+        # Legacy behavior: use owner-specific or global config prefix
+        owner_prefix_config = nil
+        if owner.present? && owner.class.respond_to?(:api_keys_settings)
+          owner_prefix_config = owner.class.api_keys_settings[:token_prefix]
+        end
+
+        # Use owner setting if present, otherwise fall back to global config
+        prefix_config = owner_prefix_config || ApiKeys.configuration.token_prefix
+
+        # Evaluate the prefix config (it might be a Proc)
+        self.prefix ||= prefix_config.is_a?(Proc) ? prefix_config.call : prefix_config
       end
-
-      # Use owner setting if present, otherwise fall back to global config
-      prefix_config = owner_prefix_config || ApiKeys.configuration.token_prefix
-
-      # Evaluate the prefix config (it might be a Proc)
-      # Ensure `self.prefix` is only set if it's not already present.
-      self.prefix ||= prefix_config.is_a?(Proc) ? prefix_config.call : prefix_config
 
       # Removed default scopes logic here. It's correctly handled in the
       # HasApiKeys#create_api_key! helper method, which is the intended
       # way to create keys with proper default scope application.
+    end
+
+    # Build prefix from key_type and environment configuration
+    # e.g., publishable + test → "pk_test_"
+    def build_typed_prefix
+      type_config = key_type_config
+      env_config = environment_config
+
+      type_prefix = type_config&.dig(:prefix) || key_type.to_s[0..1]
+      env_segment = env_config&.dig(:prefix_segment)
+
+      if env_segment.present?
+        "#{type_prefix}_#{env_segment}_"
+      else
+        "#{type_prefix}_"
+      end
+    end
+
+    # Check if key types feature is enabled
+    def key_types_feature_enabled?
+      ApiKeys.configuration.key_types.present? && ApiKeys.configuration.key_types.any?
     end
 
     # Generates the secure token, hashes it, and sets relevant attributes.
@@ -203,6 +280,49 @@ module ApiKeys
 
     def expiration_date_cannot_be_in_the_past
       errors.add(:expires_at, "can't be in the past") if expires_at.present? && expires_at < Time.current
+    end
+
+    # Non-revocable keys cannot have expiration dates.
+    # If a key expires but cannot be revoked/deleted, the user would be stuck
+    # with a useless expired key they can't remove.
+    def non_revocable_keys_cannot_expire
+      return unless key_type.present? && expires_at.present?
+
+      config = key_type_config
+      return unless config # No config = allow (legacy behavior)
+
+      # If this key type is non-revocable, prevent setting expiration
+      if config[:revocable] == false
+        errors.add(:expires_at, "cannot be set on non-revocable keys (#{key_type} keys cannot be revoked or deleted)")
+      end
+    end
+
+    # Check if creating this key would exceed the limit for this key type/environment
+    # Uses row-level locking to prevent race conditions when multiple requests
+    # try to create keys concurrently.
+    def within_key_type_limit
+      return unless key_types_feature_enabled?
+
+      config = key_type_config
+      return unless config # No config = no limit
+
+      limit = config[:limit]
+      return unless limit # nil limit = unlimited
+
+      # Use pessimistic locking to prevent race conditions.
+      # Lock the owner's existing keys of this type/environment while counting.
+      # This ensures atomic check-then-create semantics.
+      # Note: .lock(true) generates "FOR UPDATE" in SQL but is the Rails-idiomatic approach.
+      existing_count = owner.api_keys
+                            .lock(true)
+                            .active
+                            .where(key_type: key_type.to_s)
+                            .where(environment: environment.to_s)
+                            .count
+
+      if existing_count >= limit
+        errors.add(:base, "Maximum number of #{key_type} keys (#{limit}) reached for #{environment} environment")
+      end
     end
 
   end

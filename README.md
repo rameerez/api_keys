@@ -417,6 +417,151 @@ There's also a `track_requests_count` config option that you can turn on so the 
 
 But again, this is turned off by default for performance purposes, and depends on having a working, well-configured Active Job backend.
 
+## Key Types: Stripe-style Publishable & Secret Keys
+
+For applications that distribute software with embedded API keys (desktop apps, mobile apps, CLI tools), you may want to differentiate between key types with different permission levels. The `api_keys` gem supports Stripe-style publishable/secret key types with optional test/live environment isolation.
+
+### Why Key Types?
+
+When you distribute software with an embedded API key, that key can potentially be extracted by malicious users. Key types solve this by letting you create:
+
+- **Publishable keys** (`pk_test_...`, `pk_live_...`): Safe to embed in distributed apps. Limited permissions (e.g., can only validate licenses, not issue new ones). Cannot be revoked (to prevent accidentally breaking all deployed apps).
+
+- **Secret keys** (`sk_test_...`, `sk_live_...`): Full access, meant for server-side use only. Can be revoked anytime.
+
+### Configuration
+
+Enable key types in your initializer:
+
+```ruby
+# config/initializers/api_keys.rb
+ApiKeys.configure do |config|
+  config.key_types = {
+    publishable: {
+      prefix: "pk",                    # Token prefix → pk_test_, pk_live_
+      permissions: %w[read validate],  # Scope ceiling (max permissions allowed)
+      revocable: false,                # Cannot be revoked or deleted
+      limit: 1                         # Max 1 per owner per environment
+    },
+    secret: {
+      prefix: "sk",
+      permissions: :all                # No scope restrictions
+      # revocable defaults to true, limit defaults to nil (unlimited)
+    }
+  }
+
+  config.environments = {
+    test: { prefix_segment: "test" },  # → pk_test_, sk_test_
+    live: { prefix_segment: "live" }   # → pk_live_, sk_live_
+  }
+
+  # Detect current environment automatically
+  config.current_environment = -> { Rails.env.production? ? :live : :test }
+
+  # Enable strict environment isolation (test keys fail in prod, live keys fail in dev)
+  config.strict_environment_isolation = true
+end
+```
+
+### Creating Typed Keys
+
+```ruby
+# Create a publishable key (limited permissions, cannot be revoked)
+pk = user.create_api_key!(
+  name: "Production App",
+  key_type: :publishable,
+  environment: :live  # Optional, defaults to current_environment
+)
+pk.token  # => "pk_live_abc123..."
+
+# Create a secret key (full access)
+sk = user.create_api_key!(
+  name: "Admin Dashboard",
+  key_type: :secret
+)
+sk.token  # => "sk_test_xyz789..."
+```
+
+### Scope Ceiling
+
+When a key type has limited `permissions`, any scopes you pass are filtered:
+
+```ruby
+# Publishable keys can only have read/validate permissions
+pk = user.create_api_key!(
+  key_type: :publishable,
+  scopes: %w[read validate issue_license admin]  # Tries to request all
+)
+pk.scopes  # => ["read", "validate"]  # Only allowed scopes kept
+
+# Secret keys with permissions: :all keep everything
+sk = user.create_api_key!(
+  key_type: :secret,
+  scopes: %w[read validate issue_license admin]
+)
+sk.scopes  # => ["read", "validate", "issue_license", "admin"]
+```
+
+### Non-Revocable Keys
+
+Keys with `revocable: false` protect against accidental deletion:
+
+```ruby
+pk = user.create_api_key!(key_type: :publishable)
+
+pk.revocable?  # => false
+pk.revoke!     # Raises ApiKeys::Errors::KeyNotRevocableError
+pk.destroy!    # Raises ApiKeys::Errors::KeyNotRevocableError
+```
+
+The dashboard UI automatically hides the revoke button for non-revocable keys.
+
+### Environment Isolation
+
+With `strict_environment_isolation = true`, keys can only authenticate in their matching environment:
+
+```ruby
+# In production (current_environment returns :live)
+# A test key will fail authentication with error_code: :environment_mismatch
+```
+
+This prevents accidentally using test keys in production (or vice versa).
+
+### Key Limits
+
+The `limit` option restricts how many keys of a type can exist per owner per environment:
+
+```ruby
+# With limit: 1 for publishable keys
+user.create_api_key!(key_type: :publishable, environment: :test)  # Works
+user.create_api_key!(key_type: :publishable, environment: :test)  # Raises validation error
+
+# But can have one per environment
+user.create_api_key!(key_type: :publishable, environment: :live)  # Works
+```
+
+### Sandbox/Live Naming
+
+You can use any environment names. For Stripe-style sandbox:
+
+```ruby
+config.environments = {
+  sandbox: { prefix_segment: "test" },  # → pk_test_
+  live: { prefix_segment: "live" }      # → pk_live_
+}
+```
+
+### Upgrading Existing Installations
+
+If you're adding key types to an existing installation, run the migration generator:
+
+```bash
+rails g api_keys:add_key_types
+rails db:migrate
+```
+
+Existing keys without `key_type`/`environment` continue to work normally (backwards compatible).
+
 ## Enterprise-ready by design
 The `api_keys` gem ships with:
 

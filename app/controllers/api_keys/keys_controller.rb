@@ -7,10 +7,19 @@ module ApiKeys
 
     # GET /keys
     def index
-      # Fetch only active keys for the main list, maybe sorted by creation date
-      @api_keys = current_api_keys_owner.api_keys.active.order(created_at: :desc)
+      # Start with all keys for the owner
+      base_scope = current_api_keys_owner.api_keys
+
+      # Filter by environment if key_types feature is enabled and cross-environment is disabled
+      if key_types_feature_enabled? && !ApiKeys.configuration.dashboard_allow_cross_environment
+        current_env = resolve_current_environment
+        base_scope = base_scope.where(environment: [current_env.to_s, nil, ""])
+      end
+
+      # Fetch only active keys for the main list, sorted by creation date
+      @api_keys = base_scope.active.order(created_at: :desc)
       # Optionally, fetch inactive ones for a separate section or filter
-      @inactive_api_keys = current_api_keys_owner.api_keys.inactive.order(created_at: :desc)
+      @inactive_api_keys = base_scope.inactive.order(created_at: :desc)
     end
 
     # GET /keys/:id
@@ -41,7 +50,8 @@ module ApiKeys
         @api_key = current_api_keys_owner.create_api_key!(
           name: api_key_params[:name],
           scopes: api_key_params[:scopes],
-          expires_at: parse_expiration(api_key_params[:expires_at_preset])
+          expires_at: parse_expiration(api_key_params[:expires_at_preset]),
+          key_type: api_key_params[:key_type].presence&.to_sym
           # Metadata could be added here if needed
         )
 
@@ -81,12 +91,13 @@ module ApiKeys
 
     # POST /keys/:id/revoke
     def revoke
-      if @api_key.revoke!
-        redirect_to keys_path, notice: "API key revoked successfully."
-      else
-        # This shouldn't typically fail unless there's a callback issue
-        redirect_to keys_path, alert: "Failed to revoke API key."
-      end
+      @api_key.revoke!
+      redirect_to keys_path, notice: "API key revoked successfully."
+    rescue ApiKeys::Errors::KeyNotRevocableError
+      redirect_to keys_path, alert: "This API key cannot be revoked."
+    rescue => e
+      # This shouldn't typically fail unless there's a callback issue
+      redirect_to keys_path, alert: "Failed to revoke API key: #{e.message}"
     end
 
     private
@@ -100,8 +111,9 @@ module ApiKeys
 
     # Only allow a list of trusted parameters through for creation.
     # Added :expires_at_preset for the dropdown selector.
+    # Added :key_type for the key types feature.
     def api_key_params
-      permitted_params = params.require(:api_key).permit(:name, :expires_at_preset, scopes: [])
+      permitted_params = params.require(:api_key).permit(:name, :expires_at_preset, :key_type, scopes: [])
       permitted_params[:scopes]&.reject!(&:blank?) # Filter out blank strings
       permitted_params
     end
@@ -124,6 +136,17 @@ module ApiKeys
       when "no_expiration" then nil
       else nil # Default to no expiration if invalid preset
       end
+    end
+
+    # Check if key types feature is enabled
+    def key_types_feature_enabled?
+      ApiKeys.configuration.key_types.present? && ApiKeys.configuration.key_types.any?
+    end
+
+    # Get the current environment from configuration
+    def resolve_current_environment
+      env_config = ApiKeys.configuration.current_environment
+      env_config.respond_to?(:call) ? env_config.call : env_config
     end
   end
 end

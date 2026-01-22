@@ -13,6 +13,35 @@
 
   <%# Fields only available on NEW %>
   <% unless api_key.persisted? %>
+    <%# Key Type selector (only shown when key_types feature is enabled) %>
+    <% if ApiKeys.configuration.key_types.present? && ApiKeys.configuration.key_types.any? %>
+      <div>
+        <%= form.label :key_type, "Key Type" %>
+        <%= form.select :key_type,
+            options_for_select(
+              ApiKeys.configuration.key_types.map { |type, config|
+                label = type.to_s.humanize
+                label += " (#{config[:prefix]}_)" if config[:prefix]
+                [label, type.to_s]
+              },
+              api_key.key_type
+            ),
+            { prompt: "Select key type..." }
+        %>
+        <% ApiKeys.configuration.key_types.each do |type, config| %>
+          <% if config[:permissions] != :all %>
+            <small style="display: block; color: #666;">
+              <strong><%= type.to_s.humanize %>:</strong>
+              Limited to <%= config[:permissions]&.join(", ") || "no" %> permissions
+              <% unless config.fetch(:revocable, true) %>
+                <em>(cannot be revoked)</em>
+              <% end %>
+            </small>
+          <% end %>
+        <% end %>
+      </div>
+    <% end %>
+
     <div>
       <%= form.label :name, "Name (optional)" %>
       <%= form.text_field :name, placeholder: "e.g., myproject-production-key" %>

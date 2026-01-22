@@ -42,6 +42,12 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       # Timestamp when the key was revoked (null means active)
       t.datetime :revoked_at
 
+      # Key type identifier (e.g., "publishable", "secret") for Stripe-style key types
+      t.string :key_type
+
+      # Environment identifier (e.g., "test", "live") for environment isolation
+      t.string :environment
+
       t.timestamps
 
       # Critical index for authentication performance
@@ -58,6 +64,9 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       t.index :expires_at
       t.index :revoked_at
       t.index :last_used_at
+      t.index :key_type
+      t.index :environment
+      t.index [:owner_type, :owner_id, :key_type, :environment], name: "index_api_keys_owner_type_env"
     end
   end
 

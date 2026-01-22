@@ -56,6 +56,8 @@ ActiveRecord::Schema.define do
     t.bigint   :requests_count, default: 0, null: false
     t.datetime :revoked_at
     t.string   :last4, null: false, default: ""
+    t.string   :key_type       # New: key type identifier (e.g., "publishable", "secret")
+    t.string   :environment    # New: environment identifier (e.g., "test", "live")
     t.timestamps
 
     t.index :token_digest, unique: true
@@ -64,6 +66,9 @@ ActiveRecord::Schema.define do
     t.index :expires_at
     t.index :revoked_at
     t.index :last_used_at
+    t.index :key_type
+    t.index :environment
+    t.index [:owner_type, :owner_id, :key_type, :environment], name: "index_api_keys_owner_type_env"
   end
 end
 

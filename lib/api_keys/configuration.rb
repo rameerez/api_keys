@@ -55,6 +55,72 @@ module ApiKeys
     # Debugging
     attr_accessor :debug_logging
 
+    # Key Types & Environments (Stripe-style publishable/secret keys)
+    #
+    # @!attribute [rw] key_types
+    #   @return [Hash] Key type definitions. Each key type has:
+    #     - :prefix [String] Token prefix (e.g., "pk" → pk_test_)
+    #     - :permissions [Array<String>, :all] Scope ceiling for this type
+    #     - :revocable [Boolean] Whether keys can be revoked (default: true)
+    #     - :limit [Integer, nil] Max keys per owner per environment (nil = unlimited)
+    #   @example
+    #     config.key_types = {
+    #       publishable: { prefix: "pk", permissions: %w[read], revocable: false, limit: 1 },
+    #       secret: { prefix: "sk", permissions: :all }
+    #     }
+    #
+    # @!attribute [rw] environments
+    #   @return [Hash] Environment definitions. Each environment has:
+    #     - :prefix_segment [String, nil] Middle part of prefix (e.g., "test" → pk_test_)
+    #   @example
+    #     config.environments = { test: { prefix_segment: "test" }, live: { prefix_segment: "live" } }
+    #
+    # @!attribute [rw] current_environment
+    #   @return [Proc, Symbol] Lambda or symbol returning current environment
+    #   @example
+    #     config.current_environment = -> { Rails.env.production? ? :live : :test }
+    #
+    # @!attribute [rw] strict_environment_isolation
+    #   @return [Boolean] If true, keys only work in their matching environment
+    #
+    # @!attribute [rw] default_key_type
+    #   @return [Symbol, nil] Default key type when not specified in create_api_key!
+    #   @example
+    #     config.default_key_type = :secret
+    #
+    # @!attribute [rw] dashboard_allow_cross_environment
+    #   @return [Boolean] If true, dashboard shows keys from all environments.
+    #     If false (default), dashboard only shows keys matching current_environment.
+    #   @example
+    #     config.dashboard_allow_cross_environment = false
+    attr_accessor :environments, :current_environment, :strict_environment_isolation,
+                  :default_key_type, :dashboard_allow_cross_environment
+
+    # Custom writer for key_types that validates prefix uniqueness
+    attr_reader :key_types
+
+    # Sets the key types configuration with prefix collision validation.
+    # @param value [Hash] Key type definitions
+    # @raise [ArgumentError] If multiple key types share the same prefix
+    def key_types=(value)
+      validate_key_type_prefixes!(value) if value.is_a?(Hash) && value.any?
+      @key_types = value
+    end
+
+    private
+
+    # Validates that all key type prefixes are unique to prevent token collision
+    def validate_key_type_prefixes!(key_types_hash)
+      prefixes = key_types_hash.map { |_type, config| config[:prefix] }.compact
+      duplicates = prefixes.group_by(&:itself).select { |_k, v| v.size > 1 }.keys
+
+      if duplicates.any?
+        raise ArgumentError, "Key type prefixes must be unique. Duplicate prefix(es): #{duplicates.join(', ')}"
+      end
+    end
+
+    public
+
     # == Initialization ==
 
     def initialize
@@ -127,6 +193,14 @@ module ApiKeys
 
       # Tenant Resolution
       @tenant_resolver = ->(api_key) { api_key.owner if api_key.respond_to?(:owner) }
+
+      # Key Types & Environments (default to empty/disabled for backwards compatibility)
+      @key_types = {}  # Empty = feature disabled, legacy behavior
+      @environments = {}  # Empty = no environment-based prefixes
+      @current_environment = -> { :default }  # Default environment detection
+      @strict_environment_isolation = false  # Don't enforce environment isolation by default
+      @default_key_type = nil  # No default key type (must be specified explicitly)
+      @dashboard_allow_cross_environment = false  # Dashboard shows only current environment's keys
     end
   end
 end
