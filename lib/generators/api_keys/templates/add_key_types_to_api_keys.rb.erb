@@ -1,0 +1,18 @@
+# frozen_string_literal: true
+
+# Migration to add key_type and environment columns to the api_keys table.
+# This enables the Stripe-style publishable/secret key types feature.
+#
+# Run this migration if you're upgrading from a version of api_keys that
+# didn't have key types support.
+class AddKeyTypesToApiKeys < ActiveRecord::Migration<%= migration_version %>
+  def change
+    add_column :api_keys, :key_type, :string
+    add_column :api_keys, :environment, :string
+
+    add_index :api_keys, :key_type
+    add_index :api_keys, :environment
+    add_index :api_keys, [:owner_type, :owner_id, :key_type, :environment],
+              name: "index_api_keys_owner_type_env"
+  end
+end

@@ -55,6 +55,35 @@ module ApiKeys
     # Debugging
     attr_accessor :debug_logging
 
+    # Key Types & Environments (Stripe-style publishable/secret keys)
+    #
+    # @!attribute [rw] key_types
+    #   @return [Hash] Key type definitions. Each key type has:
+    #     - :prefix [String] Token prefix (e.g., "pk" → pk_test_)
+    #     - :permissions [Array<String>, :all] Scope ceiling for this type
+    #     - :revocable [Boolean] Whether keys can be revoked (default: true)
+    #     - :limit [Integer, nil] Max keys per owner per environment (nil = unlimited)
+    #   @example
+    #     config.key_types = {
+    #       publishable: { prefix: "pk", permissions: %w[read], revocable: false, limit: 1 },
+    #       secret: { prefix: "sk", permissions: :all }
+    #     }
+    #
+    # @!attribute [rw] environments
+    #   @return [Hash] Environment definitions. Each environment has:
+    #     - :prefix_segment [String, nil] Middle part of prefix (e.g., "test" → pk_test_)
+    #   @example
+    #     config.environments = { test: { prefix_segment: "test" }, live: { prefix_segment: "live" } }
+    #
+    # @!attribute [rw] current_environment
+    #   @return [Proc, Symbol] Lambda or symbol returning current environment
+    #   @example
+    #     config.current_environment = -> { Rails.env.production? ? :live : :test }
+    #
+    # @!attribute [rw] strict_environment_isolation
+    #   @return [Boolean] If true, keys only work in their matching environment
+    attr_accessor :key_types, :environments, :current_environment, :strict_environment_isolation
+
     # == Initialization ==
 
     def initialize
@@ -127,6 +156,12 @@ module ApiKeys
 
       # Tenant Resolution
       @tenant_resolver = ->(api_key) { api_key.owner if api_key.respond_to?(:owner) }
+
+      # Key Types & Environments (default to empty/disabled for backwards compatibility)
+      @key_types = {}  # Empty = feature disabled, legacy behavior
+      @environments = {}  # Empty = no environment-based prefixes
+      @current_environment = -> { :default }  # Default environment detection
+      @strict_environment_isolation = false  # Don't enforce environment isolation by default
     end
   end
 end

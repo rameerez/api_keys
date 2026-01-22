@@ -100,31 +100,113 @@ module ApiKeys
         #
         # @param name [String] The name for the new API key (required).
         # @param scopes [Array<String>, nil] Scopes for the key. Defaults to owner/global settings.
+        #   When key_type is specified, scopes are filtered to only include those allowed
+        #   by the key type's permissions ceiling.
         # @param expires_at [Time, nil] Optional expiration timestamp.
         # @param metadata [Hash, nil] Optional metadata hash.
+        # @param key_type [Symbol, nil] The key type (e.g., :publishable, :secret).
+        #   Must be defined in ApiKeys.configuration.key_types if provided.
+        # @param environment [Symbol, nil] The environment (e.g., :test, :live).
+        #   Defaults to current_environment if key_types feature is enabled.
         # @return [ApiKeys::ApiKey] The newly created ApiKey instance. The plaintext token
         #                           is available via the `#token` attribute on this instance
         #                           *only until it's reloaded*.
-        def create_api_key!(name: nil, scopes: nil, expires_at: nil, metadata: nil)
+        def create_api_key!(name: nil, scopes: nil, expires_at: nil, metadata: nil, key_type: nil, environment: nil)
+          config = ApiKeys.configuration
+
+          # Validate key_type if provided and key_types feature is enabled
+          if key_type.present?
+            validate_key_type!(key_type, config)
+          end
+
+          # Determine environment: use provided, or default from config
+          resolved_environment = resolve_environment(environment, key_type, config)
+
+          # Validate environment if key_types feature is enabled
+          if resolved_environment.present? && key_types_feature_enabled?(config)
+            validate_environment!(resolved_environment, config)
+          end
+
           # Fetch default scopes from this owner class's settings, falling back to global config.
           owner_settings = self.class.api_keys_settings
-          default_scopes = owner_settings&.[](:default_scopes) || ApiKeys.configuration.default_scopes || []
+          default_scopes = owner_settings&.[](:default_scopes) || config.default_scopes || []
 
           # Use provided scopes if given, otherwise use the calculated defaults.
           key_scopes = scopes.nil? ? default_scopes : Array(scopes)
+
+          # Filter scopes based on key type permissions ceiling
+          if key_type.present?
+            key_scopes = filter_scopes_by_permissions(key_scopes, key_type, config)
+          end
 
           # Create the key using the association, letting AR handle owner_id/type.
           api_key = self.api_keys.create!(
             name: name,
             scopes: key_scopes,
             expires_at: expires_at,
-            metadata: metadata || {} # Ensure metadata is at least an empty hash
+            metadata: metadata || {}, # Ensure metadata is at least an empty hash
+            key_type: key_type&.to_s,
+            environment: resolved_environment&.to_s
             # prefix, token_digest, digest_algorithm are set by ApiKey callbacks
           )
 
           # Return the ApiKey instance itself.
           # The plaintext token is available via `api_key.token` immediately after this.
           api_key
+        end
+
+        private
+
+        def key_types_feature_enabled?(config)
+          config.key_types.present? && config.key_types.any?
+        end
+
+        def validate_key_type!(key_type, config)
+          return unless key_types_feature_enabled?(config)
+
+          valid_types = config.key_types.keys.map(&:to_sym)
+          unless valid_types.include?(key_type.to_sym)
+            raise ArgumentError, "Invalid key type '#{key_type}'. Valid types: #{valid_types.join(', ')}"
+          end
+        end
+
+        def validate_environment!(environment, config)
+          return unless config.environments.present? && config.environments.any?
+
+          valid_environments = config.environments.keys.map(&:to_sym)
+          unless valid_environments.include?(environment.to_sym)
+            raise ArgumentError, "Invalid environment '#{environment}'. Valid environments: #{valid_environments.join(', ')}"
+          end
+        end
+
+        def resolve_environment(provided_environment, key_type, config)
+          # If explicitly provided, use that
+          return provided_environment if provided_environment.present?
+
+          # If key_types feature is enabled, use current_environment
+          if key_types_feature_enabled?(config) && key_type.present?
+            env_lambda = config.current_environment
+            return env_lambda.respond_to?(:call) ? env_lambda.call : env_lambda
+          end
+
+          nil
+        end
+
+        def filter_scopes_by_permissions(scopes, key_type, config)
+          return scopes unless key_types_feature_enabled?(config)
+
+          type_config = config.key_types[key_type.to_sym]
+          return scopes unless type_config
+
+          permissions = type_config[:permissions]
+
+          # :all means no filtering
+          return scopes if permissions == :all
+
+          # Filter to only include scopes that are within the permissions ceiling
+          return [] if permissions.nil? || permissions.empty?
+
+          scopes.select { |scope| permissions.include?(scope.to_s) }
         end
 
         # Example: Check if the owner has reached their API key limit.

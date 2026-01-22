@@ -181,4 +181,65 @@ ApiKeys.configure do |config|
   # Enable verbose logging for debugging purposes.
   # Default: false
   # config.debug_logging = true
+
+  # === Key Types & Environments (Stripe-style Publishable/Secret Keys) ===
+  #
+  # For applications that distribute software with embedded API keys (desktop apps,
+  # mobile apps, CLI tools), you can differentiate between key types with different
+  # permission levels - similar to Stripe's publishable/secret key pattern.
+  #
+  # When enabled, keys get prefixes like: pk_test_, pk_live_, sk_test_, sk_live_
+  #
+  # By default, key types are DISABLED (empty hash) for backwards compatibility.
+  # Existing keys without key_type/environment continue to work normally.
+
+  # Define your key types with their properties:
+  # - prefix: The token prefix for this type (e.g., "pk" → pk_test_, pk_live_)
+  # - permissions: Scope ceiling - maximum allowed scopes (:all for unrestricted)
+  # - revocable: Whether keys of this type can be revoked/deleted (default: true)
+  # - limit: Maximum keys of this type per owner per environment (nil = unlimited)
+  #
+  # config.key_types = {
+  #   publishable: {
+  #     prefix: "pk",                    # → pk_test_, pk_live_
+  #     permissions: %w[read validate],  # Can only have these scopes (scope ceiling)
+  #     revocable: false,                # CANNOT be revoked - protects deployed apps!
+  #     limit: 1                         # Only 1 publishable key per environment
+  #   },
+  #   secret: {
+  #     prefix: "sk",                    # → sk_test_, sk_live_
+  #     permissions: :all                # No scope restrictions
+  #     # revocable: true (default)      # Can be revoked anytime
+  #     # limit: nil (default)           # Unlimited keys allowed
+  #   }
+  # }
+
+  # Define your environments with their prefix segments:
+  # - prefix_segment: The middle part of the token prefix (e.g., "test" → pk_test_)
+  #   Set to nil for single-environment setups (prefix becomes just "pk_")
+  #
+  # config.environments = {
+  #   test: { prefix_segment: "test" },  # Development/staging environment
+  #   live: { prefix_segment: "live" }   # Production environment
+  # }
+  #
+  # Alternative naming (Stripe's newer convention):
+  # config.environments = {
+  #   sandbox: { prefix_segment: "test" },
+  #   live: { prefix_segment: "live" }
+  # }
+
+  # Lambda that returns the current environment.
+  # Used to auto-select environment when creating keys and for isolation checks.
+  # Default: -> { :default }
+  #
+  # config.current_environment = -> { Rails.env.production? ? :live : :test }
+
+  # Enable strict environment isolation.
+  # When true, keys can ONLY authenticate in their matching environment:
+  # - test keys fail with :environment_mismatch in production
+  # - live keys fail with :environment_mismatch in development/test
+  # Default: false
+  #
+  # config.strict_environment_isolation = true
 end

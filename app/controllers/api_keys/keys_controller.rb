@@ -41,7 +41,8 @@ module ApiKeys
         @api_key = current_api_keys_owner.create_api_key!(
           name: api_key_params[:name],
           scopes: api_key_params[:scopes],
-          expires_at: parse_expiration(api_key_params[:expires_at_preset])
+          expires_at: parse_expiration(api_key_params[:expires_at_preset]),
+          key_type: api_key_params[:key_type].presence&.to_sym
           # Metadata could be added here if needed
         )
 
@@ -81,12 +82,13 @@ module ApiKeys
 
     # POST /keys/:id/revoke
     def revoke
-      if @api_key.revoke!
-        redirect_to keys_path, notice: "API key revoked successfully."
-      else
-        # This shouldn't typically fail unless there's a callback issue
-        redirect_to keys_path, alert: "Failed to revoke API key."
-      end
+      @api_key.revoke!
+      redirect_to keys_path, notice: "API key revoked successfully."
+    rescue ApiKeys::Errors::KeyNotRevocableError
+      redirect_to keys_path, alert: "This API key cannot be revoked."
+    rescue => e
+      # This shouldn't typically fail unless there's a callback issue
+      redirect_to keys_path, alert: "Failed to revoke API key: #{e.message}"
     end
 
     private
@@ -100,8 +102,9 @@ module ApiKeys
 
     # Only allow a list of trusted parameters through for creation.
     # Added :expires_at_preset for the dropdown selector.
+    # Added :key_type for the key types feature.
     def api_key_params
-      permitted_params = params.require(:api_key).permit(:name, :expires_at_preset, scopes: [])
+      permitted_params = params.require(:api_key).permit(:name, :expires_at_preset, :key_type, scopes: [])
       permitted_params[:scopes]&.reject!(&:blank?) # Filter out blank strings
       permitted_params
     end

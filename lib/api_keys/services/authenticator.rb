@@ -63,8 +63,15 @@ module ApiKeys
 
         result = if api_key&.active?
                    log_debug "[ApiKeys Auth] Verification successful. Key ID: #{api_key.id}"
-                   # TODO: Optionally update last_used_at and requests_count
-                   Result.success(api_key)
+
+                   # Check environment isolation if enabled
+                   env_check_result = check_environment_isolation(api_key, config)
+                   if env_check_result
+                     env_check_result  # Return failure result
+                   else
+                     # TODO: Optionally update last_used_at and requests_count
+                     Result.success(api_key)
+                   end
                  elsif api_key&.revoked?
                    log_debug "[ApiKeys Auth] Verification failed: Key revoked. Key ID: #{api_key.id}"
                    Result.failure(error_code: :revoked_key, message: "API key has been revoked")
@@ -244,6 +251,34 @@ module ApiKeys
       # Helper for accessing Rails cache safely
       def self.rails_cache
         defined?(Rails) ? Rails.cache : nil
+      end
+
+      # Check if the API key's environment matches the current environment
+      # Returns a failure Result if there's a mismatch and strict isolation is enabled
+      # Returns nil if the check passes or is not applicable
+      def self.check_environment_isolation(api_key, config)
+        return nil unless config.strict_environment_isolation
+
+        # Skip check if key doesn't have an environment (legacy keys)
+        key_env = api_key.environment
+        return nil if key_env.blank?
+
+        # Get current environment
+        current_env_config = config.current_environment
+        current_env = current_env_config.respond_to?(:call) ? current_env_config.call : current_env_config
+        current_env = current_env.to_s
+
+        key_env = key_env.to_s
+
+        if current_env != key_env
+          log_debug "[ApiKeys Auth] Environment mismatch: Key environment '#{key_env}' does not match current environment '#{current_env}'"
+          return Result.failure(
+            error_code: :environment_mismatch,
+            message: "API key environment (#{key_env}) does not match current environment (#{current_env})"
+          )
+        end
+
+        nil # Check passed
       end
 
       # NOTE: Removing the incorrect private `find_key_by_token` method.
