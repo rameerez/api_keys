@@ -111,18 +111,24 @@ ApiKeys.configure do |config|
   # - permissions: Scope ceiling - array of allowed scopes, or :all for unrestricted
   # - revocable:   Whether keys of this type can be revoked/deleted (default: true)
   # - limit:       Max keys of this type per owner per environment (nil = unlimited)
+  # - public:      If true AND revocable: false, stores plaintext token in metadata
+  #                so it can be viewed again in the dashboard. Use ONLY for publishable
+  #                keys designed to be embedded in distributed apps. (default: false)
+  #                SECURITY: NEVER set public: true on secret keys!
   #
   # config.key_types = {
   #   publishable: {
   #     prefix: "pk",                    # → pk_test_, pk_live_
   #     permissions: %w[read validate],  # Can ONLY have these scopes
   #     revocable: false,                # Cannot be revoked - protects deployed apps!
+  #     public: true,                    # Store token for later viewing in dashboard
   #     limit: 1                         # Only 1 publishable key per environment
   #   },
   #   secret: {
   #     prefix: "sk",                    # → sk_test_, sk_live_
   #     permissions: :all                # No scope restrictions
   #     # revocable: true (default)
+  #     # public: false (default) - NEVER store secret keys!
   #     # limit: nil (default = unlimited)
   #   }
   # }

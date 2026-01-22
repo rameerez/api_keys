@@ -22,7 +22,16 @@
       </span>
     <% end %>
   </td>
-  <td><code><%= key.masked_token %></code></td>
+  <td>
+    <code><%= key.masked_token %></code>
+    <% if key.public_key_type? && key.viewable_token.present? %>
+      <button type="button" onclick="this.nextElementSibling.style.display='inline'; this.style.display='none';" style="margin-left: 8px; font-size: 0.75em; padding: 2px 6px; cursor: pointer;" title="Show full token">Show</button>
+      <span style="display: none;">
+        <code style="word-break: break-all;"><%= key.viewable_token %></code>
+        <button type="button" onclick="navigator.clipboard.writeText('<%= key.viewable_token %>'); alert('Copied!');" style="margin-left: 4px; font-size: 0.75em; padding: 2px 6px; cursor: pointer;" title="Copy to clipboard">Copy</button>
+      </span>
+    <% end %>
+  </td>
 
 
   <td title="<%= key.created_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">

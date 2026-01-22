@@ -102,6 +102,24 @@ module ApiKeys
       ApiKeys.configuration.environments&.dig(environment.to_sym)
     end
 
+    # Returns true if this key type is configured as public AND non-revocable.
+    # Only these keys have their plaintext token stored in metadata for later viewing.
+    # This is used for publishable keys that are designed to be embedded in distributed apps.
+    def public_key_type?
+      return false if key_type.blank?
+      config = key_type_config
+      return false if config.nil?
+      config[:public] == true && config[:revocable] == false
+    end
+
+    # Returns the stored plaintext token for public, non-revocable keys.
+    # Returns nil for all other key types (the token is only available at creation time).
+    # @return [String, nil] The full plaintext token, or nil if not stored
+    def viewable_token
+      return nil unless public_key_type?
+      metadata&.dig("token")
+    end
+
     # Override destroy to prevent destroying non-revocable keys
     def destroy
       raise ApiKeys::Errors::KeyNotRevocableError unless revocable?
@@ -236,6 +254,14 @@ module ApiKeys
       # Needs to happen here since it relies on Time.current
       if ApiKeys.configuration.expire_after.present? && self.expires_at.nil?
         self.expires_at = ApiKeys.configuration.expire_after.from_now
+      end
+
+      # Store plaintext token in metadata for public, non-revocable keys.
+      # This allows users to view the token again in the dashboard.
+      # SECURITY: Only do this for keys explicitly configured as public: true
+      # AND revocable: false (e.g., publishable keys for distributed apps).
+      if public_key_type?
+        self.metadata = (self.metadata || {}).merge("token" => @token)
       end
     end
 
