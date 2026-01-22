@@ -296,8 +296,9 @@ module ApiKeys
       # Use pessimistic locking to prevent race conditions.
       # Lock the owner's existing keys of this type/environment while counting.
       # This ensures atomic check-then-create semantics.
+      # Note: .lock(true) generates "FOR UPDATE" in SQL but is the Rails-idiomatic approach.
       existing_count = owner.api_keys
-                            .lock("FOR UPDATE")
+                            .lock(true)
                             .active
                             .where(key_type: key_type.to_s)
                             .where(environment: environment.to_s)
