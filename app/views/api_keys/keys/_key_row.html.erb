@@ -8,7 +8,7 @@
     <% elsif key.expired? %>
       <span style="color: red;">[Expired]</span>
     <% end %>
-    <%= key.name.presence || "Secret key" %>
+    <%= key.name.presence || (key.key_type.present? ? "#{key.key_type.humanize} key" : "API key") %>
     <%# Key type and environment badges %>
     <% if key.key_type.present? %>
       <% type_config = key.key_type_config %>

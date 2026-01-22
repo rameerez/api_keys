@@ -3,7 +3,11 @@
 
 <h2>Save your key</h2>
 
-<p>Please save your secret key in a safe place since <strong>you won't be able to view it again</strong>. Keep it secure, as anyone with your API key can make requests on your behalf. If you do lose it, you'll need to generate a new one.</p>
+<% if api_key.public_key_type? %>
+  <p>Here's your <%= api_key.key_type.humanize.downcase %> key. This key is designed to be embedded in client-side applications. You can view it again anytime from your dashboard.</p>
+<% else %>
+  <p>Please save your API key in a safe place since <strong>you won't be able to view it again</strong>. Keep it secure, as anyone with your API key can make requests on your behalf. If you lose it, you'll need to generate a new one.</p>
+<% end %>
 
 <p>
   <%= link_to api_keys.security_best_practices_path, class: "text-primary api-keys-align-center" do %>
