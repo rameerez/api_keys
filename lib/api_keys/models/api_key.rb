@@ -41,6 +41,7 @@ module ApiKeys
     # TODO: Add validation for expires_at > Time.current if present
     validate :expiration_date_cannot_be_in_the_past, if: :expires_at?
     validate :within_key_type_limit, on: :create, if: -> { key_type.present? && owner.present? }
+    validate :non_revocable_keys_cannot_expire, if: -> { key_type.present? && expires_at.present? }
 
     # TODO: Add validation for scope string format
     # TODO: Add validation for prefix format (e.g., must end with _)
@@ -279,6 +280,21 @@ module ApiKeys
 
     def expiration_date_cannot_be_in_the_past
       errors.add(:expires_at, "can't be in the past") if expires_at.present? && expires_at < Time.current
+    end
+
+    # Non-revocable keys cannot have expiration dates.
+    # If a key expires but cannot be revoked/deleted, the user would be stuck
+    # with a useless expired key they can't remove.
+    def non_revocable_keys_cannot_expire
+      return unless key_type.present? && expires_at.present?
+
+      config = key_type_config
+      return unless config # No config = allow (legacy behavior)
+
+      # If this key type is non-revocable, prevent setting expiration
+      if config[:revocable] == false
+        errors.add(:expires_at, "cannot be set on non-revocable keys (#{key_type} keys cannot be revoked or deleted)")
+      end
     end
 
     # Check if creating this key would exceed the limit for this key type/environment

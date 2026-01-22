@@ -603,6 +603,79 @@ class KeyTypesTest < ApiKeys::Test
   end
 
   # =============================================================================
+  # Non-Revocable Expiration Tests
+  # =============================================================================
+
+  test "non-revocable keys cannot have expiration dates" do
+    configure_key_types_and_environments!
+
+    user = User.create!(name: "Non-Revocable Expiry User")
+
+    # Publishable keys have revocable: false
+    error = assert_raises(ActiveRecord::RecordInvalid) do
+      user.create_api_key!(
+        name: "Expiring Publishable",
+        key_type: :publishable,
+        environment: :test,
+        expires_at: 30.days.from_now
+      )
+    end
+
+    assert_includes error.message, "cannot be set on non-revocable keys"
+    assert_includes error.message, "publishable"
+  end
+
+  test "revocable keys can have expiration dates" do
+    configure_key_types_and_environments!
+
+    user = User.create!(name: "Revocable Expiry User")
+
+    # Secret keys are revocable by default
+    key = user.create_api_key!(
+      name: "Expiring Secret",
+      key_type: :secret,
+      environment: :test,
+      expires_at: 30.days.from_now
+    )
+
+    assert key.persisted?
+    assert_not_nil key.expires_at
+  end
+
+  test "legacy keys without key_type can have expiration dates" do
+    # Don't configure key_types
+    user = User.create!(name: "Legacy Expiry User")
+
+    key = user.create_api_key!(
+      name: "Expiring Legacy Key",
+      expires_at: 30.days.from_now
+    )
+
+    assert key.persisted?
+    assert_not_nil key.expires_at
+  end
+
+  test "non-revocable key expiration error message explains the restriction" do
+    configure_key_types_and_environments!
+
+    user = User.create!(name: "Error Message User")
+    key = user.api_keys.build(
+      name: "Test Key",
+      key_type: "publishable",
+      environment: "test",
+      expires_at: 30.days.from_now
+    )
+
+    # Trigger validation
+    key.valid?
+
+    error_messages = key.errors[:expires_at]
+    assert_not_empty error_messages
+    assert error_messages.any? { |msg| msg.include?("non-revocable") }
+    assert error_messages.any? { |msg| msg.include?("cannot be revoked or deleted") }
+  end
+
+  # =============================================================================
   # Permissions Alias Tests
   # =============================================================================
 
