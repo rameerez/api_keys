@@ -766,6 +766,342 @@ class KeyTypesTest < ApiKeys::Test
   end
 
   # =============================================================================
+  # Public Key Token Storage Tests
+  # =============================================================================
+
+  test "public_key_type? returns true for public non-revocable keys" do
+    configure_key_types_with_public!
+
+    user = User.create!(name: "Public Key User")
+    key = user.create_api_key!(name: "Publishable Key", key_type: :publishable, environment: :test)
+
+    assert key.public_key_type?
+  end
+
+  test "public_key_type? returns false for secret keys" do
+    configure_key_types_with_public!
+
+    user = User.create!(name: "Secret Key User")
+    key = user.create_api_key!(name: "Secret Key", key_type: :secret, environment: :test)
+
+    refute key.public_key_type?
+  end
+
+  test "public_key_type? returns false for keys without key_type" do
+    # Legacy key without key types configured
+    user = User.create!(name: "Legacy User")
+    key = user.create_api_key!(name: "Legacy Key")
+
+    refute key.public_key_type?
+  end
+
+  test "public_key_type? returns false when public is true but revocable is true" do
+    ApiKeys.configure do |config|
+      config.key_types = {
+        weird: {
+          prefix: "wk",
+          permissions: %w[read],
+          revocable: true,  # revocable
+          public: true      # but public
+        }
+      }
+      config.environments = { test: { prefix_segment: "test" } }
+      config.current_environment = -> { :test }
+    end
+
+    user = User.create!(name: "Weird Key User")
+    key = user.create_api_key!(name: "Weird Key", key_type: :weird, environment: :test)
+
+    # Should be false because revocable is true
+    refute key.public_key_type?
+  end
+
+  test "viewable_token returns stored token for public keys" do
+    configure_key_types_with_public!
+
+    user = User.create!(name: "Viewable Token User")
+    key = user.create_api_key!(name: "Publishable Key", key_type: :publishable, environment: :test)
+
+    # Capture the token at creation time
+    original_token = key.token
+
+    # Reload and check viewable_token
+    key.reload
+    assert_equal original_token, key.viewable_token
+  end
+
+  test "viewable_token returns nil for secret keys" do
+    configure_key_types_with_public!
+
+    user = User.create!(name: "Secret Token User")
+    key = user.create_api_key!(name: "Secret Key", key_type: :secret, environment: :test)
+
+    key.reload
+    assert_nil key.viewable_token
+  end
+
+  test "viewable_token returns nil for legacy keys" do
+    user = User.create!(name: "Legacy Token User")
+    key = user.create_api_key!(name: "Legacy Key")
+
+    key.reload
+    assert_nil key.viewable_token
+  end
+
+  test "public key stores token in metadata" do
+    configure_key_types_with_public!
+
+    user = User.create!(name: "Metadata Token User")
+    key = user.create_api_key!(name: "Publishable Key", key_type: :publishable, environment: :test)
+
+    original_token = key.token
+    key.reload
+
+    # Token should be stored in metadata
+    assert_equal original_token, key.metadata["token"]
+  end
+
+  test "secret key does NOT store token in metadata" do
+    configure_key_types_with_public!
+
+    user = User.create!(name: "No Store User")
+    key = user.create_api_key!(name: "Secret Key", key_type: :secret, environment: :test)
+
+    key.reload
+
+    # Token should NOT be in metadata
+    assert_nil key.metadata["token"]
+  end
+
+  test "public key token can be retrieved after reload" do
+    configure_key_types_with_public!
+
+    user = User.create!(name: "Persistent Token User")
+    key = user.create_api_key!(name: "Publishable Key", key_type: :publishable, environment: :test)
+
+    original_token = key.token
+
+    # Simulate a fresh load from database
+    loaded_key = ApiKeys::ApiKey.find(key.id)
+
+    assert_equal original_token, loaded_key.viewable_token
+    assert loaded_key.viewable_token.start_with?("pk_test_")
+  end
+
+  test "public key without public config option does not store token" do
+    # Configure without public: true
+    configure_key_types_and_environments!  # Uses the standard config without public option
+
+    user = User.create!(name: "No Public Config User")
+    key = user.create_api_key!(name: "Publishable Key", key_type: :publishable, environment: :test)
+
+    key.reload
+
+    # Token should NOT be stored since public: true is not set
+    assert_nil key.metadata["token"]
+    assert_nil key.viewable_token
+  end
+
+  # =============================================================================
+  # SECURITY: Secret Key Protection Tests
+  # These tests verify that secret keys are NEVER stored or revealed
+  # =============================================================================
+
+  test "SECURITY: secret key token is NEVER stored in metadata even with public config" do
+    configure_key_types_with_public!
+
+    user = User.create!(name: "Secret Safety User")
+    key = user.create_api_key!(name: "Secret Key", key_type: :secret, environment: :test)
+    original_token = key.token
+
+    key.reload
+
+    # CRITICAL: Token must NOT be in metadata
+    assert_nil key.metadata["token"], "SECRET KEY TOKEN WAS STORED IN METADATA - SECURITY VIOLATION!"
+
+    # CRITICAL: viewable_token must return nil
+    assert_nil key.viewable_token, "SECRET KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
+
+    # Verify the key still works (token was generated correctly)
+    assert original_token.start_with?("sk_test_")
+  end
+
+  test "SECURITY: secret key token is NEVER revealed via viewable_token" do
+    configure_key_types_with_public!
+
+    user = User.create!(name: "Viewable Safety User")
+    key = user.create_api_key!(name: "Secret Key", key_type: :secret, environment: :live)
+
+    # Even for live environment secret keys
+    key.reload
+    assert_nil key.viewable_token, "SECRET KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
+  end
+
+  test "SECURITY: revocable keys with public:true do NOT store token" do
+    # This is a critical edge case - someone might misconfigure public:true on a revocable key
+    ApiKeys.configure do |config|
+      config.key_types = {
+        misconfigured: {
+          prefix: "mc",
+          permissions: :all,
+          revocable: true,   # Revocable!
+          public: true       # But marked as public - should be ignored!
+        }
+      }
+      config.environments = { test: { prefix_segment: "test" } }
+      config.current_environment = -> { :test }
+    end
+
+    user = User.create!(name: "Misconfigured Key User")
+    key = user.create_api_key!(name: "Misconfigured Key", key_type: :misconfigured, environment: :test)
+
+    key.reload
+
+    # Even though public:true is set, revocable:true should prevent storage
+    assert_nil key.metadata["token"], "REVOCABLE KEY TOKEN WAS STORED - SECURITY VIOLATION!"
+    assert_nil key.viewable_token, "REVOCABLE KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
+  end
+
+  test "SECURITY: legacy keys without key_type NEVER store token" do
+    # Legacy keys (no key_types configured) should never store tokens
+    user = User.create!(name: "Legacy Safety User")
+    key = user.create_api_key!(name: "Legacy Key")
+
+    key.reload
+
+    assert_nil key.metadata["token"], "LEGACY KEY TOKEN WAS STORED - SECURITY VIOLATION!"
+    assert_nil key.viewable_token, "LEGACY KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
+  end
+
+  test "SECURITY: key with nil key_type NEVER stores token" do
+    configure_key_types_with_public!
+
+    # Create a key directly without going through create_api_key! to test edge case
+    user = User.create!(name: "Nil Type User")
+
+    # Use build to bypass some validations, simulating edge case
+    key = ApiKeys::ApiKey.new(
+      owner: user,
+      name: "Nil Type Key",
+      key_type: nil,  # Explicitly nil
+      environment: nil
+    )
+    key.save!
+
+    key.reload
+
+    assert_nil key.metadata["token"], "NIL KEY_TYPE KEY TOKEN WAS STORED - SECURITY VIOLATION!"
+    assert_nil key.viewable_token, "NIL KEY_TYPE KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
+  end
+
+  test "SECURITY: key with empty string key_type NEVER stores token" do
+    user = User.create!(name: "Empty Type User")
+
+    key = ApiKeys::ApiKey.new(
+      owner: user,
+      name: "Empty Type Key",
+      key_type: "",  # Empty string
+      environment: ""
+    )
+    key.save!
+
+    key.reload
+
+    assert_nil key.metadata["token"], "EMPTY KEY_TYPE KEY TOKEN WAS STORED - SECURITY VIOLATION!"
+    assert_nil key.viewable_token, "EMPTY KEY_TYPE KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
+  end
+
+  test "SECURITY: metadata does not contain token for ANY secret key type" do
+    # Configure multiple secret key types
+    ApiKeys.configure do |config|
+      config.key_types = {
+        publishable: { prefix: "pk", permissions: %w[read], revocable: false, public: true },
+        secret: { prefix: "sk", permissions: :all },
+        admin: { prefix: "ak", permissions: :all },  # Another full-access key
+        service: { prefix: "sv", permissions: :all } # Service account key
+      }
+      config.environments = { test: { prefix_segment: "test" } }
+      config.current_environment = -> { :test }
+    end
+
+    user = User.create!(name: "Multi Secret User")
+
+    # Create all non-public key types
+    secret_key = user.create_api_key!(name: "Secret", key_type: :secret, environment: :test)
+    admin_key = user.create_api_key!(name: "Admin", key_type: :admin, environment: :test)
+    service_key = user.create_api_key!(name: "Service", key_type: :service, environment: :test)
+
+    [secret_key, admin_key, service_key].each do |key|
+      key.reload
+      assert_nil key.metadata["token"], "#{key.key_type.upcase} KEY TOKEN WAS STORED - SECURITY VIOLATION!"
+      assert_nil key.viewable_token, "#{key.key_type.upcase} KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
+      refute key.public_key_type?, "#{key.key_type.upcase} KEY WAS MARKED AS PUBLIC - SECURITY VIOLATION!"
+    end
+  end
+
+  test "SECURITY: only publishable keys with public:true AND revocable:false store token" do
+    configure_key_types_with_public!
+
+    user = User.create!(name: "Only Public User")
+
+    # Create both key types
+    publishable = user.create_api_key!(name: "Publishable", key_type: :publishable, environment: :test)
+    secret = user.create_api_key!(name: "Secret", key_type: :secret, environment: :test)
+
+    publishable_token = publishable.token
+    secret_token = secret.token
+
+    publishable.reload
+    secret.reload
+
+    # Only publishable should have stored token
+    assert_equal publishable_token, publishable.metadata["token"], "Publishable key should store token"
+    assert_equal publishable_token, publishable.viewable_token, "Publishable key should reveal token"
+
+    # Secret must NOT have stored token
+    assert_nil secret.metadata["token"], "SECRET KEY TOKEN WAS STORED - SECURITY VIOLATION!"
+    assert_nil secret.viewable_token, "SECRET KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
+  end
+
+  test "SECURITY: public_key_type? requires BOTH public:true AND revocable:false" do
+    # Test all combinations
+    test_cases = [
+      { public: true, revocable: false, expected: true, desc: "public:true, revocable:false" },
+      { public: true, revocable: true, expected: false, desc: "public:true, revocable:true" },
+      { public: false, revocable: false, expected: false, desc: "public:false, revocable:false" },
+      { public: false, revocable: true, expected: false, desc: "public:false, revocable:true" },
+      { public: nil, revocable: false, expected: false, desc: "public:nil, revocable:false" },
+      { public: nil, revocable: true, expected: false, desc: "public:nil, revocable:true" },
+    ]
+
+    test_cases.each_with_index do |tc, idx|
+      ApiKeys.configure do |config|
+        config.key_types = {
+          testkey: {
+            prefix: "t#{idx}",
+            permissions: %w[read],
+            revocable: tc[:revocable],
+            public: tc[:public]
+          }.compact  # Remove nil values
+        }
+        config.environments = { test: { prefix_segment: "test" } }
+        config.current_environment = -> { :test }
+      end
+
+      user = User.create!(name: "Combo Test User #{idx}")
+      key = user.create_api_key!(name: "Test Key", key_type: :testkey, environment: :test)
+
+      if tc[:expected]
+        assert key.public_key_type?, "Expected public_key_type? to be true for #{tc[:desc]}"
+        assert_not_nil key.metadata["token"], "Expected token to be stored for #{tc[:desc]}"
+      else
+        refute key.public_key_type?, "Expected public_key_type? to be false for #{tc[:desc]} - SECURITY VIOLATION!"
+        assert_nil key.metadata["token"], "Token should NOT be stored for #{tc[:desc]} - SECURITY VIOLATION!"
+      end
+    end
+  end
+
+  # =============================================================================
   # Migration Required Error Tests
   # =============================================================================
 
@@ -797,6 +1133,34 @@ class KeyTypesTest < ApiKeys::Test
           prefix: "sk",
           permissions: :all
           # revocable defaults to true, limit defaults to nil (unlimited)
+        }
+      }
+
+      config.environments = {
+        test: { prefix_segment: "test" },
+        live: { prefix_segment: "live" }
+      }
+
+      config.current_environment = -> { :test }
+      config.strict_environment_isolation = false
+    end
+  end
+
+  def configure_key_types_with_public!
+    ApiKeys.configure do |config|
+      config.key_types = {
+        publishable: {
+          prefix: "pk",
+          permissions: %w[read validate],
+          revocable: false,
+          public: true,  # Store plaintext token for viewing
+          limit: 1
+        },
+        secret: {
+          prefix: "sk",
+          permissions: :all
+          # revocable defaults to true
+          # public defaults to false (never store secret keys!)
         }
       }
 

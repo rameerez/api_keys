@@ -63,9 +63,12 @@ module ApiKeys
     #     - :permissions [Array<String>, :all] Scope ceiling for this type
     #     - :revocable [Boolean] Whether keys can be revoked (default: true)
     #     - :limit [Integer, nil] Max keys per owner per environment (nil = unlimited)
+    #     - :public [Boolean] If true AND revocable: false, store plaintext token in
+    #       metadata so it can be viewed again in dashboard. Use ONLY for publishable
+    #       keys that are designed to be embedded in distributed apps. (default: false)
     #   @example
     #     config.key_types = {
-    #       publishable: { prefix: "pk", permissions: %w[read], revocable: false, limit: 1 },
+    #       publishable: { prefix: "pk", permissions: %w[read], revocable: false, public: true, limit: 1 },
     #       secret: { prefix: "sk", permissions: :all }
     #     }
     #

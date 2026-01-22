@@ -555,6 +555,67 @@ pk.destroy!    # Raises ApiKeys::Errors::KeyNotRevocableError
 
 The dashboard UI automatically hides the revoke button for non-revocable keys.
 
+### Public Keys (Viewable Tokens)
+
+#### The Problem: Non-Revocable Key Lockout
+
+Non-revocable keys create a potential UX nightmare: if a user creates a publishable key, doesn't copy it immediately, and closes the page—they're locked out. The token is gone forever (we only store the hash), and they can't delete the key to create a new one (it's non-revocable). They're stuck with a useless key slot they can never use or remove.
+
+This is especially problematic when combined with `limit: 1`, which restricts users to a single publishable key per environment. A user who loses their token would be permanently locked out of creating publishable keys.
+
+#### The Solution: Storing Public Keys
+
+For publishable keys—which are *designed* to be embedded in client-side code and distributed apps—there's no security benefit to hiding the token. These keys are meant to be public! Stripe, for example, lets you view your publishable key anytime in the dashboard.
+
+The `public: true` option stores the plaintext token in metadata so users can view it again:
+
+```ruby
+config.key_types = {
+  publishable: {
+    prefix: "pk",
+    permissions: %w[read validate],
+    revocable: false,
+    public: true,   # Store token for later viewing
+    limit: 1
+  },
+  secret: {
+    prefix: "sk",
+    permissions: :all
+    # public: false (default) - NEVER store secret keys!
+  }
+}
+```
+
+#### Security: Why This is Safe
+
+> [!IMPORTANT]
+> The `public` option only works when BOTH conditions are met:
+>  - `public: true` is set in the key type configuration
+>  - `revocable: false` is set (non-revocable keys only)
+
+This double-check is a deliberate safety measure:
+
+1. **Secret keys are NEVER stored** — Even if you accidentally set `public: true` on a secret key type, the gem checks for `revocable: false` as well. Secret keys are revocable by default, so they're protected.
+
+2. **Revocable keys are NEVER stored** — If a key can be revoked, users can always delete it and create a new one. There's no lockout risk, so no need to store the token.
+
+3. **Only truly public keys are stored** — Publishable keys with limited permissions, designed for client-side embedding, are the only keys that get stored. These tokens provide no security benefit when hidden—they're meant to be distributed.
+
+> [!WARNING]
+> ⚠️ **Never set `public: true` on secret keys or any key type with sensitive permissions.** The gem prevents this by requiring `revocable: false`, but you should also never configure it that way.
+
+When a key is public, the dashboard shows a "Show" button to reveal the full token:
+
+```ruby
+pk = user.create_api_key!(key_type: :publishable)
+pk.public_key_type?  # => true
+pk.viewable_token    # => "pk_test_abc123..." (the full token)
+
+sk = user.create_api_key!(key_type: :secret)
+sk.public_key_type?  # => false
+sk.viewable_token    # => nil (not stored)
+```
+
 ### Environment Isolation
 
 With `strict_environment_isolation = true`, keys can only authenticate in their matching environment:
