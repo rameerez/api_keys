@@ -427,6 +427,40 @@ class KeyTypesTest < ApiKeys::Test
     assert_nil result
   end
 
+  test "isolation check normalizes environments to strings for comparison" do
+    configure_key_types_and_environments!
+    ApiKeys.configuration.strict_environment_isolation = true
+    ApiKeys.configuration.current_environment = -> { :test }  # Returns symbol
+
+    user = User.create!(name: "Symbol Env User")
+    test_key = user.create_api_key!(name: "Test Key", key_type: :secret, environment: :test)
+
+    # Environment stored as "test" (string), current returns :test (symbol)
+    # They should match after normalization
+    api_key = find_key_by_token(test_key.token)
+    result = ApiKeys::Services::Authenticator.send(:check_environment_isolation, api_key, ApiKeys.configuration)
+
+    # Should return nil (check passed) - strings match after normalization
+    assert_nil result
+  end
+
+  test "isolation check correctly rejects mismatched environments after normalization" do
+    configure_key_types_and_environments!
+    ApiKeys.configuration.strict_environment_isolation = true
+    ApiKeys.configuration.current_environment = -> { :live }  # Current is live
+
+    user = User.create!(name: "Mismatch Norm User")
+    test_key = user.create_api_key!(name: "Test Key", key_type: :secret, environment: :test)
+
+    # Key is test, current is live - should fail
+    api_key = find_key_by_token(test_key.token)
+    result = ApiKeys::Services::Authenticator.send(:check_environment_isolation, api_key, ApiKeys.configuration)
+
+    # Should return failure result
+    refute_nil result
+    assert_equal :environment_mismatch, result.error_code
+  end
+
   # =============================================================================
   # Model Attribute Tests
   # =============================================================================
