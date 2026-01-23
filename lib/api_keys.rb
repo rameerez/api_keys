@@ -60,6 +60,17 @@ require "api_keys/controller" # This can lead to loading jobs, etc.
 require "api_keys/models/concerns/has_api_keys"
 require "api_keys/models/api_key"
 
+# Helpers for integrators building custom UIs
+require "api_keys/helpers/token_session"
+require "api_keys/helpers/expiration_options"
+require "api_keys/helpers/view_helpers"
+require "api_keys/form_builder_extensions"
+
+# Top-level aliases for cleaner API (ApiKeys::TokenSession instead of ApiKeys::Helpers::TokenSession)
+ApiKeys::TokenSession = ApiKeys::Helpers::TokenSession
+ApiKeys::ExpirationOptions = ApiKeys::Helpers::ExpirationOptions
+ApiKeys::ViewHelpers = ApiKeys::Helpers::ViewHelpers
+
 # Rails integration (Engine)
 # The Engine might also access ApiKeys.configuration during its initialization.
 require "api_keys/engine" if defined?(Rails)

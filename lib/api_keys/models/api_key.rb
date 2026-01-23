@@ -22,6 +22,18 @@ module ApiKeys
     # JSON attributes (:scopes, :metadata) are defined in the engine initializer
     # using ActiveSupport.on_load(:active_record) to ensure DB connection is ready.
 
+    # Override scopes setter to auto-clean blank values.
+    # This handles the common case where form checkboxes submit empty strings.
+    # Works for both create and update operations.
+    def scopes=(value)
+      cleaned = if value.is_a?(Array)
+                  value.reject { |s| s.blank? }
+                else
+                  value
+                end
+      super(cleaned)
+    end
+
     # == Validations ==
     validates :token_digest, presence: true, uniqueness: { case_sensitive: true }
     validates :prefix, presence: true
@@ -60,6 +72,12 @@ module ApiKeys
     scope :for_owner, ->(owner) { where(owner: owner) }
     scope :for_key_type, ->(key_type) { where(key_type: key_type.to_s) }
     scope :for_environment, ->(environment) { where(environment: environment.to_s) }
+
+    # Convenience scopes for key types
+    # .publishable returns only keys with key_type: "publishable"
+    # .secret returns keys that are NOT publishable (includes legacy keys with nil/blank key_type)
+    scope :publishable, -> { where(key_type: "publishable") }
+    scope :secret, -> { where.not(key_type: "publishable") }
 
     # == Instance Methods ==
 

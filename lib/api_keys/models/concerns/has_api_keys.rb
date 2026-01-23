@@ -95,14 +95,65 @@ module ApiKeys
         # --- Instance Methods ---
         # Methods included in the owner model (e.g., User).
 
+        # Returns the available scopes for API keys on this owner.
+        # Uses owner-specific settings if defined, otherwise falls back to global config.
+        # Useful for populating scope checkboxes in forms.
+        #
+        # @return [Array<String>] The available scopes
+        def available_api_key_scopes
+          owner_settings = self.class.api_keys_settings
+          owner_settings&.[](:default_scopes) || ApiKeys.configuration.default_scopes || []
+        end
+
+        # Checks if this owner can create an API key of the given type.
+        # Returns false if the limit for this key type/environment is reached.
+        # Useful for conditional UI (e.g., hiding "Create" button when at limit).
+        #
+        # @param key_type [Symbol, nil] The key type to check (e.g., :publishable, :secret)
+        # @param environment [Symbol, nil] The environment to check (defaults to current_environment)
+        # @return [Boolean] true if the owner can create another key of this type
+        #
+        # @example
+        #   if current_org.can_create_api_key?(key_type: :publishable)
+        #     # Show "Create Publishable Key" button
+        #   end
+        #
+        def can_create_api_key?(key_type: nil, environment: nil)
+          config = ApiKeys.configuration
+
+          # If no key_type specified, check global quota only
+          return within_global_quota? if key_type.nil?
+
+          # Resolve environment
+          resolved_environment = resolve_environment(environment, key_type, config)
+
+          # Get type-specific limit
+          type_config = config.key_types&.dig(key_type.to_sym)
+          return within_global_quota? unless type_config
+
+          limit = type_config[:limit]
+          return within_global_quota? unless limit
+
+          # Count existing keys of this type/environment
+          existing_count = api_keys
+                            .active
+                            .where(key_type: key_type.to_s)
+                            .where(environment: resolved_environment.to_s)
+                            .count
+
+          existing_count < limit && within_global_quota?
+        end
+
         # Creates a new API key for this owner instance and returns the ApiKey instance.
         # Raises ActiveRecord::RecordInvalid if creation fails.
         #
         # @param name [String] The name for the new API key (required).
         # @param scopes [Array<String>, nil] Scopes for the key. Defaults to owner/global settings.
         #   When key_type is specified, scopes are filtered to only include those allowed
-        #   by the key type's permissions ceiling.
+        #   by the key type's permissions ceiling. Blank values are automatically removed.
         # @param expires_at [Time, nil] Optional expiration timestamp.
+        # @param expires_at_preset [String, nil] Convenience param: "7_days", "30_days", "no_expiration", etc.
+        #   If provided, this is parsed into expires_at. Takes precedence over expires_at if both given.
         # @param metadata [Hash, nil] Optional metadata hash.
         # @param key_type [Symbol, nil] The key type (e.g., :publishable, :secret).
         #   Must be defined in ApiKeys.configuration.key_types if provided.
@@ -111,8 +162,18 @@ module ApiKeys
         # @return [ApiKeys::ApiKey] The newly created ApiKey instance. The plaintext token
         #                           is available via the `#token` attribute on this instance
         #                           *only until it's reloaded*.
-        def create_api_key!(name: nil, scopes: nil, expires_at: nil, metadata: nil, key_type: nil, environment: nil)
+        def create_api_key!(name: nil, scopes: nil, expires_at: nil, expires_at_preset: nil, metadata: nil, key_type: nil, environment: nil)
           config = ApiKeys.configuration
+
+          # Parse expires_at_preset if provided (takes precedence over expires_at)
+          if expires_at_preset.present?
+            expires_at = ApiKeys::Helpers::ExpirationOptions.parse(expires_at_preset)
+          end
+
+          # Auto-clean scopes: remove blank values from arrays (common when using form checkboxes)
+          if scopes.is_a?(Array)
+            scopes = scopes.reject { |s| s.blank? }
+          end
 
           # Check for missing columns if key_types feature is enabled
           if key_types_feature_enabled?(config)
@@ -167,6 +228,14 @@ module ApiKeys
         end
 
         private
+
+        def within_global_quota?
+          owner_settings = self.class.api_keys_settings
+          limit = owner_settings&.[](:max_keys) || ApiKeys.configuration.default_max_keys_per_owner
+          return true unless limit
+
+          api_keys.active.count < limit
+        end
 
         def key_types_feature_enabled?(config)
           config.key_types.present? && config.key_types.any?
