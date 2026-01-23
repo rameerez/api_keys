@@ -142,6 +142,522 @@ To make the experience between your app and the `api_keys` dashboard more seamle
 
 You can check out the dashboard on the [live demo website](https://apikeys.rameerez.com).
 
+### Customizing the Dashboard
+
+The gem provides two levels of customization for the mounted dashboard:
+
+#### Level 1: Use the stock dashboard (default)
+Works out of the box with good defaults. No configuration needed.
+
+#### Level 2: Override CSS variables
+Tweak colors and spacing by overriding CSS variables in your application's stylesheet:
+
+```css
+:root {
+  --api-keys-primary-color: #your-brand-color;
+  --api-keys-danger-color: #dc3545;
+  --api-keys-success-color: #28a745;
+  --api-keys-badge-secret-bg: #e7f1ff;
+  --api-keys-badge-publishable-bg: #fef3cd;
+  /* See layout file for all available variables */
+}
+```
+
+#### Building Custom Integrations
+
+If you need complete control over the UI (e.g., to match your design system with Tailwind, Bootstrap, etc.), you can build your own views and controllers while using the gem's model layer and helpers.
+
+The gem provides a comprehensive set of helpers specifically designed for custom integrations. These patterns are battle-tested from real production integrations.
+
+##### What You'll Need
+
+A complete custom integration typically requires:
+
+| Component | Purpose |
+|-----------|---------|
+| Initializer | Configure the gem + opt into form helpers |
+| Routes | RESTful resources (~6 lines) |
+| Controller | Handle CRUD operations (~90 lines) |
+| Views | index, new, edit, success pages |
+| Helper include | One line in ApplicationHelper |
+
+##### Quick Setup
+
+**1. Initializer** (`config/initializers/api_keys.rb`):
+
+```ruby
+# Include form builder extensions for cleaner forms
+Rails.application.config.to_prepare do
+  ActionView::Helpers::FormBuilder.include(ApiKeys::FormBuilderExtensions)
+end
+
+ApiKeys.configure do |config|
+  config.current_owner_method = :current_organization
+  config.authenticate_owner_method = :authenticate_organization!
+  # ... other config
+end
+```
+
+**2. Routes** (`config/routes.rb`):
+
+```ruby
+namespace :settings do
+  resources :api_keys, only: [:index, :new, :create, :edit, :update] do
+    post :revoke, on: :member
+    get :success, on: :collection
+    post :create_publishable, on: :collection  # If using key types
+  end
+end
+```
+
+**3. Helper** (`app/helpers/application_helper.rb`):
+
+```ruby
+module ApplicationHelper
+  include ApiKeys::ViewHelpers
+end
+```
+
+**4. Controller** - See the complete example below.
+
+---
+
+### Complete Controller Example
+
+Here's a production-ready controller (~90 lines) that handles all API key operations:
+
+```ruby
+# app/controllers/settings/api_keys_controller.rb
+module Settings
+  class ApiKeysController < ApplicationController
+    before_action :set_api_key, only: [:edit, :update, :revoke]
+    before_action :set_available_scopes, only: [:new, :create, :edit, :update]
+
+    def index
+      @publishable_key = current_organization.api_keys.publishable.active.first
+      @secret_keys = current_organization.api_keys.secret.active.order(created_at: :desc)
+      @inactive_keys = current_organization.api_keys.secret.inactive.order(created_at: :desc)
+    end
+
+    def new
+      @api_key = current_organization.api_keys.build(key_type: :secret)
+    end
+
+    def create
+      @api_key = current_organization.create_api_key!(
+        name: api_key_params[:name],
+        key_type: :secret,
+        scopes: api_key_params[:scopes],
+        expires_at_preset: params.dig(:api_key, :expires_at_preset)
+      )
+
+      ApiKeys::TokenSession.store(session, @api_key)
+      redirect_to success_settings_api_keys_path
+    rescue ActiveRecord::RecordInvalid => e
+      @api_key = e.record
+      flash.now[:alert] = "Failed to create API key."
+      render :new, status: :unprocessable_entity
+    end
+
+    def success
+      @token = ApiKeys::TokenSession.retrieve_once(session)
+      redirect_to settings_api_keys_path, alert: "Token can only be shown once." and return if @token.blank?
+    end
+
+    def edit
+    end
+
+    def update
+      if @api_key.update(api_key_params)
+        redirect_to settings_api_keys_path, notice: "API key updated."
+      else
+        flash.now[:alert] = "Failed to update API key."
+        render :edit, status: :unprocessable_entity
+      end
+    end
+
+    def create_publishable
+      unless current_organization.can_create_api_key?(key_type: :publishable)
+        redirect_to settings_api_keys_path, alert: "You already have a publishable key."
+        return
+      end
+
+      current_organization.create_api_key!(name: "SDK Key", key_type: :publishable)
+      redirect_to settings_api_keys_path, notice: "Publishable key created!"
+    rescue ActiveRecord::RecordInvalid => e
+      redirect_to settings_api_keys_path, alert: "Failed to create key."
+    end
+
+    def revoke
+      if @api_key.revocable?
+        @api_key.revoke!
+        redirect_to settings_api_keys_path, notice: "API key revoked."
+      else
+        redirect_to settings_api_keys_path, alert: "This key cannot be revoked."
+      end
+    end
+
+    private
+
+    def set_api_key
+      @api_key = current_organization.api_keys.find(params[:id])
+    end
+
+    def set_available_scopes
+      @available_scopes = current_organization.available_api_key_scopes
+    end
+
+    def api_key_params
+      params.require(:api_key).permit(:name, scopes: [])
+    end
+  end
+end
+```
+
+---
+
+### Model Scopes
+
+Filter keys by type and status:
+
+```ruby
+# By key type (when using key_types feature)
+@org.api_keys.publishable          # Only publishable keys
+@org.api_keys.secret               # Secret keys (and legacy keys without type)
+
+# By status
+@org.api_keys.active               # Not revoked and not expired
+@org.api_keys.inactive             # Revoked or expired
+@org.api_keys.expired              # Past expiration date
+@org.api_keys.revoked              # Manually revoked
+
+# Chain them
+@org.api_keys.publishable.active
+@org.api_keys.secret.inactive.order(created_at: :desc)
+```
+
+---
+
+### Owner Instance Methods
+
+Methods available on any model with `has_api_keys`:
+
+```ruby
+# Get available scopes for forms
+@available_scopes = current_org.available_api_key_scopes
+# Returns owner-specific scopes, or falls back to global config
+
+# Check if owner can create a key (respects limits)
+current_org.can_create_api_key?(key_type: :publishable)
+# => false if limit reached
+
+# Create a key with all options
+@api_key = current_org.create_api_key!(
+  name: "My Key",
+  key_type: :secret,                    # or :publishable
+  scopes: ["read", "write"],            # Blank values auto-removed
+  expires_at: 30.days.from_now,         # Explicit date
+  expires_at_preset: "30_days",         # OR use preset (takes precedence)
+  environment: :live,                   # Defaults to current_environment
+  metadata: { team: "backend" }         # Optional JSON metadata
+)
+```
+
+---
+
+### API Key Instance Methods
+
+Methods available on `ApiKeys::ApiKey` instances:
+
+```ruby
+# Token (only available immediately after creation)
+@api_key.token                    # => "sk_live_abc123..." (plaintext, once only)
+
+# Display
+@api_key.masked_token             # => "sk_live_••••abc1" (safe for UI)
+@api_key.viewable_token           # => full token if public key type, nil otherwise
+
+# Status checks
+@api_key.active?                  # => true if not revoked and not expired
+@api_key.expired?                 # => true if past expires_at
+@api_key.revoked?                 # => true if manually revoked
+@api_key.revocable?               # => false for non-revocable key types
+
+# Type checks (when using key_types)
+@api_key.public_key_type?         # => true if token can be viewed again
+@api_key.key_type                 # => "publishable", "secret", or nil
+@api_key.environment              # => "test", "live", or nil
+
+# Actions
+@api_key.revoke!                  # Revoke the key (raises if not revocable)
+
+# Scopes
+@api_key.scopes                   # => ["read", "write"]
+@api_key.allows_scope?("read")    # => true
+
+# Metadata
+@api_key.name                     # => "Production Server"
+@api_key.created_at
+@api_key.expires_at
+@api_key.last_used_at
+@api_key.requests_count           # If tracking enabled
+```
+
+---
+
+### Token Session Helper
+
+Manages the "show token once" pattern for secret keys:
+
+```ruby
+# Store token after creation
+ApiKeys::TokenSession.store(session, @api_key)
+
+# Retrieve and clear (returns nil on subsequent calls)
+@token = ApiKeys::TokenSession.retrieve_once(session)
+
+# With custom session key (if managing multiple token types)
+ApiKeys::TokenSession.store(session, @api_key, key: :my_custom_key)
+@token = ApiKeys::TokenSession.retrieve_once(session, key: :my_custom_key)
+```
+
+---
+
+### Expiration Options Helper
+
+For building expiration dropdowns:
+
+```ruby
+# Get options for select
+ApiKeys::ExpirationOptions.for_select
+# => [["No Expiration", "no_expiration"], ["7 days", "7_days"], ["30 days", "30_days"], ...]
+
+# Get default value
+ApiKeys::ExpirationOptions.default_value
+# => "no_expiration"
+
+# Parse a preset to a date
+ApiKeys::ExpirationOptions.parse("30_days")
+# => 30.days.from_now
+
+ApiKeys::ExpirationOptions.parse("no_expiration")
+# => nil
+
+# Exclude "no expiration" option
+ApiKeys::ExpirationOptions.for_select(include_no_expiration: false)
+```
+
+---
+
+### Form Builder Extensions (Opt-in)
+
+Add to your initializer to enable:
+
+```ruby
+Rails.application.config.to_prepare do
+  ActionView::Helpers::FormBuilder.include(ApiKeys::FormBuilderExtensions)
+end
+```
+
+#### `api_key_expiration_select`
+
+Renders a select dropdown with all expiration presets:
+
+```erb
+<%# Basic usage %>
+<%= form.api_key_expiration_select %>
+
+<%# With CSS classes (Tailwind example) %>
+<%= form.api_key_expiration_select(class: "w-full px-4 py-3 border rounded-lg") %>
+
+<%# With custom default selection %>
+<%= form.api_key_expiration_select(selected: "30_days") %>
+```
+
+#### `api_key_scopes_checkboxes`
+
+Renders scope checkboxes with a block for custom markup:
+
+```erb
+<%# With block - you control the HTML, gem handles the logic %>
+<%= form.api_key_scopes_checkboxes(@available_scopes) do |scope, checked| %>
+  <label class="flex items-center gap-2">
+    <%= check_box_tag "api_key[scopes][]", scope, checked, class: "rounded" %>
+    <code><%= scope %></code>
+  </label>
+<% end %>
+
+<%# For new records, all scopes are checked by default %>
+<%# For existing records, only the key's current scopes are checked %>
+
+<%# Override checked state %>
+<%= form.api_key_scopes_checkboxes(@scopes, checked: :none) do |scope, checked| %>
+  ...
+<% end %>
+
+<%# checked options: :all, :none, or an array of specific scopes %>
+```
+
+#### `api_key_token_data`
+
+Returns structured data for building token display UIs:
+
+```erb
+<% data = form.api_key_token_data %>
+<code><%= data[:masked] %></code>
+
+<% if data[:viewable] %>
+  <button data-token="<%= data[:full] %>">Copy</button>
+<% end %>
+
+<%# Returns: { masked:, full:, viewable:, type:, environment: } %>
+```
+
+---
+
+### View Helpers
+
+Include in your ApplicationHelper:
+
+```ruby
+module ApplicationHelper
+  include ApiKeys::ViewHelpers
+end
+```
+
+#### Status Helpers
+
+```erb
+<%# Get status as symbol %>
+<%= api_key_status(@key) %>
+<%# => :active, :expired, or :revoked %>
+
+<%# Get human-readable label %>
+<%= api_key_status_label(@key) %>
+<%# => "Active", "Expired", or "Revoked" %>
+
+<%# Get full status info for styling %>
+<% info = api_key_status_info(@key) %>
+<span class="<%= info[:color] == :green ? 'bg-green-100' : 'bg-red-100' %>">
+  <%= info[:label] %>
+</span>
+<%# Returns: { status: :active, label: "Active", color: :green } %>
+<%# Colors: :green (active), :red (revoked), :gray (expired) %>
+```
+
+#### Type & Environment Helpers
+
+```erb
+<%# Key type label %>
+<%= api_key_type_label(@key) %>
+<%# => "Publishable", "Secret", or nil %>
+
+<%# Environment label %>
+<%= api_key_environment_label(@key) %>
+<%# => "Test", "Live", or "Default" %>
+
+<%# Type checks %>
+<%= api_key_publishable?(@key) %>  <%# => true/false %>
+<%= api_key_secret?(@key) %>       <%# => true/false %>
+
+<%# Get environment from a token string (useful on success page) %>
+<%= api_key_environment_from_token(@token) %>
+<%# => :test, :live, or nil %>
+
+<%= api_key_environment_label_from_token(@token) %>
+<%# => "Test mode", "Live mode", or "Default" %>
+```
+
+---
+
+### View Examples
+
+#### Index Page (Key List)
+
+```erb
+<%# Publishable key section %>
+<% if @publishable_key %>
+  <code><%= @publishable_key.viewable_token || @publishable_key.masked_token %></code>
+  <span><%= api_key_environment_label(@publishable_key) %> mode</span>
+<% else %>
+  <%= button_to create_publishable_settings_api_keys_path, method: :post do %>
+    Create Publishable Key
+  <% end %>
+<% end %>
+
+<%# Secret keys table %>
+<% @secret_keys.each do |key| %>
+  <tr>
+    <td><%= key.name || "Unnamed key" %></td>
+    <td><code><%= key.masked_token %></code></td>
+    <td><%= api_key_status_label(key) %></td>
+    <td>
+      <%= link_to "Edit", edit_settings_api_key_path(key) %>
+      <%= button_to "Revoke", revoke_settings_api_key_path(key), method: :post %>
+    </td>
+  </tr>
+<% end %>
+```
+
+#### New/Edit Form
+
+```erb
+<%= form_with(model: @api_key, url: settings_api_keys_path) do |form| %>
+  <%# Name %>
+  <%= form.text_field :name, placeholder: "e.g., Production Server" %>
+
+  <%# Expiration (new keys only) %>
+  <%= form.api_key_expiration_select(class: "form-select") %>
+
+  <%# Scopes %>
+  <%= form.api_key_scopes_checkboxes(@available_scopes) do |scope, checked| %>
+    <label>
+      <%= check_box_tag "api_key[scopes][]", scope, checked %>
+      <%= scope %>
+    </label>
+  <% end %>
+
+  <%= form.submit %>
+<% end %>
+```
+
+#### Success Page (Show Token Once)
+
+```erb
+<% if @token.present? %>
+  <input type="text" value="<%= @token %>" readonly>
+  <button data-copy="<%= @token %>">Copy</button>
+  <span><%= api_key_environment_label_from_token(@token) %></span>
+
+  <p>This key will only be shown once. Copy it now!</p>
+<% else %>
+  <p>Token already shown. Create a new key if needed.</p>
+  <%= link_to "Create New Key", new_settings_api_key_path %>
+<% end %>
+```
+
+---
+
+### Best Practices
+
+Based on real production integrations:
+
+1. **Use RESTful routes** - `resources :api_keys` with member/collection actions, not custom route definitions.
+
+2. **Separate form-only params** - Access `expires_at_preset` via `params.dig(:api_key, :expires_at_preset)` rather than including it in strong params (it's not a model attribute).
+
+3. **Use `before_action` for shared setup** - Extract `@available_scopes` to a before_action rather than setting it in multiple actions.
+
+4. **Let validations handle errors** - Rescue `ActiveRecord::RecordInvalid` and re-render the form rather than pre-checking everything.
+
+5. **Use the gem's helpers consistently** - Use `api_key_status_label(key)` everywhere rather than hardcoding "Active" in some places.
+
+6. **Check limits before showing UI** - Use `can_create_api_key?(key_type:)` to conditionally show/hide create buttons.
+
+7. **Keep controllers thin** - The gem handles token generation, hashing, scope filtering, and validation. Your controller just orchestrates.
+
+See the "How it works" section below for additional model methods.
+
 
 ## How it works
 

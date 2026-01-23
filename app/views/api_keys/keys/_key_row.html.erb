@@ -1,48 +1,25 @@
-<tr>
-  <td>
-    <%# Status indicator (no text originally, keeping it that way unless specified otherwise) %>
-    <% if key.active? %>
-      <span style="color: green;"></span>
-    <% elsif key.revoked? %>
-      <span style="color: orange;">[Revoked]</span>
-    <% elsif key.expired? %>
-      <span style="color: red;">[Expired]</span>
-    <% end %>
+<%# Partial for displaying a single API key row in the table %>
+<%# Locals: key (required) - The ApiKey record %>
+
+<tr class="api-keys-row <%= 'api-keys-row-inactive' if defined?(inactive) && inactive %>">
+  <td class="api-keys-cell-name">
+    <%= render partial: 'api_keys/keys/key_status', locals: { key: key } %>
     <%= key.name.presence || (key.key_type.present? ? "#{key.key_type.humanize} key" : "API key") %>
-    <%# Key type and environment badges %>
-    <% if key.key_type.present? %>
-      <% type_config = key.key_type_config %>
-      <span style="display: inline-block; padding: 2px 6px; font-size: 0.75em; border-radius: 3px; background-color: <%= type_config&.dig(:revocable) == false ? '#fef3cd' : '#e7f1ff' %>; color: <%= type_config&.dig(:revocable) == false ? '#856404' : '#004085' %>; margin-left: 4px;">
-        <%= key.key_type.humanize %>
-      </span>
-    <% end %>
-    <% if key.environment.present? %>
-      <span style="display: inline-block; padding: 2px 6px; font-size: 0.75em; border-radius: 3px; background-color: <%= key.environment == 'live' ? '#d4edda' : '#f8d7da' %>; color: <%= key.environment == 'live' ? '#155724' : '#721c24' %>; margin-left: 4px;">
-        <%= key.environment.upcase %>
-      </span>
-    <% end %>
-  </td>
-  <td>
-    <code><%= key.masked_token %></code>
-    <% if key.public_key_type? && key.viewable_token.present? %>
-      <button type="button" onclick="this.nextElementSibling.style.display='inline'; this.style.display='none';" style="margin-left: 8px; font-size: 0.75em; padding: 2px 6px; cursor: pointer;" title="Show full token">Show</button>
-      <span style="display: none;">
-        <code style="word-break: break-all;"><%= key.viewable_token %></code>
-        <button type="button" onclick="navigator.clipboard.writeText('<%= key.viewable_token %>'); alert('Copied!');" style="margin-left: 4px; font-size: 0.75em; padding: 2px 6px; cursor: pointer;" title="Copy to clipboard">Copy</button>
-      </span>
-    <% end %>
+    <%= render partial: 'api_keys/keys/key_badges', locals: { key: key } %>
   </td>
 
+  <td class="api-keys-cell-token api-keys-token-cell">
+    <%= render partial: 'api_keys/keys/token_display', locals: { key: key } %>
+  </td>
 
-  <td title="<%= key.created_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
+  <td class="api-keys-cell-created" title="<%= key.created_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
     <%= time_ago_in_words(key.created_at) %> ago
   </td>
 
-
-  <td>
+  <td class="api-keys-cell-expires">
     <% if key.expires_at? %>
       <% if key.expired? %>
-        <strong style="color: red;" title="<%= key.expires_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
+        <strong style="color: var(--api-keys-status-expired-color);" title="<%= key.expires_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
           Expired <%= time_ago_in_words(key.expires_at) %> ago
         </strong>
       <% else %>
@@ -55,46 +32,27 @@
     <% end %>
   </td>
 
-
-  <td>
+  <td class="api-keys-cell-last-used">
     <% if key.last_used_at? %>
       <span title="<%= key.last_used_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
         <%= time_ago_in_words(key.last_used_at) %> ago
       </span>
-      <%# TODO: Add relative time check (e.g., "within last 3 months") %>
     <% else %>
       <em>Never used</em>
     <% end %>
   </td>
 
-
-  <td>
+  <td class="api-keys-cell-scopes">
     <% if key.scopes.present? %>
       <% key.scopes.each do |scope| %>
-        <kbd class="tag is-small"><%= scope %></kbd>
+        <kbd class="api-keys-scope-tag tag is-small"><%= scope %></kbd>
       <% end %>
     <% else %>
       &mdash;
     <% end %>
   </td>
-  <td class="api-keys-action-buttons">
-    <% if key.active? %>
-      <%= link_to api_keys.edit_key_path(key), title: "Edit Key" do %>
-        <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M16.793 2.793a3.121 3.121 0 1 1 4.414 4.414l-8.5 8.5A1 1 0 0 1 12 16H9a1 1 0 0 1-1-1v-3a1 1 0 0 1 .293-.707l8.5-8.5Zm3 1.414a1.121 1.121 0 0 0-1.586 0L10 12.414V14h1.586l8.207-8.207a1.121 1.121 0 0 0 0-1.586ZM6 5a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4a1 1 0 1 1 2 0v4a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3h4a1 1 0 1 1 0 2H6Z" clip-rule="evenodd"></path></svg>
-      <% end %>
-      <%# Only show revoke button for revocable keys %>
-      <% if key.revocable? %>
-        <%= button_to api_keys.revoke_key_path(key), title: "Revoke Key", data: { turbo_method: :post, turbo_confirm: "Are you sure you want to revoke this key? It will stop working immediately." } do %>
-          <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M10.556 4a1 1 0 0 0-.97.751l-.292 1.14h5.421l-.293-1.14A1 1 0 0 0 13.453 4h-2.897Zm6.224 1.892-.421-1.639A3 3 0 0 0 13.453 2h-2.897A3 3 0 0 0 7.65 4.253l-.421 1.639H4a1 1 0 1 0 0 2h.1l1.215 11.425A3 3 0 0 0 8.3 22h7.4a3 3 0 0 0 2.984-2.683l1.214-11.425H20a1 1 0 1 0 0-2h-3.22Zm1.108 2H6.112l1.192 11.214A1 1 0 0 0 8.3 20h7.4a1 1 0 0 0 .995-.894l1.192-11.214ZM10 10a1 1 0 0 1 1 1v5a1 1 0 1 1-2 0v-5a1 1 0 0 1 1-1Zm4 0a1 1 0 0 1 1 1v5a1 1 0 1 1-2 0v-5a1 1 0 0 1 1-1Z" clip-rule="evenodd"></path></svg>
-        <% end %>
-      <% else %>
-        <span title="This key cannot be revoked" style="color: #999; cursor: help;">
-          <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" clip-rule="evenodd"></path></svg>
-        </span>
-      <% end %>
-    <% else %>
-      <%# No actions available for inactive/revoked/expired keys %>
-      &mdash;
-    <% end %>
+
+  <td class="api-keys-cell-actions api-keys-action-buttons">
+    <%= render partial: 'api_keys/keys/key_actions', locals: { key: key } %>
   </td>
 </tr>

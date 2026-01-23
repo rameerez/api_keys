@@ -38,12 +38,7 @@
         </tbody>
       </table>
     <% else %>
-      <div style="text-align: center; padding: 2em;">
-        <h4>You don't have any API keys yet!</h4>
-        <p>Create your first API key to get started.</p>
-        <%# Consider adding a primary "Create Key" button here %>
-        <%#= link_to "Create New API Key", new_key_path, class: "button primary" %>
-      </div>
+      <%= render partial: 'api_keys/keys/empty_state' %>
     <% end %>
   </div>
 

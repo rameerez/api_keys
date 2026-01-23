@@ -1,0 +1,40 @@
+<%# Partial for displaying publishable keys section %>
+<%# Locals: active_keys (Active publishable keys), inactive_keys (Inactive publishable keys) %>
+
+<section class="api-keys-section api-keys-publishable-section" aria-labelledby="publishable-keys-heading">
+  <h2 id="publishable-keys-heading">Publishable Keys</h2>
+  <p class="api-keys-section-description">
+    These keys are safe to embed in client-side applications and browser code.
+    You can view them anytime.
+  </p>
+
+  <div class="api-keys-table-wrapper">
+    <% all_keys = active_keys + inactive_keys %>
+    <% if all_keys.any? %>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>API Key</th>
+            <th>Created</th>
+            <th>Expires</th>
+            <th>Last Used</th>
+            <th>Permissions</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% active_keys.each do |key| %>
+            <%= render partial: 'api_keys/keys/key_row', locals: { key: key } %>
+          <% end %>
+
+          <% inactive_keys.each do |key| %>
+            <%= render partial: 'api_keys/keys/key_row', locals: { key: key, inactive: true } %>
+          <% end %>
+        </tbody>
+      </table>
+    <% else %>
+      <%= render partial: 'api_keys/keys/empty_state', locals: { message: "No publishable keys yet." } %>
+    <% end %>
+  </div>
+</section>
