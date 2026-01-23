@@ -77,6 +77,38 @@
       margin-top: 2.4em;
     }
 
+    /* API Keys sections styling */
+    .api-keys-section {
+      margin-top: 2em;
+      padding: 1.5em;
+      border: 1px solid var(--color-grey, #ccc);
+      border-radius: 8px;
+      background-color: var(--bg-secondary-color, #f9f9f9);
+    }
+
+    .api-keys-section h2 {
+      margin-top: 0;
+      margin-bottom: 0.5em;
+      font-size: 1.25em;
+    }
+
+    .api-keys-section-description {
+      margin-bottom: 1em;
+      color: var(--color-darkGrey, #666);
+      font-size: 0.9em;
+    }
+
+    .api-keys-info-text {
+      margin-bottom: 1em;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .api-keys-section {
+        background-color: var(--bg-secondary-color, rgb(34, 34, 34));
+        border-color: var(--color-darkGrey, #555);
+      }
+    }
+
   </style>
 
   <nav class="nav container">
@@ -109,7 +141,29 @@
     <%# Footer content %>
   </footer>
 
-  <%# Add any necessary JS includes if needed later %>
+  <script>
+    // Minimal JS for API Keys dashboard - event delegation for show/copy tokens
+    document.addEventListener('click', function(e) {
+      // Show token (one-way: masked -> full, no hiding back)
+      if (e.target.matches('.btn-show-token')) {
+        var cell = e.target.closest('td');
+        cell.querySelector('.token-masked').style.display = 'none';
+        cell.querySelector('.token-full').style.display = 'inline';
+        e.target.style.display = 'none';
+        cell.querySelector('.btn-copy-token').style.display = 'inline';
+      }
+
+      // Copy token to clipboard
+      if (e.target.matches('.btn-copy-token')) {
+        var token = e.target.getAttribute('data-token');
+        navigator.clipboard.writeText(token).then(function() {
+          var originalText = e.target.textContent;
+          e.target.textContent = 'Copied!';
+          setTimeout(function() { e.target.textContent = originalText; }, 2000);
+        });
+      }
+    });
+  </script>
 
 </body>
 </html> 

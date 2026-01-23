@@ -4,6 +4,7 @@ module ApiKeys
   # Controller for managing API keys belonging to the current owner.
   class KeysController < ApplicationController
     before_action :set_api_key, only: [:show, :edit, :update, :revoke]
+    helper_method :key_types_feature_enabled?
 
     # GET /keys
     def index
@@ -20,6 +21,14 @@ module ApiKeys
       @api_keys = base_scope.active.order(created_at: :desc)
       # Optionally, fetch inactive ones for a separate section or filter
       @inactive_api_keys = base_scope.inactive.order(created_at: :desc)
+
+      # When key_types feature is enabled, separate publishable and secret keys
+      if key_types_feature_enabled?
+        @publishable_keys = @api_keys.select(&:public_key_type?)
+        @secret_keys = @api_keys.reject(&:public_key_type?)
+        @inactive_publishable_keys = @inactive_api_keys.select(&:public_key_type?)
+        @inactive_secret_keys = @inactive_api_keys.reject(&:public_key_type?)
+      end
     end
 
     # GET /keys/:id
