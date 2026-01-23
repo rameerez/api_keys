@@ -1,0 +1,10 @@
+<%# Partial for displaying key status indicator %>
+<%# Locals: key (required) - The ApiKey record %>
+
+<% if key.active? %>
+  <span class="api-keys-status api-keys-status-active" style="color: var(--api-keys-status-active-color);"></span>
+<% elsif key.revoked? %>
+  <span class="api-keys-status api-keys-status-revoked" style="color: var(--api-keys-status-revoked-color);">[Revoked]</span>
+<% elsif key.expired? %>
+  <span class="api-keys-status api-keys-status-expired" style="color: var(--api-keys-status-expired-color);">[Expired]</span>
+<% end %>

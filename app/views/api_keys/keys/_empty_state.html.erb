@@ -1,0 +1,9 @@
+<%# Partial for displaying empty state when no keys exist %>
+<%# Locals: message (optional) - Custom message to display %>
+
+<% message ||= "You don't have any API keys yet!" %>
+
+<div class="api-keys-empty-state" style="text-align: center; padding: 2em;">
+  <h4><%= message %></h4>
+  <p>Create your first API key to get started.</p>
+</div>

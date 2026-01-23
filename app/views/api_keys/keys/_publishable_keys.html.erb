@@ -34,9 +34,7 @@
         </tbody>
       </table>
     <% else %>
-      <div style="text-align: center; padding: 2em; color: var(--color-darkGrey, #777);">
-        <p>No publishable keys yet.</p>
-      </div>
+      <%= render partial: 'api_keys/keys/empty_state', locals: { message: "No publishable keys yet." } %>
     <% end %>
   </div>
 </section>

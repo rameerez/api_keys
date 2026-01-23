@@ -12,15 +12,67 @@
 </head>
 <body>
   <style>
+    /*
+     * API Keys CSS Variables
+     * Override these in your host application to customize the dashboard appearance.
+     * Example in your app's CSS:
+     *   :root {
+     *     --api-keys-primary-color: #your-brand-color;
+     *     --api-keys-danger-color: #your-danger-color;
+     *   }
+     */
+    :root {
+      /* Colors */
+      --api-keys-primary-color: #007bff;
+      --api-keys-danger-color: #c23539;
+      --api-keys-success-color: #28a745;
+      --api-keys-warning-color: #ffc107;
+      --api-keys-muted-color: #6c757d;
+
+      /* Badge colors */
+      --api-keys-badge-secret-bg: #e7f1ff;
+      --api-keys-badge-secret-color: #004085;
+      --api-keys-badge-publishable-bg: #fef3cd;
+      --api-keys-badge-publishable-color: #856404;
+      --api-keys-badge-live-bg: #d4edda;
+      --api-keys-badge-live-color: #155724;
+      --api-keys-badge-test-bg: #f8d7da;
+      --api-keys-badge-test-color: #721c24;
+
+      /* Status colors */
+      --api-keys-status-active-color: green;
+      --api-keys-status-revoked-color: orange;
+      --api-keys-status-expired-color: red;
+
+      /* Spacing */
+      --api-keys-section-padding: 1.5em;
+      --api-keys-section-margin: 2em;
+      --api-keys-border-radius: 8px;
+
+      /* Typography */
+      --api-keys-font-family: inherit;
+      --api-keys-code-font-size: 0.8em;
+    }
+
     body {
-      /* grid-template-columns: 1fr min(100rem, 90%) 1fr !important; */
+      font-family: var(--api-keys-font-family);
     }
 
     @media (prefers-color-scheme: dark) {
+      :root {
+        --api-keys-badge-secret-bg: #1a365d;
+        --api-keys-badge-secret-color: #90cdf4;
+        --api-keys-badge-publishable-bg: #744210;
+        --api-keys-badge-publishable-color: #faf089;
+        --api-keys-badge-live-bg: #22543d;
+        --api-keys-badge-live-color: #9ae6b4;
+        --api-keys-badge-test-bg: #742a2a;
+        --api-keys-badge-test-color: #feb2b2;
+      }
+
       body {
-        /* Define dark mode variables directly */
-        --bg-color:rgb(14, 14, 14);
-        --bg-secondary-color:rgb(34, 34, 34);
+        --bg-color: rgb(14, 14, 14);
+        --bg-secondary-color: rgb(34, 34, 34);
         --font-color: #f5f5f5;
         --color-grey: #ccc;
         --color-darkGrey: #777;
@@ -29,7 +81,7 @@
 
     code, pre {
       color: var(--font-color);
-      font-size: 0.8em;
+      font-size: var(--api-keys-code-font-size);
     }
 
     .api-keys-align-center {
@@ -52,7 +104,7 @@
     .api-keys-action-buttons button {
       background: none;
       padding: 0;
-      color: #c23539
+      color: var(--api-keys-danger-color);
     }
 
     .api-keys-button-text {
@@ -79,10 +131,10 @@
 
     /* API Keys sections styling */
     .api-keys-section {
-      margin-top: 2em;
-      padding: 1.5em;
+      margin-top: var(--api-keys-section-margin);
+      padding: var(--api-keys-section-padding);
       border: 1px solid var(--color-grey, #ccc);
-      border-radius: 8px;
+      border-radius: var(--api-keys-border-radius);
       background-color: var(--bg-secondary-color, #f9f9f9);
     }
 
