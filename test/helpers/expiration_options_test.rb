@@ -85,6 +85,39 @@ module ApiKeys
         assert_nil ExpirationOptions.parse("0_days")
       end
 
+      test "parse returns nil for excessively large days value" do
+        assert_nil ExpirationOptions.parse("99999999999_days")
+        assert_nil ExpirationOptions.parse("3651_days") # Just over 10 years
+      end
+
+      test "parse accepts maximum allowed days" do
+        freeze_time do
+          result = ExpirationOptions.parse("3650_days")
+
+          assert_in_delta 3650.days.from_now.to_i, result.to_i, 1
+        end
+      end
+
+      test "parse boundary conditions for max days" do
+        freeze_time do
+          # 3650 days (exactly 10 years) should work
+          assert_not_nil ExpirationOptions.parse("3650_days")
+
+          # 3651 days (just over 10 years) should not work
+          assert_nil ExpirationOptions.parse("3651_days")
+
+          # Large but valid values
+          result = ExpirationOptions.parse("1000_days")
+          assert_in_delta 1000.days.from_now.to_i, result.to_i, 1
+        end
+      end
+
+      test "parse handles negative and zero days" do
+        assert_nil ExpirationOptions.parse("0_days")
+        assert_nil ExpirationOptions.parse("-1_days")
+        assert_nil ExpirationOptions.parse("-365_days")
+      end
+
       test "parse works with known presets" do
         freeze_time do
           result = ExpirationOptions.parse("365_days")

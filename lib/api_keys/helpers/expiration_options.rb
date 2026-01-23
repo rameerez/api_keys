@@ -73,7 +73,8 @@ module ApiKeys
           # Try to extract days from the preset string (e.g., "30_days" => 30)
           if preset =~ /\A(\d+)_days?\z/
             days = ::Regexp.last_match(1).to_i
-            return days.days.from_now if days.positive?
+            # Reasonable max: ~10 years to prevent overflow issues
+            return days.days.from_now if days.positive? && days <= 3650
           end
 
           # Check against known presets

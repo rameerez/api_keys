@@ -119,6 +119,7 @@ module ApiKeys
       #
       def api_key_environment_from_token(token)
         return nil if token.blank?
+        return nil if token.length > 500 # Reasonable max length for tokens
 
         config = ApiKeys.configuration
         return nil unless config.environments.present?

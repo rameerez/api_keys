@@ -159,6 +159,24 @@ module ApiKeys
         assert_nil api_key_environment_from_token("sk_test_abc123")
       end
 
+      test "api_key_environment_from_token returns nil for excessively long token" do
+        long_token = "sk_test_" + ("a" * 1000)
+
+        assert_nil api_key_environment_from_token(long_token)
+      end
+
+      test "api_key_environment_from_token accepts token at max length boundary" do
+        with_environments do
+          # 500 chars exactly should work
+          token_at_limit = "sk_test_" + ("a" * 492) # 8 + 492 = 500
+          assert_equal :test, api_key_environment_from_token(token_at_limit)
+
+          # 501 chars should fail
+          token_over_limit = "sk_test_" + ("a" * 493) # 8 + 493 = 501
+          assert_nil api_key_environment_from_token(token_over_limit)
+        end
+      end
+
       # api_key_environment_label_from_token tests
       test "api_key_environment_label_from_token returns formatted label" do
         with_environments do

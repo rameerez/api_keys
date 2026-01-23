@@ -109,6 +109,11 @@ module ApiKeys
         # Returns false if the limit for this key type/environment is reached.
         # Useful for conditional UI (e.g., hiding "Create" button when at limit).
         #
+        # Note: This is a best-effort check for UI purposes without locking.
+        # Concurrent requests could see stale data. The actual limit is enforced
+        # with pessimistic locking in create_api_key!, so this is safe to use
+        # for UI decisions (worst case: button shown but creation fails validation).
+        #
         # @param key_type [Symbol, nil] The key type to check (e.g., :publishable, :secret)
         # @param environment [Symbol, nil] The environment to check (defaults to current_environment)
         # @return [Boolean] true if the owner can create another key of this type
