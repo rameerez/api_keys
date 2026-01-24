@@ -79,6 +79,40 @@ module ApiKeys
     scope :publishable, -> { where(key_type: "publishable") }
     scope :secret, -> { where.not(key_type: "publishable") }
 
+    # === Usage Analytics Scopes ===
+    # These scopes help admin dashboards analyze API key usage patterns.
+    # Useful for identifying unused keys, high-traffic keys, and stale keys that may need cleanup.
+
+    # Keys that have never been used (last_used_at is nil)
+    scope :never_used, -> { where(last_used_at: nil) }
+
+    # Keys that have been used at least once
+    scope :used, -> { where.not(last_used_at: nil) }
+
+    # Order by usage count (highest first) - useful for finding most active keys
+    scope :by_requests, -> { order(requests_count: :desc) }
+
+    # Order by last used time (most recent first, nulls last)
+    # Uses NULLS LAST for PostgreSQL compatibility; SQLite sorts nulls last by default with DESC
+    scope :by_last_used, -> { order(Arel.sql("CASE WHEN last_used_at IS NULL THEN 1 ELSE 0 END, last_used_at DESC")) }
+
+    # Active keys that haven't been used within the specified period.
+    # Useful for identifying keys that may have been abandoned or forgotten.
+    # Excludes revoked/expired keys since those are already inactive.
+    # @param period [ActiveSupport::Duration] The inactivity threshold (default: 30 days)
+    scope :stale, ->(period = 30.days) {
+      active.where("last_used_at < :threshold OR last_used_at IS NULL", threshold: period.ago)
+    }
+
+    # Aliases for common admin dashboard naming conventions
+    class << self
+      alias_method :most_used, :by_requests
+      alias_method :recently_used, :by_last_used
+    end
+
+    # Convenience scope for 30-day stale keys (common admin filter)
+    scope :inactive_for_30_days, -> { stale(30.days) }
+
     # == Instance Methods ==
 
     def revoke!
