@@ -120,6 +120,131 @@ module ApiKeys
         assert_not_includes expired_keys, active_key
       end
 
+      # === Usage Analytics Scopes ===
+      # These scopes help admin dashboards analyze API key usage patterns
+
+      test ".never_used scope returns keys that have never been used" do
+        used_key = ApiKeys::ApiKey.create!(owner: @user, name: "Used")
+        used_key.update_column(:last_used_at, 1.day.ago)
+
+        never_used_key = ApiKeys::ApiKey.create!(owner: @user, name: "Never Used")
+        # last_used_at is nil by default
+
+        never_used_keys = ApiKeys::ApiKey.never_used.to_a
+        assert_includes never_used_keys, never_used_key
+        assert_not_includes never_used_keys, used_key
+      end
+
+      test ".used scope returns keys that have been used at least once" do
+        used_key = ApiKeys::ApiKey.create!(owner: @user, name: "Used")
+        used_key.update_column(:last_used_at, 1.day.ago)
+
+        never_used_key = ApiKeys::ApiKey.create!(owner: @user, name: "Never Used")
+
+        used_keys = ApiKeys::ApiKey.used.to_a
+        assert_includes used_keys, used_key
+        assert_not_includes used_keys, never_used_key
+      end
+
+      test ".by_requests scope orders by requests_count descending" do
+        low_usage = ApiKeys::ApiKey.create!(owner: @user, name: "Low")
+        low_usage.update_column(:requests_count, 10)
+
+        high_usage = ApiKeys::ApiKey.create!(owner: @user, name: "High")
+        high_usage.update_column(:requests_count, 1000)
+
+        medium_usage = ApiKeys::ApiKey.create!(owner: @user, name: "Medium")
+        medium_usage.update_column(:requests_count, 100)
+
+        ordered = ApiKeys::ApiKey.by_requests.to_a
+        assert_equal [high_usage, medium_usage, low_usage], ordered
+      end
+
+      test ".by_last_used scope orders by last_used_at descending with nulls last" do
+        old_key = ApiKeys::ApiKey.create!(owner: @user, name: "Old")
+        old_key.update_column(:last_used_at, 7.days.ago)
+
+        recent_key = ApiKeys::ApiKey.create!(owner: @user, name: "Recent")
+        recent_key.update_column(:last_used_at, 1.hour.ago)
+
+        never_used_key = ApiKeys::ApiKey.create!(owner: @user, name: "Never")
+        # last_used_at is nil
+
+        ordered = ApiKeys::ApiKey.by_last_used.to_a
+        # Recent should come first, then old, then never used (nulls last)
+        assert_equal recent_key, ordered.first
+        assert_equal old_key, ordered.second
+        assert_equal never_used_key, ordered.last
+      end
+
+      test ".stale scope returns active keys not used in specified period" do
+        # Active key used recently - should NOT be stale
+        recent_key = ApiKeys::ApiKey.create!(owner: @user, name: "Recent")
+        recent_key.update_column(:last_used_at, 5.days.ago)
+
+        # Active key not used in 30+ days - should be stale
+        stale_key = ApiKeys::ApiKey.create!(owner: @user, name: "Stale")
+        stale_key.update_column(:last_used_at, 45.days.ago)
+
+        # Active key never used - should be stale
+        never_used_key = ApiKeys::ApiKey.create!(owner: @user, name: "Never Used")
+
+        # Revoked key not used in 30+ days - should NOT be stale (already inactive)
+        revoked_key = ApiKeys::ApiKey.create!(owner: @user, name: "Revoked")
+        revoked_key.update_column(:last_used_at, 60.days.ago)
+        revoked_key.revoke!
+
+        stale_keys = ApiKeys::ApiKey.stale(30.days).to_a
+        assert_includes stale_keys, stale_key
+        assert_includes stale_keys, never_used_key
+        assert_not_includes stale_keys, recent_key
+        assert_not_includes stale_keys, revoked_key
+      end
+
+      test ".stale scope defaults to 30 days" do
+        stale_key = ApiKeys::ApiKey.create!(owner: @user, name: "Stale")
+        stale_key.update_column(:last_used_at, 31.days.ago)
+
+        recent_key = ApiKeys::ApiKey.create!(owner: @user, name: "Recent")
+        recent_key.update_column(:last_used_at, 29.days.ago)
+
+        stale_keys = ApiKeys::ApiKey.stale.to_a
+        assert_includes stale_keys, stale_key
+        assert_not_includes stale_keys, recent_key
+      end
+
+      test ".most_used is an alias for .by_requests" do
+        low_usage = ApiKeys::ApiKey.create!(owner: @user, name: "Low")
+        low_usage.update_column(:requests_count, 10)
+
+        high_usage = ApiKeys::ApiKey.create!(owner: @user, name: "High")
+        high_usage.update_column(:requests_count, 1000)
+
+        assert_equal ApiKeys::ApiKey.by_requests.to_a, ApiKeys::ApiKey.most_used.to_a
+      end
+
+      test ".recently_used is an alias for .by_last_used" do
+        old_key = ApiKeys::ApiKey.create!(owner: @user, name: "Old")
+        old_key.update_column(:last_used_at, 7.days.ago)
+
+        recent_key = ApiKeys::ApiKey.create!(owner: @user, name: "Recent")
+        recent_key.update_column(:last_used_at, 1.hour.ago)
+
+        assert_equal ApiKeys::ApiKey.by_last_used.to_a, ApiKeys::ApiKey.recently_used.to_a
+      end
+
+      test ".inactive_for_30_days scope is equivalent to .stale with 30 days" do
+        stale_key = ApiKeys::ApiKey.create!(owner: @user, name: "Stale")
+        stale_key.update_column(:last_used_at, 31.days.ago)
+
+        recent_key = ApiKeys::ApiKey.create!(owner: @user, name: "Recent")
+        recent_key.update_column(:last_used_at, 29.days.ago)
+
+        assert_equal ApiKeys::ApiKey.stale(30.days).to_a, ApiKeys::ApiKey.inactive_for_30_days.to_a
+        assert_includes ApiKeys::ApiKey.inactive_for_30_days.to_a, stale_key
+        assert_not_includes ApiKeys::ApiKey.inactive_for_30_days.to_a, recent_key
+      end
+
       test "revoke! sets revoked_at timestamp" do
         api_key = ApiKeys::ApiKey.create!(owner: @user, name: "To Revoke")
         assert_nil api_key.revoked_at
