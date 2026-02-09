@@ -184,13 +184,23 @@ module ApiKeys
     end
 
     # Basic scope check. Assumes scopes are stored as an array of strings.
-    # Returns true if the key has no specific scopes (allowing all) or includes the required scope.
+    #
+    # Behavior depends on whether key_types mode is enabled:
+    # - Simple mode (no key_types): blank scopes means "unrestricted" (all scopes allowed).
+    #   This preserves backwards compatibility for apps that don't use scopes at all.
+    # - Key types mode: blank scopes means "no permissions". When you've configured
+    #   key types with permission ceilings, an empty scope list should deny access,
+    #   not silently bypass the entire permission system.
     def allows_scope?(required_scope)
-      # Type casting for scopes/metadata happens via the attribute definition in the engine.
-      # Ensure the attribute is loaded/defined before using it.
-      # Check if the attribute method exists before calling .blank? or .include?
       return true unless respond_to?(:scopes) # Guard clause if loaded before attribute definition
-      scopes.blank? || scopes.include?(required_scope.to_s)
+
+      if scopes.blank?
+        # In key_types mode, blank scopes = no access (deny by default)
+        # In simple mode, blank scopes = unrestricted (allow by default)
+        return !ApiKeys.configuration.key_types.present?
+      end
+
+      scopes.include?(required_scope.to_s)
     end
 
     # Alias for scopes - provides a more user-friendly API that matches

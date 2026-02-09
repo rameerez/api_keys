@@ -45,6 +45,29 @@ module ApiKeys
         assert_not api_key.allows_scope?("admin")
       end
 
+      test "allows_scope? with blank scopes in simple mode allows all" do
+        # In simple mode (no key_types configured), blank scopes = unrestricted
+        api_key = ApiKeys::ApiKey.create!(owner: @user, name: "No Scopes", scopes: [])
+        assert api_key.allows_scope?("read")
+        assert api_key.allows_scope?("admin")
+        assert api_key.allows_scope?("anything")
+      end
+
+      test "allows_scope? with blank scopes in key_types mode denies all" do
+        # In key_types mode, blank scopes = no permissions
+        original_key_types = ApiKeys.configuration.key_types
+        ApiKeys.configuration.key_types = {
+          publishable: { prefix: "pk", permissions: %w[read] },
+          secret: { prefix: "sk", permissions: :all }
+        }
+
+        api_key = ApiKeys::ApiKey.create!(owner: @user, name: "Empty Scopes", scopes: [])
+        assert_not api_key.allows_scope?("read")
+        assert_not api_key.allows_scope?("admin")
+      ensure
+        ApiKeys.configuration.key_types = original_key_types
+      end
+
       test "creates with sha256 digest by default" do
         api_key = ApiKeys::ApiKey.create!(owner: @user, name: "SHA256 Default")
         assert_equal "sha256", api_key.digest_algorithm
