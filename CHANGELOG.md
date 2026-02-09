@@ -1,3 +1,12 @@
+## [0.3.0] - 2026-02-09
+
+- Add Stripe-style key types and environments (publishable/secret keys with test/live isolation)
+- Add public key token storage for non-revocable publishable keys
+- Add headless helpers for custom dashboard integrations
+- Add usage analytics scopes for admin dashboards
+- Fix PostgreSQL FOR UPDATE with COUNT aggregate error
+- Fix blank scopes bypass in key_types mode: empty scopes no longer grant unrestricted access when permission ceilings are configured
+
 ## [0.2.1] - 2025-08-04
 
 - Fix SecurityController callback reference from :authenticate_api_keys_user! to :authenticate_api_keys_owner!
