@@ -224,6 +224,37 @@ module ApiKeys
         ApiKeys::Services::Authenticator.call(request)
         mock_callback.verify
       end
+
+      # === Prefix changes are SAFE for existing keys ===
+      # The initializer template used to warn "Once set, do NOT change or
+      # existing keys will fail authentication!" — false on both strategies:
+      # sha256 looks up by pure token digest (prefix never consulted), and
+      # bcrypt scopes by the key's OWN stored prefix via the known-prefixes
+      # scan. These pin that guarantee so it can't regress silently.
+
+      test "existing sha256 keys keep authenticating after token_prefix changes" do
+        # @token was minted under the default "ak_" prefix in setup.
+        ApiKeys.configuration.token_prefix = -> { "vdb_" }
+
+        result = Authenticator.call(mock_request(headers: { "Authorization" => "Bearer #{@token}" }))
+
+        assert result.success?, "a prefix change must never strand existing keys"
+        assert_equal @api_key.id, result.api_key.id
+      end
+
+      test "existing bcrypt keys keep authenticating after token_prefix changes" do
+        with_hash_strategy(:bcrypt) do
+          key = ApiKeys::ApiKey.create!(owner: @user, name: "Pre-rebrand Key")
+          token = key.token
+
+          ApiKeys.configuration.token_prefix = -> { "vdb_" }
+
+          result = Authenticator.call(mock_request(headers: { "Authorization" => "Bearer #{token}" }))
+
+          assert result.success?, "the known-prefixes scan must find keys minted under retired prefixes"
+          assert_equal key.id, result.api_key.id
+        end
+      end
     end
   end
 end
