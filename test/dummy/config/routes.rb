@@ -15,6 +15,11 @@ Rails.application.routes.draw do
   # Mount the ApiKeys engine for a hosted portal for managing keys
   mount ApiKeys::Engine => '/settings/api-keys'
 
+  # Second mount under a CUSTOM route name: engine views must keep working
+  # without the default `api_keys.` routes proxy (regression coverage for
+  # hardcoded proxy calls — see test/integration/custom_mount_name_test.rb).
+  mount ApiKeys::Engine => '/renamed-keys', as: :renamed_keys
+
   # Define routes for the demo controller
   root "api_keys#index"
 

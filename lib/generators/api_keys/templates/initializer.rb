@@ -84,7 +84,12 @@ ApiKeys.configure do |config|
   # When key_types IS configured and you specify a key_type, this setting
   # is IGNORED - the prefix comes from the key type's configuration instead.
   #
-  # WARNING: Once set, do NOT change or existing keys will fail authentication!
+  # Changing this later is SAFE for existing keys: every key stores its own
+  # prefix, so authentication keeps finding keys minted under retired
+  # prefixes (sha256 looks up by pure token digest; bcrypt falls back to a
+  # cached scan of all prefixes present in the database). Only NEW keys wear
+  # the new prefix. The one cost: under :bcrypt, keys off the configured
+  # prefix take the slightly slower known-prefixes lookup path.
   # Default: -> { "ak_" }
   # config.token_prefix = -> { "myapp_" }
 
