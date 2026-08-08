@@ -5,15 +5,9 @@ permissions:
 
 on:
   pull_request:
-    paths-ignore:
-      - "*.md"
-      - "LICENSE.txt"
   push:
     branches:
       - main
-    paths-ignore:
-      - "*.md"
-      - "LICENSE.txt"
 
 jobs:
   test:
