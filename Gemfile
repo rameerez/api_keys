@@ -22,7 +22,7 @@ group :development, :test do
   # Speed up boot time for the dummy app
   gem "bootsnap", require: false
 
-  gem "mocha", "~> 2.0"
+  gem "mocha", "~> 3.1"
 
   # Ruby 4.0+ compatibility: ostruct removed from stdlib
   gem "ostruct"
