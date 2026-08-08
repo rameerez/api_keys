@@ -3,11 +3,6 @@
 require "test_helper"
 require "active_job"
 
-# Stub helper_method for non-Rails controller context
-module Kernel
-  def helper_method(*); end
-end
-
 module ApiKeys
   class AuthenticationConcernTest < ApiKeys::Test
     class FakeRequest
@@ -74,14 +69,14 @@ module ApiKeys
       assert_equal user, controller.send(:current_api_owner)
       assert_equal user, controller.send(:current_api_user)
 
-      # Jobs enqueued: before + after callbacks + stats
+      # Jobs enqueued exactly once each: before + after callbacks + stats
       jobs = ActiveJob::Base.queue_adapter.enqueued_jobs
       job_classes = jobs.map { |j| j[:job] }
-      assert job_classes.count { |jc| jc == ApiKeys::Jobs::CallbacksJob } >= 2
+      assert_equal 2, (job_classes.count { |jc| jc == ApiKeys::Jobs::CallbacksJob })
       assert_includes job_classes, ApiKeys::Jobs::UpdateStatsJob
     end
 
-    test "authenticate_api_key! missing scope renders error and does not enqueue stats" do
+      test "authenticate_api_key! missing scope renders error and does not enqueue stats" do
       user = User.create!(name: "Scoped User")
       key = ApiKeys::ApiKey.create!(owner: user, name: "Scoped Key", scopes: ["read"]) # no 'write'
       token = key.instance_variable_get(:@token)
@@ -102,13 +97,22 @@ module ApiKeys
       assert_equal :unauthorized, resp[:status]
       assert_equal :missing_scope, resp[:json][:error]
       assert_equal "write", resp[:json][:required_scope]
+      assert_nil controller.send(:current_api_key), "a scope-denied key must not remain in controller state"
 
       # Stats job not enqueued
       jobs = ActiveJob::Base.queue_adapter.enqueued_jobs
       job_classes = jobs.map { |j| j[:job] }
       refute_includes job_classes, ApiKeys::Jobs::UpdateStatsJob
-      # But callbacks are still enqueued (before and after)
-      assert job_classes.count { |jc| jc == ApiKeys::Jobs::CallbacksJob } >= 2
+      # But callbacks are still enqueued exactly once each (before and after)
+      assert_equal 2, (job_classes.count { |jc| jc == ApiKeys::Jobs::CallbacksJob })
+
+      after_job = jobs.reverse.find do |job|
+        job[:job] == ApiKeys::Jobs::CallbacksJob &&
+          ActiveJob::Arguments.deserialize(job[:args]).first == :after_authentication
+      end
+      _callback_type, context = ActiveJob::Arguments.deserialize(after_job[:args])
+      assert_equal false, context[:success]
+      assert_equal :missing_scope, context[:error_code]
     end
 
     test "authenticate_api_key! with async disabled enqueues no jobs" do
@@ -156,5 +160,25 @@ module ApiKeys
       assert_equal :missing_scope, controller2.rendered[:json][:error]
       assert_equal %w[read write], controller2.rendered[:json][:required_scope]
     end
+
+      test "scope checks fail closed when authentication has not established a key" do
+      controller = FakeController.new(FakeRequest.new)
+
+        refute controller.send(:check_api_key_scopes, "read")
+      end
+
+      test "a failed reauthentication clears prior key and tenant state" do
+        user = User.create!(name: "Prior User")
+        key = user.create_api_key!(name: "Prior Key")
+        controller = FakeController.new(FakeRequest.new(headers: { "Authorization" => "Bearer invalid_token" }))
+        controller.instance_variable_set(:@current_api_key, key)
+        controller.instance_variable_set(:@current_api_tenant, user)
+        ApiKeys.configuration.enable_async_operations = false
+
+        controller.send(:authenticate_api_key!)
+
+        assert_nil controller.send(:current_api_key)
+        assert_nil controller.instance_variable_get(:@current_api_tenant)
+      end
   end
 end

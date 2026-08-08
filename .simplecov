@@ -16,9 +16,8 @@ SimpleCov.start do
   # Enable branch coverage for more detailed metrics
   enable_coverage :branch
 
-  # Set minimum coverage threshold to prevent coverage regression
-  # Starting at 60% - can be increased as coverage improves
-  minimum_coverage line: 60, branch: 60
+  # Enforce the hardened baseline so security-path coverage cannot regress.
+  minimum_coverage line: 80, branch: 75
 
   # Disambiguate parallel test runs
   command_name "Job #{ENV['TEST_ENV_NUMBER']}" if ENV['TEST_ENV_NUMBER']

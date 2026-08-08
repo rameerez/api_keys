@@ -10,39 +10,45 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2025_04_29_150536) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_08_160000) do
   create_table "api_keys", force: :cascade do |t|
-    t.string "prefix", null: false
-    t.string "token_digest", null: false
+    t.datetime "created_at", null: false
     t.string "digest_algorithm", null: false
-    t.string "last4", limit: 4, null: false
-    t.string "name"
-    t.string "owner_type"
-    t.bigint "owner_id"
-    t.json "scopes", default: [], null: false
-    t.json "metadata", default: {}, null: false
+    t.string "environment"
     t.datetime "expires_at"
+    t.string "key_type"
+    t.string "last4", limit: 4, null: false
     t.datetime "last_used_at"
+    t.json "metadata", default: {}, null: false
+    t.string "name"
+    t.bigint "owner_id"
+    t.string "owner_type"
+    t.string "prefix", null: false
     t.bigint "requests_count", default: 0, null: false
     t.datetime "revoked_at"
-    t.datetime "created_at", null: false
+    t.json "scopes", default: [], null: false
+    t.string "token_digest", null: false
     t.datetime "updated_at", null: false
+    t.index ["environment"], name: "index_api_keys_on_environment"
     t.index ["expires_at"], name: "index_api_keys_on_expires_at"
+    t.index ["key_type"], name: "index_api_keys_on_key_type"
     t.index ["last4"], name: "index_api_keys_on_last4"
     t.index ["last_used_at"], name: "index_api_keys_on_last_used_at"
     t.index ["owner_id"], name: "index_api_keys_on_owner_id"
+    t.index ["owner_type", "owner_id", "key_type", "environment"], name: "index_api_keys_owner_type_env"
     t.index ["owner_type", "owner_id"], name: "index_api_keys_on_owner"
     t.index ["owner_type"], name: "index_api_keys_on_owner_type"
     t.index ["prefix", "digest_algorithm"], name: "index_api_keys_on_prefix_and_digest_algorithm"
+    t.index ["prefix", "last4", "digest_algorithm"], name: "index_api_keys_authentication_lookup"
     t.index ["prefix"], name: "index_api_keys_on_prefix"
     t.index ["revoked_at"], name: "index_api_keys_on_revoked_at"
     t.index ["token_digest"], name: "index_api_keys_on_token_digest", unique: true
   end
 
   create_table "users", force: :cascade do |t|
+    t.datetime "created_at", null: false
     t.string "email"
     t.string "name"
-    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
   end
 end

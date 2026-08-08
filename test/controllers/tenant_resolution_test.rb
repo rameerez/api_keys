@@ -2,11 +2,6 @@
 
 require "test_helper"
 
-# Stub helper_method for non-Rails controller context
-module Kernel
-  def helper_method(*); end
-end
-
 module ApiKeys
   class TenantResolutionConcernTest < ApiKeys::Test
     class FakeRequest
@@ -62,11 +57,13 @@ module ApiKeys
       user = User.create!(name: "Org User")
       key = ApiKeys::ApiKey.create!(owner: user, name: "Key")
 
-      ApiKeys.configure { |c| c.tenant_resolver = ->(api_key) { org } }
+      ApiKeys.configure { |c| c.tenant_resolver = ->(_api_key) { org } }
       controller = FakeController.new(key)
       controller.set_key(key)
 
       assert_equal org, controller.send(:current_api_tenant)
+      assert_equal user, controller.send(:current_api_owner), "tenant resolution must not replace the authenticated owner"
+      assert_equal user, controller.send(:current_api_key_owner)
     end
 
     test "handles resolver errors and returns nil" do

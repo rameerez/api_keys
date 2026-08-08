@@ -5,7 +5,7 @@
 > [!TIP]
 > **🚀 Ship your next Rails app 10x faster!** I've built **[RailsFast](https://railsfast.com/?ref=api_keys)**, a production-ready Rails boilerplate template that comes with everything you need to launch a software business in days, not weeks. Go [check it out](https://railsfast.com/?ref=api_keys)!
 
-`api_keys` makes it simple to add secure, production-ready API key authentication to any Rails app. Generate keys, restrict scopes, auto-expire tokens, revoke tokens, gate endpoints. It also provides a self-serve dashboard for your users to self-issue and manage their API keys themselves. All tokens are hashed securely by default, and never stored in plaintext.
+`api_keys` makes it simple to add secure, production-ready API key authentication to any Rails app. Generate keys, restrict scopes, auto-expire tokens, revoke tokens, and gate endpoints. It also provides a self-serve dashboard for users to issue and manage their own API keys. Secret tokens are hashed and shown only once. Plaintext is stored only for a key type that you explicitly mark as public, non-revocable, and limited to a finite permission set.
 
 [ 🟢 [Live interactive demo website](https://apikeys.rameerez.com) ]
 
@@ -29,6 +29,17 @@ rails db:migrate
 ```
 
 And you're done!
+
+### Upgrading an existing installation
+
+Install the bounded bcrypt authentication lookup index before deploying the current hardening changes:
+
+```bash
+rails generate api_keys:add_authentication_index
+rails db:migrate
+```
+
+The generated migration is idempotent and uses a concurrent PostgreSQL index where supported.
 
 ## Quick Start
 
@@ -260,7 +271,7 @@ module Settings
     end
 
     def success
-      @token = ApiKeys::TokenSession.retrieve_once(session)
+      @token = ApiKeys::TokenSession.retrieve_once(session, api_key: @api_key)
       redirect_to settings_api_keys_path, alert: "Token can only be shown once." and return if @token.blank?
     end
 
@@ -413,12 +424,16 @@ Manages the "show token once" pattern for secret keys:
 # Store token after creation
 ApiKeys::TokenSession.store(session, @api_key)
 
-# Retrieve and clear (returns nil on subsequent calls)
-@token = ApiKeys::TokenSession.retrieve_once(session)
+# Retrieve and clear, bound to the expected key (nil on mismatch or reuse)
+@token = ApiKeys::TokenSession.retrieve_once(session, api_key: @api_key)
 
 # With custom session key (if managing multiple token types)
 ApiKeys::TokenSession.store(session, @api_key, key: :my_custom_key)
-@token = ApiKeys::TokenSession.retrieve_once(session, key: :my_custom_key)
+@token = ApiKeys::TokenSession.retrieve_once(
+  session,
+  key: :my_custom_key,
+  api_key: @api_key
+)
 ```
 
 ---
@@ -668,7 +683,7 @@ If you want to write your own front-end instead of using the provided dashboard,
 ```ruby
 @api_key = @user.create_api_key!(
   name: "my-key",
-  scopes: "['read', 'write']",
+  scopes: %w[read write],
   expires_at: 42.days.from_now
 )
 
@@ -677,14 +692,14 @@ plaintext_token = @api_key.token
 # => ak_123abc...
 ```
 
-For security reasons, the **gem does not store the generated key** in the database.
+For security reasons, the gem does not store generated **secret** keys in the database.
 
-We only store a secure hash (SHA256 by default), so the API key / API token itself is only available in plaintext immediately after creation, as `@api_key.token` – the `.token` method won't work any other time.
+Only a secure digest is stored (SHA256 by default), so a secret token is available as `@api_key.token` only on the newly created in-memory object. Reloading clears it. The explicit public-key mode described below is the sole plaintext-storage exception.
 
 With this token, your users can make calls to your endpoints by attaching it as an `"Authorization: Bearer ak_123abc..."` in their HTTP calls headers, like this:
 
 ```bash
-curl -X GET -H "Authorization: Bearer ak_123abc..."   "http://example.com/api/endpoint"
+curl -X GET -H "Authorization: Bearer YOUR_API_KEY" "https://example.com/api/endpoint" # gitleaks:allow
 ```
 
 ### Listing all keys for users
@@ -904,7 +919,7 @@ By default, the `api_key` gem expects API keys to come *exclusively* as HTTP Aut
 https://example.com/api/endpoint?api_key=ak_123abc...
 ```
 
-This is not recommended security-wise because you'll be leaking API tokens everywhere in your logs, but if you want to enable this, just set the query param name you're expecting the API key token to be in:
+Do not enable this in production. URLs routinely reach logs, browser history, analytics, proxies, caches, and referrer data. If a constrained development/test integration requires it, set the expected parameter name explicitly:
 
 ```ruby
 config.query_param = "api_key"
@@ -912,7 +927,7 @@ config.query_param = "api_key"
 
 ### Changing the hashing function to `bcrypt` for maximum security
 
-By default, the `api_keys` gem hashes tokens using `sha256`, which is the industry standard for API keys (used by Stripe, GitHub, AWS). SHA256 is secure for high-entropy tokens because the 192 bits of randomness make brute-force attacks computationally infeasible. We use SHA256 and not other hasing algorithms for fast token lookup and low-latency API authentication.
+By default, `api_keys` hashes tokens using SHA256. A fast digest is appropriate here because tokens are generated from 192 bits of randomness by default (and never less than 128 bits), rather than chosen by a human. It also permits indexed, low-latency authentication.
 
 If you need slower, password-grade hashing (e.g., for extremely sensitive tokens), you can switch to bcrypt:
 
@@ -920,47 +935,53 @@ If you need slower, password-grade hashing (e.g., for extremely sensitive tokens
 config.hash_strategy = :bcrypt
 ```
 
-Note: bcrypt is ~50–100x slower than SHA256. For most API use cases, sha256 is more than sufficient.
+Note: bcrypt is substantially slower than SHA256. For most API use cases, SHA256 is appropriate because generated tokens have at least 128 bits of cryptographic randomness.
 
-`sha256` has O(1) lookup, `bcrypt` doesn't. This means that if you switch to `bcrypt`, you may observe ~100ms lags on every API call, for every token auth that's not cached.
+`sha256` has a direct digest lookup; bcrypt requires a bounded candidate lookup and an expensive comparison. Add the authentication index shown in the upgrade section before enabling bcrypt. The gem rejects total bcrypt token values over 72 bytes to prevent bcrypt's historical input truncation behavior, so keep the configured prefix plus encoded random portion within that bound.
 
-For 99% of APIs, `sha256` is more than secure enough — and far better for performance.
+Use SHA256 for ordinary high-entropy API keys unless your threat model specifically calls for a deliberately expensive verifier.
 
 ### Increase cache TTL
 
-We cache token lookups to improve performance, especially for repeated requests. This keeps `bcrypt` and `sha256` strategies fast under load.
+We cache only the database ID lookup hint. Every cache hit reloads the current row and cryptographically re-verifies the presented token; cached records never authorize a request by themselves.
 
-By default, we use a 5-second TTL, which offers a strong balance: most requests benefit from caching, while revoked keys stop working almost immediately.
+By default, the hint uses a 5-second TTL. Revocation, expiration, scope changes, environment changes, and other stored authorization state are checked from the database on every request and take effect immediately for new authentication attempts.
 
-If security is your top priority (e.g. rapid revocation after suspected key compromise), you can disable caching entirely:
+You can disable the lookup hint if you prefer not to use Rails.cache:
 
 ```ruby
 config.cache_ttl = 0.seconds # disables caching
 ```
 
-If performance matters more than real-time revocation, increase the TTL to reduce DB hits:
+Increase the TTL to reduce repeated lookup work without making cached state authoritative:
 
 ```ruby
-config.cache_ttl = 2.minutes # boosts performance at cost of slower revocation
+config.cache_ttl = 2.minutes
 ```
-
-⚠️ Security note: Revoked keys may remain valid for up to cache_ttl. For strict real-time revocation, set cache_ttl = 0.
 
 
 ## Callbacks: analytics, logging, usage monitoring & auditing
 
-The gem offers two callbacks that get executed every single time an API key is checked and authenticated (through `authenticate_api_key!` in controllers, for example)
+The controller concern can enqueue two callbacks for each authentication attempt. To keep secrets out of job payloads, callbacks receive small serializable context hashes—not request, result, or model objects.
 
 You can define logic for them:
 ```ruby
-config.before_authentication = ->(request) { Rails.logger.info "Authenticating request: #{request.uuid}" }
+config.before_authentication = ->(context) do
+  Rails.logger.info "Authenticating request: #{context[:request_uuid]}"
+end
 
-config.after_authentication = ->(result) { MyAnalytics.track_auth(result) }
+config.after_authentication = ->(context) do
+  MyAnalytics.track_auth(
+    success: context[:success],
+    error_code: context[:error_code],
+    api_key_id: context[:api_key_id]
+  )
+end
 ```
 
 This is especially useful if you want to build custom monitoring, usage tracking or auditing systems on top of the `api_keys` gem.
 
-Since these callbacks get called every single time an endpoint request is made, we can't just execute the code synchronously, blocking the thread and making the endpoint lag. Instead, we enqueue an async job that process the callback code, however long it is. You can configure which queue these jobs get enqueued to.
+The `before_authentication` context contains `request_uuid`. The `after_authentication` context contains `success`, `error_code`, `api_key_id`, and, when scopes were requested, `required_scope_check`. Jobs are asynchronous, so “before” means it is enqueued before verification; queue execution order is not guaranteed. Configure a persistent Active Job backend and the callback queue appropriate for your application.
 
 The downside of this, of course, is that callbacks will only work if you have a valid, well-configured Active Job backend for your Rails app, like Sidekiq or [`solid_queue`](https://github.com/rails/solid_queue/), which comes by default in Rails 8. If Active Job is not well configured, well, your callbacks just won't get executed.
 
@@ -980,9 +1001,9 @@ For applications that distribute software with embedded API keys (desktop apps, 
 
 When you distribute software with an embedded API key, that key can potentially be extracted by malicious users. Key types solve this by letting you create:
 
-- **Publishable keys** (`pk_test_...`, `pk_live_...`): Safe to embed in distributed apps. Limited permissions (e.g., can only validate licenses, not issue new ones). Cannot be revoked (to prevent accidentally breaking all deployed apps).
+- **Publishable keys** (`pk_test_...`, `pk_live_...`): Intentionally exposed identifiers. Embed them only when every configured permission is safe for an untrusted public client; assume anyone can extract and abuse them. They cannot be revoked individually.
 
-- **Secret keys** (`sk_test_...`, `sk_live_...`): Full access, meant for server-side use only. Can be revoked anytime.
+- **Secret keys** (`sk_test_...`, `sk_live_...`): Sensitive server-side credentials whose exact access depends on their scopes. They can be revoked anytime.
 
 ### Configuration
 
@@ -1015,6 +1036,10 @@ ApiKeys.configure do |config|
 
   # Enable strict environment isolation (test keys fail in prod, live keys fail in dev)
   config.strict_environment_isolation = true
+
+  # Optional: use this type when create_api_key! omits key_type.
+  # Without a default, every new key must specify key_type explicitly.
+  config.default_key_type = :secret
 end
 ```
 
@@ -1029,7 +1054,7 @@ pk = user.create_api_key!(
 )
 pk.token  # => "pk_live_abc123..."
 
-# Create a secret key (full access)
+# Create a secret key (access is controlled by its scopes/type ceiling)
 sk = user.create_api_key!(
   name: "Admin Dashboard",
   key_type: :secret
@@ -1081,7 +1106,7 @@ This is especially problematic when combined with `limit: 1`, which restricts us
 
 #### The Solution: Storing Public Keys
 
-For publishable keys—which are *designed* to be embedded in client-side code and distributed apps—there's no security benefit to hiding the token. These keys are meant to be public! Stripe, for example, lets you view your publishable key anytime in the dashboard.
+For publishable keys that grant *only operations safe for an unauthenticated public client*, hiding the token provides no secrecy benefit: distributed clients necessarily expose it. Never use this design for a permission that protects confidential data or sensitive actions.
 
 The `public: true` option stores the plaintext token in metadata so users can view it again:
 
@@ -1102,23 +1127,24 @@ config.key_types = {
 }
 ```
 
-#### Security: Why This is Safe
+#### Security constraints
 
 > [!IMPORTANT]
-> The `public` option only works when BOTH conditions are met:
+> The `public` option only works when all of these conditions are met:
 >  - `public: true` is set in the key type configuration
 >  - `revocable: false` is set (non-revocable keys only)
+>  - `permissions` is a finite, non-empty array (never `:all`)
 
-This double-check is a deliberate safety measure:
+These checks are deliberate safety measures:
 
-1. **Secret keys are NEVER stored** — Even if you accidentally set `public: true` on a secret key type, the gem checks for `revocable: false` as well. Secret keys are revocable by default, so they're protected.
+1. **Configuration is validated early** — Public types must explicitly be non-revocable and have a finite, non-empty permission ceiling.
 
 2. **Revocable keys are NEVER stored** — If a key can be revoked, users can always delete it and create a new one. There's no lockout risk, so no need to store the token.
 
-3. **Only truly public keys are stored** — Publishable keys with limited permissions, designed for client-side embedding, are the only keys that get stored. These tokens provide no security benefit when hidden—they're meant to be distributed.
+3. **Your application defines what is public** — The gem cannot infer the business impact of a permission name. Only mark a type public when every permission in its ceiling is safe for an unauthenticated client to possess.
 
 > [!WARNING]
-> ⚠️ **Never set `public: true` on secret keys or any key type with sensitive permissions.** The gem prevents this by requiring `revocable: false`, but you should also never configure it that way.
+> ⚠️ **Never set `public: true` on secret keys or any key type with sensitive permissions.** Validation prevents `:all` and missing permission ceilings, but your application remains responsible for classifying each named permission correctly.
 
 When a key is public, the dashboard shows a "Show" button to reveal the full token:
 
@@ -1142,6 +1168,10 @@ With `strict_environment_isolation = true`, keys can only authenticate in their 
 ```
 
 This prevents accidentally using test keys in production (or vice versa).
+
+Typed keys always require a non-blank stored environment. When `environments` is configured, authentication also rejects typed keys whose stored environment is no longer configured, even if strict isolation is disabled. Untyped legacy keys remain compatible.
+
+Once `key_types` is configured, all newly created keys must supply `key_type:` or use `default_key_type`; the gem will not silently create a new untyped key outside the configured permission and environment policy. Existing untyped keys created before enabling the feature continue to authenticate under the documented legacy rules.
 
 ### Key Limits
 
@@ -1181,7 +1211,7 @@ Existing keys without `key_type`/`environment` continue to work normally (backwa
 ## Enterprise-ready by design
 The `api_keys` gem ships with:
 
- - Flexible storage
+ - Active Record storage across supported Rails databases
  - Async hooks
  - ActiveJob support
  - Polymorphic ownership (User, Org, etc.)
@@ -1203,17 +1233,25 @@ There's a demo Rails app showcasing the features in the `api_keys` gem under `te
 
 ## Testing
 
-Run the test suite with `bundle exec rake test`
+Run the default test suite with `bundle exec rake test`. Run all supported Rails appraisals with:
+
+```bash
+bundle exec appraisal rails-7.2 rake test
+bundle exec appraisal rails-8.0 rake test
+bundle exec appraisal rails-8.1 rake test
+```
 
 ## Development
 
-After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake spec` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
+After checking out the repo, run `bin/setup` to install dependencies. Then run `bundle exec rake test`. You can also run `bin/console` for an interactive prompt.
 
 To install this gem onto your local machine, run `bundle exec rake install`.
 
 ## Contributing
 
 Bug reports and pull requests are welcome on GitHub at https://github.com/rameerez/api_keys. Our code of conduct is: just be nice and make your mom proud of what you do and post online.
+
+Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in a public issue.
 
 ## License
 

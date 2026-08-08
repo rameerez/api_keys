@@ -4,14 +4,14 @@
 <% if key.key_type.present? %>
   <% type_config = key.key_type_config %>
   <% is_publishable = type_config&.dig(:revocable) == false %>
-  <span class="api-keys-badge api-keys-badge-type <%= is_publishable ? 'api-keys-badge-publishable' : 'api-keys-badge-secret' %>" style="display: inline-block; padding: 2px 6px; font-size: 0.75em; border-radius: 3px; background-color: var(<%= is_publishable ? '--api-keys-badge-publishable-bg' : '--api-keys-badge-secret-bg' %>); color: var(<%= is_publishable ? '--api-keys-badge-publishable-color' : '--api-keys-badge-secret-color' %>); margin-left: 4px;">
+  <span class="api-keys-badge api-keys-badge-type <%= is_publishable ? 'api-keys-badge-publishable' : 'api-keys-badge-secret' %>">
     <%= key.key_type.humanize %>
   </span>
 <% end %>
 
 <% if key.environment.present? %>
   <% is_live = key.environment == 'live' %>
-  <span class="api-keys-badge api-keys-badge-env <%= is_live ? 'api-keys-badge-live' : 'api-keys-badge-test' %>" style="display: inline-block; padding: 2px 6px; font-size: 0.75em; border-radius: 3px; background-color: var(<%= is_live ? '--api-keys-badge-live-bg' : '--api-keys-badge-test-bg' %>); color: var(<%= is_live ? '--api-keys-badge-live-color' : '--api-keys-badge-test-color' %>); margin-left: 4px;">
+  <span class="api-keys-badge api-keys-badge-env <%= is_live ? 'api-keys-badge-live' : 'api-keys-badge-test' %>">
     <%= key.environment.upcase %>
   </span>
 <% end %>

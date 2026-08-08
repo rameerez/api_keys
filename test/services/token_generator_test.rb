@@ -49,6 +49,25 @@ module ApiKeys
           ApiKeys::Services::TokenGenerator.call(alphabet: :unsupported)
         end
       end
+
+      test "rejects random lengths below the security minimum" do
+        error = assert_raises(ArgumentError) do
+          ApiKeys::Services::TokenGenerator.call(length: 15)
+        end
+
+        assert_match(/between 16 and 64/, error.message)
+      end
+
+      test "rejects excessive and non-integer random lengths" do
+        assert_raises(ArgumentError) { ApiKeys::Services::TokenGenerator.call(length: 65) }
+        assert_raises(ArgumentError) { ApiKeys::Services::TokenGenerator.call(length: "24") }
+      end
+
+      test "rejects blank, oversized, or whitespace-containing prefixes" do
+        assert_raises(ArgumentError) { ApiKeys::Services::TokenGenerator.call(prefix: "") }
+        assert_raises(ArgumentError) { ApiKeys::Services::TokenGenerator.call(prefix: "a" * 65) }
+        assert_raises(ArgumentError) { ApiKeys::Services::TokenGenerator.call(prefix: "bad prefix_") }
+      end
     end
   end
 end

@@ -10,7 +10,7 @@
       <h2>Understanding Key Types</h2>
 
       <h3>Secret Keys</h3>
-      <p>Secret keys provide full access to your account and should be treated like passwords.</p>
+      <p>Secret keys may grant sensitive or broad access, depending on their configured permissions, and must be treated like passwords.</p>
       <ul>
         <li><strong>Never expose</strong> in client-side code (browsers, mobile apps, desktop apps)</li>
         <li><strong>Never commit</strong> to version control (Git, etc.)</li>
@@ -19,12 +19,12 @@
       </ul>
 
       <h3>Publishable Keys</h3>
-      <p>Publishable keys are designed for client-side use with limited, safe permissions.</p>
+      <p>Publishable keys are intentionally exposed identifiers. They are suitable for client-side use <strong>only when every configured permission is safe for an untrusted public client</strong>.</p>
       <ul>
-        <li><strong>Safe to embed</strong> in browser JavaScript, mobile apps, and public code</li>
-        <li><strong>Limited access</strong> &mdash; cannot perform sensitive operations</li>
+        <li><strong>Assume anyone can copy and abuse them</strong> from browser JavaScript, mobile apps, or public code</li>
+        <li><strong>Grant only public-safe operations</strong> and enforce authorization server-side for every permission</li>
         <li><strong>Always visible</strong> &mdash; you can view the full key anytime in your dashboard</li>
-        <li><strong>Cannot be revoked</strong> &mdash; designed to be long-lived identifiers</li>
+        <li><strong>Cannot be revoked individually</strong> &mdash; maintain an application-level disable/replacement procedure</li>
       </ul>
     </section>
   <% end %>
@@ -76,7 +76,7 @@ Rails.application.credentials.your_service_api_key</code></pre>
     <h3>Monitor Usage</h3>
     <p>Regularly check for unexpected activity spikes or requests from unusual locations, which could indicate a compromised key.</p>
 
-    <h3>Rotate Keys Periodically</h3>
+    <h3>Rotate Secret Keys Periodically</h3>
     <p>Generate new keys and revoke old ones on a regular schedule (e.g., every 90 days). This limits exposure if a key is leaked undetected.</p>
     <p><em>Tip:</em> Create a new key first, update your application, verify it works, then revoke the old key.</p>
 

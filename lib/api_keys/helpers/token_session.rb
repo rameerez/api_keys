@@ -29,6 +29,7 @@ module ApiKeys
     class TokenSession
       # Default session key for storing the token
       DEFAULT_SESSION_KEY = :api_keys_new_token
+      MAX_TOKEN_BYTESIZE = 512
 
       class << self
         # Store an API key's token in the session for later retrieval.
@@ -39,7 +40,15 @@ module ApiKeys
         # @return [String] The token that was stored
         def store(session, api_key, key: DEFAULT_SESSION_KEY)
           token = api_key.respond_to?(:token) ? api_key.token : api_key.to_s
-          session[key] = token
+          unless valid_token_payload?(token)
+            raise ArgumentError, "Cannot store an invalid API key token in the session"
+          end
+
+          api_key_id = api_key.id if api_key.respond_to?(:id)
+          session[key] = {
+            "token" => token,
+            "api_key_id" => api_key_id&.to_s
+          }
           token
         end
 
@@ -49,8 +58,21 @@ module ApiKeys
         # @param session [ActionDispatch::Request::Session] The Rails session
         # @param key [Symbol] Optional custom session key (default: :api_keys_new_token)
         # @return [String, nil] The token, or nil if not present
-        def retrieve_once(session, key: DEFAULT_SESSION_KEY)
-          session.delete(key)
+        def retrieve_once(session, key: DEFAULT_SESSION_KEY, api_key: nil, api_key_id: nil)
+          payload = session.delete(key)
+          expected_id = api_key_id || (api_key.id if api_key.respond_to?(:id))
+
+          # Plain string payloads from older versions remain readable only when
+          # the caller does not request ID binding.
+          return payload if expected_id.nil? && valid_token_payload?(payload)
+          return nil unless payload.is_a?(Hash)
+
+          token = payload["token"] || payload[:token]
+          stored_id = payload["api_key_id"] || payload[:api_key_id]
+          return nil if expected_id && stored_id.to_s != expected_id.to_s
+          return nil unless valid_token_payload?(token)
+
+          token
         end
 
         # Check if a token is available in the session without removing it.
@@ -59,8 +81,28 @@ module ApiKeys
         # @param session [ActionDispatch::Request::Session] The Rails session
         # @param key [Symbol] Optional custom session key (default: :api_keys_new_token)
         # @return [Boolean] true if a token is stored
-        def available?(session, key: DEFAULT_SESSION_KEY)
-          session[key].present?
+        def available?(session, key: DEFAULT_SESSION_KEY, api_key: nil, api_key_id: nil)
+          payload = session[key]
+          expected_id = api_key_id || (api_key.id if api_key.respond_to?(:id))
+
+          return valid_token_payload?(payload) if payload.is_a?(String) && expected_id.nil?
+          return false unless payload.is_a?(Hash)
+
+          token = payload["token"] || payload[:token]
+          stored_id = payload["api_key_id"] || payload[:api_key_id]
+          return false if expected_id && stored_id.to_s != expected_id.to_s
+
+          valid_token_payload?(token)
+        end
+
+        private
+
+        def valid_token_payload?(token)
+          token.is_a?(String) && token.present? && token.valid_encoding? &&
+            token.bytesize <= MAX_TOKEN_BYTESIZE &&
+            token.each_codepoint.none? { |codepoint| codepoint <= 0x20 || codepoint == 0x7f }
+        rescue ArgumentError
+          false
         end
       end
     end

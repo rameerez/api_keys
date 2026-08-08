@@ -42,5 +42,5 @@ Rails.application.routes.draw do
   end
 
   # Allow visitors to reset their demo state
-  get "/reset_demo", to: "application#reset_demo!", as: :reset_demo_path
+  delete "/reset_demo", to: "application#reset_demo!", as: :reset_demo_path
 end

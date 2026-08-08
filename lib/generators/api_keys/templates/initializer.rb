@@ -86,10 +86,9 @@ ApiKeys.configure do |config|
   #
   # Changing this later is SAFE for existing keys: every key stores its own
   # prefix, so authentication keeps finding keys minted under retired
-  # prefixes (sha256 looks up by pure token digest; bcrypt falls back to a
-  # cached scan of all prefixes present in the database). Only NEW keys wear
-  # the new prefix. The one cost: under :bcrypt, keys off the configured
-  # prefix take the slightly slower known-prefixes lookup path.
+  # prefixes (sha256 looks up by pure token digest; bcrypt uses a bounded
+  # stored-prefix lookup with an indexed last-four fallback for deployments
+  # with many retired prefixes). Only NEW keys wear the new prefix.
   # Default: -> { "ak_" }
   # config.token_prefix = -> { "myapp_" }
 
@@ -118,7 +117,8 @@ ApiKeys.configure do |config|
   # - limit:       Max keys of this type per owner per environment (nil = unlimited)
   # - public:      If true AND revocable: false, stores plaintext token in metadata
   #                so it can be viewed again in the dashboard. Use ONLY for publishable
-  #                keys designed to be embedded in distributed apps. (default: false)
+  #                keys designed to be embedded in distributed apps. Public types must
+  #                use a finite, non-empty permissions array (never :all). (default: false)
   #                SECURITY: NEVER set public: true on secret keys!
   #
   # config.key_types = {
@@ -232,6 +232,7 @@ ApiKeys.configure do |config|
   #   - Includes salt, computationally expensive by design
   #   - 10x-50x slower than SHA256 - impacts every API request
   #   - Better for low-entropy secrets (passwords), overkill for random API keys
+  #   - Prefix + encoded random token must fit bcrypt's 72-byte input limit
   #
   # Default: :sha256
   # config.hash_strategy = :sha256
@@ -245,10 +246,10 @@ ApiKeys.configure do |config|
   # Default: true
   # config.https_only_production = true
 
-  # Raise an error (instead of just warning) for HTTP in production.
+  # Reject authentication (instead of just warning) over HTTP in production.
   # Only applies when https_only_production is true.
-  # Default: false
-  # config.https_strict_mode = false
+  # Default: true
+  # config.https_strict_mode = true
 
   # ============================================================================
   # BACKGROUND JOBS & CALLBACKS
@@ -277,25 +278,25 @@ ApiKeys.configure do |config|
   # config.stats_job_queue = :default
   # config.callbacks_job_queue = :default
 
-  # Callbacks executed on authentication attempts.
-  # before_authentication: receives the request object
-  # after_authentication: receives the Result object (success/failure info)
+  # Callbacks enqueued on authentication attempts. Contexts are serializable
+  # hashes and never contain the token, request, result, or ApiKey object.
+  # before_authentication: { request_uuid: String }
+  # after_authentication:  { success:, error_code:, api_key_id:,
+  #                          required_scope_check: (optional) }
   #
   # Default: empty procs (no-op)
-  # config.before_authentication = ->(request) { Rails.logger.info "Auth: #{request.uuid}" }
-  # config.after_authentication = ->(result) { Analytics.track(result) }
+  # config.before_authentication = ->(context) { Rails.logger.info "Auth request: #{context[:request_uuid]}" }
+  # config.after_authentication = ->(context) { Analytics.track_auth(context) }
 
   # ============================================================================
   # PERFORMANCE
   # ============================================================================
 
-  # Time-to-live (TTL) for caching API key lookups in Rails.cache.
+  # Time-to-live (TTL) for caching API key ID lookup hints in Rails.cache.
   #
-  # Higher values = better performance (fewer DB queries)
-  # Lower values = faster propagation of revocations/changes
-  #
-  # Trade-off: A revoked key may still work for up to `cache_ttl` seconds
-  # until the cache expires.
+  # Cache entries are never authorization authority. Every hit reloads the
+  # current database row and cryptographically re-verifies the token, so
+  # revocation, expiration, and permission changes remain immediate.
   #
   # Set to 0 or nil to disable caching entirely.
   # Default: 5.seconds

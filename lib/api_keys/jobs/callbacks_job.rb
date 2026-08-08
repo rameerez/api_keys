@@ -10,8 +10,8 @@ module ApiKeys
     class CallbacksJob < ActiveJob::Base
       include ApiKeys::Logging
 
-      # Use the queue name specified in the configuration (evaluated at load time)
-      queue_as ApiKeys.configuration.callbacks_job_queue
+      # Resolve the configured queue for each job so initializer changes apply.
+      queue_as { ApiKeys.configuration.callbacks_job_queue }
 
       # Executes the appropriate callback based on the type.
       #
@@ -28,10 +28,8 @@ module ApiKeys
         else
           log_warn "[ApiKeys::Jobs::CallbacksJob] Unknown callback type: #{callback_type}"
         end
-      rescue StandardError => e
-        log_error "[ApiKeys::Jobs::CallbacksJob] Error executing callback #{callback_type} with context #{context.inspect}: #{e.class}: #{e.message}
-#{e.backtrace.join("
-")}"
+      rescue StandardError => error
+        log_error "[ApiKeys::Jobs::CallbacksJob] Error executing callback #{callback_type} (#{error.class})."
         # Avoid retrying callback errors by default, as the original request succeeded.
         # Depending on callback importance, users might configure retries separately.
       end
@@ -51,17 +49,12 @@ module ApiKeys
         arity = callback_proc.arity
         log_debug "[ApiKeys::Jobs::CallbacksJob] Executing callback with arity #{arity}"
 
-        begin
-          if arity == 1 || arity < 0 # Handle procs accepting one arg or variable args (*args)
-            callback_proc.call(context)
-          elsif arity == 0 # Handle procs accepting no args
-            callback_proc.call
-          else
-            log_warn "[ApiKeys::Jobs::CallbacksJob] Callback has unexpected arity (#{arity}). Expected 0 or 1 argument (context hash). Skipping execution."
-          end
-        rescue StandardError => e
-          # Log the specific error from the user's callback code
-          raise # Re-raise to be caught by the main perform rescue block for logging
+        if arity == 1 || arity < 0 # Handle procs accepting one arg or variable args (*args)
+          callback_proc.call(context)
+        elsif arity == 0 # Handle procs accepting no args
+          callback_proc.call
+        else
+          log_warn "[ApiKeys::Jobs::CallbacksJob] Callback has unexpected arity (#{arity}). Expected 0 or 1 argument (context hash). Skipping execution."
         end
       end
     end

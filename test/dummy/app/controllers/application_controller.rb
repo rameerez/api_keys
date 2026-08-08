@@ -28,10 +28,17 @@ class ApplicationController < ActionController::Base
     end
   end
 
+  # The mounted engine defaults to this Devise-compatible method name. The demo
+  # has an anonymous, session-bound owner, so resolving that owner is the auth
+  # check; defining the method explicitly keeps the engine fail-closed contract.
+  def authenticate_user!
+    head :unauthorized unless current_user
+  end
+
   # Resets the demo state by deleting the current user and associated data.
   # Clears the session identifier to ensure a fresh start on the next request.
   def reset_demo!
-    if user_to_reset = current_user # Use local variable for clarity and efficiency
+    if (user_to_reset = current_user) # Use local variable for clarity and efficiency
       # Destroy the user. Associated records (ApiKeys::ApiKey) should be configured with
       # `dependent: :destroy` or similar in the User model for cascading deletion.
       user_to_reset.destroy

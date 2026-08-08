@@ -110,7 +110,8 @@ module ApiKeys
     #   - :masked [String] The masked token (e.g., "sk_live_••••abc")
     #   - :full [String, nil] The full token (only for viewable public keys)
     #   - :viewable [Boolean] Whether the full token can be displayed
-    #   - :type [Symbol] The key type (:publishable, :secret, or nil)
+    #   - :type [Symbol, String, nil] A known built-in type is a Symbol; custom
+    #     untrusted values remain Strings so they are never interned as Symbols.
     #   - :environment [String, nil] The environment (e.g., "live", "test")
     #
     # @example
@@ -127,12 +128,21 @@ module ApiKeys
         masked: object.masked_token,
         full: object.viewable_token,
         viewable: object.respond_to?(:public_key_type?) && object.public_key_type?,
-        type: object.key_type&.to_sym,
+        type: safe_key_type(object.key_type),
         environment: object.environment
       }
     end
 
     private
+
+    def safe_key_type(value)
+      case value.to_s
+      when "publishable" then :publishable
+      when "secret" then :secret
+      when "" then nil
+      else value.to_s
+      end
+    end
 
     def resolve_checked_scopes(scopes, checked)
       case checked

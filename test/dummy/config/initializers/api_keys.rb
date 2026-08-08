@@ -10,7 +10,8 @@ ApiKeys.configure do |config|
   # The query parameter name to check as a fallback if the header is missing.
   # Set to nil to disable query parameter lookup (recommended for security).
   # Default: nil
-  config.query_param = "api_key"
+  # Keep URL-based credentials disabled, including in the public demo.
+  config.query_param = nil
 
   # === Token Generation ===
 
@@ -62,14 +63,13 @@ ApiKeys.configure do |config|
 
   # === Performance ===
 
-  # Time-to-live (TTL) for caching ApiKey lookups.
-  # Higher values improve performance by reducing database lookups and
-  # expensive comparisons (like bcrypt), but increase the delay for changes
-  # (like revocation or expiration) to take effect for already cached keys.
+  # Time-to-live (TTL) for caching ApiKey ID lookup hints. Every hit reloads
+  # current database state and re-verifies the token, so the cache cannot delay
+  # revocation, expiration, or permission changes.
   # Set to 0 or nil to disable caching.
   # Uses Rails.cache.
   # Default: 5.seconds
-  # config.cache_ttl = 30.seconds # Higher TTL = higher risk of “revoked-but-still-valid” edge cases
+  # config.cache_ttl = 30.seconds
 
   # === Security ===
 
@@ -77,9 +77,9 @@ ApiKeys.configure do |config|
   # Default: true
   # config.https_only_production = true
 
-  # If true (and https_only_production is true), raises an error instead of
-  # just logging a warning when used over HTTP in production.
-  # Default: false
+  # If true (and https_only_production is true), rejects authentication over
+  # HTTP in production.
+  # Default: true
   # config.https_strict_mode = true
 
   # IMPORTANT: Usage Statistics & Background Jobs
@@ -130,15 +130,16 @@ ApiKeys.configure do |config|
 
   # === Callbacks ===
 
-  # A lambda/proc to run *before* token extraction and verification.
-  # Receives the request object.
-  # Default: ->(request) { }
-  # config.before_authentication = ->(request) { Rails.logger.info "Authenticating request: #{request.uuid}" }
+  # A lambda/proc enqueued before token extraction and verification.
+  # Receives: { request_uuid: String }. It never receives the request or token.
+  # Default: ->(context) { }
+  # config.before_authentication = ->(context) { Rails.logger.info "Authenticating request: #{context[:request_uuid]}" }
 
-  # A lambda/proc to run *after* authentication attempt (success or failure).
-  # Receives the ApiKeys::Services::Authenticator::Result object.
-  # Default: ->(result) { }
-  # config.after_authentication = ->(result) { MyAnalytics.track_auth(result) }
+  # A lambda/proc enqueued after authentication (success or failure).
+  # Receives a credential-free context hash with success, error_code,
+  # api_key_id, and optional required_scope_check fields.
+  # Default: ->(context) { }
+  # config.after_authentication = ->(context) { MyAnalytics.track_auth(context) }
 
   # === Engine UI Configuration ===
 

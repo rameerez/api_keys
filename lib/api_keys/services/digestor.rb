@@ -7,6 +7,17 @@ module ApiKeys
   module Services
     # Handles hashing (digesting) and verifying tokens based on configured strategy.
     class Digestor
+      BCRYPT_MAX_SECRET_BYTESIZE = if BCrypt::Engine.const_defined?(:MAX_SECRET_BYTESIZE)
+                                      BCrypt::Engine::MAX_SECRET_BYTESIZE
+                                    else
+                                      72
+                                    end
+      # Costs above this value can turn a malformed/imported database row into
+      # a multi-second (or worse) CPU denial of service during authentication.
+      # The default bcrypt cost is comfortably below this ceiling.
+      BCRYPT_MAX_SAFE_COST = 16
+      MAX_TOKEN_BYTESIZE = 512
+
       # Creates a digest of the given token using the configured strategy.
       #
       # @param token [String] The plaintext token.
@@ -14,8 +25,20 @@ module ApiKeys
       # @return [Hash] A hash containing the digest and the algorithm used.
       #   e.g., { digest: "...", algorithm: "bcrypt" }
       def self.digest(token:, strategy: ApiKeys.configuration.hash_strategy)
+        validate_token!(token)
+
         case strategy
         when :bcrypt
+          if token.bytesize > BCRYPT_MAX_SECRET_BYTESIZE
+            raise ArgumentError,
+              "BCrypt tokens must not exceed #{BCRYPT_MAX_SECRET_BYTESIZE} bytes because BCrypt truncates longer inputs."
+          end
+
+          unless safe_bcrypt_cost?(BCrypt::Engine.cost)
+            raise ArgumentError,
+              "BCrypt cost must be between #{BCrypt::Engine::MIN_COST} and #{BCRYPT_MAX_SAFE_COST}."
+          end
+
           # BCrypt handles salt generation internally
           digest = BCrypt::Password.create(token, cost: BCrypt::Engine.cost)
           { digest: digest.to_s, algorithm: "bcrypt" }
@@ -38,21 +61,24 @@ module ApiKeys
       # @param comparison_proc [Proc] The secure comparison function.
       # @return [Boolean] True if the token matches the digest, false otherwise.
       def self.match?(token:, stored_digest:, strategy: ApiKeys.configuration.hash_strategy, comparison_proc: ApiKeys.configuration.secure_compare_proc)
-        return false if token.blank? || stored_digest.blank?
+        return false unless valid_match_inputs?(token, stored_digest)
 
         case strategy
         when :bcrypt
-          begin
-            bcrypt_object = BCrypt::Password.new(stored_digest)
-            # BCrypt's `==` operator is designed for secure comparison
-            bcrypt_object == token
-          rescue BCrypt::Errors::InvalidHash
-            # If the stored digest isn't a valid BCrypt hash, comparison fails
-            false
-          end
+          return false if token.bytesize > BCRYPT_MAX_SECRET_BYTESIZE
+
+          bcrypt_object = validated_bcrypt_password(stored_digest)
+          return false unless bcrypt_object
+
+          # BCrypt's `==` operator is designed for secure comparison.
+          bcrypt_object == token
         when :sha256
           # Directly compare the SHA256 hash of the input token with the stored digest
-          comparison_proc.call(stored_digest, Digest::SHA256.hexdigest(token))
+          return false unless stored_digest.match?(/\A\h{64}\z/)
+
+          # A custom comparator is security-sensitive. Accept only the literal
+          # boolean true so truthy sentinel/error values can never authenticate.
+          comparison_proc.call(stored_digest, Digest::SHA256.hexdigest(token)) == true
         else
           # Strategy mismatch or unsupported strategy should fail comparison safely
           if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
@@ -60,13 +86,50 @@ module ApiKeys
           end
           false
         end
-      rescue ArgumentError => e
-        # Catch potential errors from Digest or comparison proc
+      rescue StandardError => error
+        # A malformed digest or application-supplied comparison proc must never
+        # turn an authentication failure into an exception or an availability issue.
         if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-          Rails.logger.error "[ApiKeys] Digestor comparison error: #{e.message}"
+          Rails.logger.error "[ApiKeys] Digestor comparison error (#{error.class})."
         end
         false
       end
+
+      # Returns whether a stored bcrypt digest is structurally valid and has a
+      # bounded cost that is safe to evaluate on an authentication request.
+      def self.valid_bcrypt_digest?(stored_digest)
+        !validated_bcrypt_password(stored_digest).nil?
+      end
+
+      def self.validate_token!(token)
+        valid = token.is_a?(String) && token.present? && token.valid_encoding? && token.bytesize <= MAX_TOKEN_BYTESIZE
+        return if valid
+
+        raise ArgumentError, "Token must be a non-blank valid string of at most #{MAX_TOKEN_BYTESIZE} bytes."
+      end
+
+      def self.valid_match_inputs?(token, stored_digest)
+        token.is_a?(String) && token.present? && token.valid_encoding? && token.bytesize <= MAX_TOKEN_BYTESIZE &&
+          stored_digest.is_a?(String) && stored_digest.present? && stored_digest.valid_encoding? &&
+          stored_digest.bytesize <= 128
+      rescue ArgumentError
+        false
+      end
+
+      def self.validated_bcrypt_password(stored_digest)
+        return nil unless stored_digest.is_a?(String) && stored_digest.valid_encoding? && stored_digest.bytesize <= 128
+
+        password = BCrypt::Password.new(stored_digest)
+        password if safe_bcrypt_cost?(password.cost)
+      rescue BCrypt::Error, ArgumentError
+        nil
+      end
+
+      def self.safe_bcrypt_cost?(cost)
+        cost.is_a?(Integer) && cost.between?(BCrypt::Engine::MIN_COST, BCRYPT_MAX_SAFE_COST)
+      end
+
+      private_class_method :validate_token!, :valid_match_inputs?, :validated_bcrypt_password, :safe_bcrypt_cost?
     end
   end
 end

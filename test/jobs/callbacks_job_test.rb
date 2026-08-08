@@ -43,6 +43,12 @@ module ApiKeys
           ApiKeys::Jobs::CallbacksJob.perform_now(:after_authentication, {})
         end
       end
+
+      test "queue name is resolved from current configuration at enqueue time" do
+        ApiKeys.configuration.callbacks_job_queue = :api_key_callbacks
+
+        assert_equal "api_key_callbacks", ApiKeys::Jobs::CallbacksJob.new.queue_name
+      end
     end
   end
 end

@@ -28,9 +28,6 @@
 
           <%# Render inactive keys below, visually distinct %>
           <% if inactive_keys.any? %>
-            <%# Optional: Add a visual separator if desired %>
-            <%# <tr><td colspan="7" style="border-top: 2px solid #ccc; text-align: center; padding-top: 1em; color: #555;">Inactive Keys</td></tr> %>
-
             <% inactive_keys.each do |key| %>
               <%= render partial: 'api_keys/keys/key_row', locals: { key: key, inactive: true } %>
             <% end %>

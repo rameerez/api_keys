@@ -1,6 +1,6 @@
 <header class="demo-header">
   <h1>🔑 <code>api_keys</code></h1>
-  <p>Demo app for the 🔑 <a href="http://github.com/rameerez/api_keys">api_keys</a> Ruby gem.</p>
+  <p>Demo app for the 🔑 <a href="https://github.com/rameerez/api_keys">api_keys</a> Ruby gem.</p>
 </header>
 
 <section class="get-api-key">
@@ -39,16 +39,12 @@
       </div>
 
       <div class="form-group radio-group">
-        <span>Send Via:</span>
+        <span>Send via:</span>
         <label>
           <input type="radio" name="sendMethod" value="header" data-apikey-tester-target="sendMethodInput" checked data-action="change->apikey-tester#updateCurlDisplay">
-          Header (<code>Authorization: Bearer TOKEN</code>) <span class="recommended">(Recommended)</span>
+          Header (<code>Authorization: Bearer TOKEN</code>)
         </label>
-        <label>
-          <input type="radio" name="sendMethod" value="query" data-apikey-tester-target="sendMethodInput" data-action="change->apikey-tester#updateCurlDisplay">
-          Query Param (<code>?api_key=TOKEN</code>)
-        </label>
-        <small>(Query param requires <code>config.query_param</code> setting in initializer)</small>
+        <small>Credentials are never placed in URLs, where they can leak through logs, history, and referrers.</small>
       </div>
 
       <div class="button-group">

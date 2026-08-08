@@ -13,47 +13,49 @@ module ApiKeys
     # == Accessors ==
 
     # Core Authentication
-    attr_accessor :header, :query_param
+    attr_reader :header, :query_param
 
     # Token Generation
-    attr_accessor :token_prefix, :token_length, :token_alphabet
+    attr_reader :token_prefix, :token_length, :token_alphabet
 
     # Storage & Verification
-    attr_accessor :hash_strategy, :secure_compare_proc, :key_store_adapter, :policy_provider
+    attr_reader :hash_strategy
+    attr_reader :secure_compare_proc
+    attr_accessor :key_store_adapter, :policy_provider
 
     # Engine Configuration
     attr_accessor :parent_controller
 
     # Owner Context Configuration
-    attr_accessor :current_owner_method, :authenticate_owner_method
+    attr_reader :current_owner_method, :authenticate_owner_method
 
     # Optional Behaviors
-    attr_accessor :default_max_keys_per_owner, :require_key_name
-    attr_accessor :expire_after, :default_scopes, :track_requests_count
+    attr_reader :default_max_keys_per_owner, :require_key_name
+    attr_reader :expire_after, :default_scopes, :track_requests_count
 
     # Performance
-    attr_accessor :cache_ttl
+    attr_reader :cache_ttl
 
     # Security
-    attr_accessor :https_only_production, :https_strict_mode
+    attr_reader :https_only_production, :https_strict_mode
 
     # Tenant Resolution
-    attr_accessor :tenant_resolver
+    attr_reader :tenant_resolver
 
     # Callbacks (Placeholders for future extension)
-    attr_accessor :before_authentication, :after_authentication
+    attr_reader :before_authentication, :after_authentication
 
     # Background Job Queues
-    attr_accessor :stats_job_queue, :callbacks_job_queue
+    attr_reader :stats_job_queue, :callbacks_job_queue
 
     # Global Async Toggle
-    attr_accessor :enable_async_operations
+    attr_reader :enable_async_operations
 
     # Engine UI Configuration
     attr_accessor :return_url, :return_text
 
     # Debugging
-    attr_accessor :debug_logging
+    attr_reader :debug_logging
 
     # Key Types & Environments (Stripe-style publishable/secret keys)
     #
@@ -96,30 +98,345 @@ module ApiKeys
     #     If false (default), dashboard only shows keys matching current_environment.
     #   @example
     #     config.dashboard_allow_cross_environment = false
-    attr_accessor :environments, :current_environment, :strict_environment_isolation,
-                  :default_key_type, :dashboard_allow_cross_environment
+    attr_reader :environments, :current_environment, :strict_environment_isolation,
+                :default_key_type, :dashboard_allow_cross_environment
 
     # Custom writer for key_types that validates prefix uniqueness
     attr_reader :key_types
+
+    VALID_HASH_STRATEGIES = %i[sha256 bcrypt].freeze
+    VALID_TOKEN_ALPHABETS = %i[base58 hex].freeze
+    TOKEN_LENGTH_RANGE = (16..64)
+    MAX_CONFIGURED_SCOPES = 100
+    CONFIG_NAME_PATTERN = /\A[a-zA-Z0-9_-]{1,64}\z/
+    HTTP_HEADER_PATTERN = /\A[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}\z/
+    QUERY_PARAM_PATTERN = /\A[a-zA-Z0-9_.~-]{1,128}\z/
+    METHOD_NAME_PATTERN = /\A[a-zA-Z_]\w*[!?]?\z/
+    BOOLEAN_SETTINGS = %i[
+      require_key_name track_requests_count https_only_production https_strict_mode
+      enable_async_operations debug_logging strict_environment_isolation
+      dashboard_allow_cross_environment
+    ].freeze
+
+    def header=(value)
+      unless value.nil? || (value.is_a?(String) && value.match?(HTTP_HEADER_PATTERN))
+        raise ArgumentError, "header must be nil or a valid HTTP header name of at most 128 characters"
+      end
+
+      @header = value&.dup&.freeze
+    end
+
+    def query_param=(value)
+      unless value.nil? || (value.is_a?(String) && value.match?(QUERY_PARAM_PATTERN))
+        raise ArgumentError, "query_param must be nil or a safe parameter name of at most 128 characters"
+      end
+
+      @query_param = value&.dup&.freeze
+    end
+
+    def default_max_keys_per_owner=(value)
+      unless value.nil? || (value.is_a?(Integer) && value >= 0)
+        raise ArgumentError, "default_max_keys_per_owner must be a non-negative Integer or nil"
+      end
+
+      @default_max_keys_per_owner = value
+    end
+
+    def expire_after=(value)
+      unless value.nil?
+        seconds = value.to_f if value.respond_to?(:to_f)
+        valid = value.respond_to?(:from_now) && seconds&.finite? && seconds.positive?
+        raise ArgumentError, "expire_after must be a positive duration or nil" unless valid
+      end
+
+      @expire_after = value
+    end
+
+    def default_scopes=(value)
+      unless value.is_a?(Array) && value.length <= MAX_CONFIGURED_SCOPES && value.all? { |scope| valid_scope_name?(scope) }
+        raise ArgumentError, "default_scopes must be a bounded Array of safe scope strings"
+      end
+
+      @default_scopes = deep_copy_and_freeze(value.uniq)
+    end
+
+    def cache_ttl=(value)
+      unless value.nil?
+        seconds = value.to_f if value.respond_to?(:to_f)
+        valid = (value.is_a?(Numeric) || value.respond_to?(:from_now)) && seconds&.finite? && !seconds.negative?
+        raise ArgumentError, "cache_ttl must be a finite non-negative duration/number or nil" unless valid
+      end
+
+      @cache_ttl = value
+    end
+
+    BOOLEAN_SETTINGS.each do |setting|
+      define_method("#{setting}=") do |value|
+        raise ArgumentError, "#{setting} must be true or false" unless value == true || value == false
+
+        instance_variable_set("@#{setting}", value)
+      end
+    end
+
+    def before_authentication=(value)
+      validate_callback!(value, :before_authentication)
+      @before_authentication = value
+    end
+
+    def after_authentication=(value)
+      validate_callback!(value, :after_authentication)
+      @after_authentication = value
+    end
+
+    def tenant_resolver=(value)
+      raise ArgumentError, "tenant_resolver must be callable" unless value.respond_to?(:call)
+
+      @tenant_resolver = value
+    end
+
+    def secure_compare_proc=(value)
+      raise ArgumentError, "secure_compare_proc must be callable" unless value.respond_to?(:call)
+
+      @secure_compare_proc = value
+    end
+
+    def stats_job_queue=(value)
+      @stats_job_queue = validate_queue_name!(value, :stats_job_queue)
+    end
+
+    def callbacks_job_queue=(value)
+      @callbacks_job_queue = validate_queue_name!(value, :callbacks_job_queue)
+    end
+
+    def current_owner_method=(value)
+      @current_owner_method = validate_method_name!(value, :current_owner_method)
+    end
+
+    def authenticate_owner_method=(value)
+      @authenticate_owner_method = validate_method_name!(value, :authenticate_owner_method)
+    end
+
+    def current_environment=(value)
+      unless value.nil? || value.respond_to?(:call) || valid_config_name?(value)
+        raise ArgumentError, "current_environment must be callable, a safe String/Symbol, or nil"
+      end
+
+      @current_environment = value
+    end
+
+    def default_key_type=(value)
+      unless value.nil? || valid_config_name?(value)
+        raise ArgumentError, "default_key_type must be a safe String/Symbol or nil"
+      end
+
+      @default_key_type = value
+    end
+
+    def token_prefix=(value)
+      unless value.is_a?(String) || value.respond_to?(:call)
+        raise ArgumentError, "token_prefix must be a String or callable object"
+      end
+
+      validate_resolved_prefix!(value) if value.is_a?(String)
+      @token_prefix = value
+    end
+
+    def resolved_token_prefix
+      value = @token_prefix.respond_to?(:call) ? @token_prefix.call : @token_prefix
+      validate_resolved_prefix!(value)
+      value
+    end
+
+    def token_length=(value)
+      unless value.is_a?(Integer) && TOKEN_LENGTH_RANGE.cover?(value)
+        raise ArgumentError, "token_length must be an Integer between #{TOKEN_LENGTH_RANGE.begin} and #{TOKEN_LENGTH_RANGE.end}"
+      end
+
+      @token_length = value
+    end
+
+    def token_alphabet=(value)
+      unless VALID_TOKEN_ALPHABETS.include?(value)
+        raise ArgumentError, "token_alphabet must be one of: #{VALID_TOKEN_ALPHABETS.join(', ')}"
+      end
+
+      @token_alphabet = value
+    end
+
+    def hash_strategy=(value)
+      unless VALID_HASH_STRATEGIES.include?(value)
+        raise ArgumentError, "hash_strategy must be one of: #{VALID_HASH_STRATEGIES.join(', ')}"
+      end
+
+      @hash_strategy = value
+    end
 
     # Sets the key types configuration with prefix collision validation.
     # @param value [Hash] Key type definitions
     # @raise [ArgumentError] If multiple key types share the same prefix
     def key_types=(value)
-      validate_key_type_prefixes!(value) if value.is_a?(Hash) && value.any?
-      @key_types = value
+      raise ArgumentError, "key_types must be a Hash" unless value.is_a?(Hash)
+
+      validate_key_types!(value)
+      validate_composite_prefixes!(value, @environments || {})
+      @key_types = deep_copy_and_freeze(value)
+    end
+
+    def environments=(value)
+      raise ArgumentError, "environments must be a Hash" unless value.is_a?(Hash)
+
+      value.each do |name, environment_config|
+        validate_config_name!(name, "environment")
+        raise ArgumentError, "Environment '#{name}' configuration must be a Hash" unless environment_config.is_a?(Hash)
+
+        segment = environment_config[:prefix_segment]
+        validate_config_name!(segment, "environment prefix segment") unless segment.nil?
+      end
+      validate_duplicate_config_names!(value, "environment")
+      validate_composite_prefixes!(@key_types || {}, value)
+      @environments = deep_copy_and_freeze(value)
     end
 
     private
 
+    def validate_resolved_prefix!(prefix)
+      valid = prefix.is_a?(String) && prefix.present? && prefix.valid_encoding? && prefix.bytesize <= 64 &&
+        prefix.each_codepoint.none? { |codepoint| codepoint <= 0x20 || codepoint == 0x7f }
+      return if valid
+
+      raise ArgumentError, "token_prefix must resolve to a non-blank string of at most 64 bytes without whitespace or control characters"
+    rescue ArgumentError
+      raise ArgumentError, "token_prefix must resolve to a non-blank string of at most 64 bytes without whitespace or control characters"
+    end
+
+    def validate_key_types!(key_types_hash)
+      validate_duplicate_config_names!(key_types_hash, "key type")
+
+      key_types_hash.each do |name, type_config|
+        validate_config_name!(name, "key type")
+        raise ArgumentError, "Key type '#{name}' configuration must be a Hash" unless type_config.is_a?(Hash)
+
+        validate_config_name!(type_config[:prefix], "key type prefix")
+        permissions = type_config[:permissions]
+        unless permissions == :all || permissions.is_a?(Array)
+          raise ArgumentError, "Key type '#{name}' permissions must be :all or an Array of strings"
+        end
+        if permissions.is_a?(Array) && permissions.length > MAX_CONFIGURED_SCOPES
+          raise ArgumentError, "Key type '#{name}' permissions cannot contain more than #{MAX_CONFIGURED_SCOPES} entries"
+        end
+        if permissions.is_a?(Array) && permissions.any? { |permission| !valid_scope_name?(permission) }
+          raise ArgumentError, "Key type '#{name}' permissions must contain only non-blank strings of at most 128 bytes"
+        end
+
+        %i[revocable public].each do |setting|
+          next unless type_config.key?(setting)
+          next if [true, false].include?(type_config[setting])
+
+          raise ArgumentError, "Key type '#{name}' #{setting} must be true or false"
+        end
+
+        limit = type_config[:limit]
+        if !limit.nil? && (!limit.is_a?(Integer) || limit <= 0)
+          raise ArgumentError, "Key type '#{name}' limit must be a positive Integer or nil"
+        end
+
+        next unless type_config[:public] == true
+
+        unless type_config[:revocable] == false
+          raise ArgumentError, "Public key type '#{name}' must explicitly set revocable: false"
+        end
+        unless permissions.is_a?(Array) && permissions.any?
+          raise ArgumentError, "Public key type '#{name}' must have a finite, non-empty permissions list"
+        end
+      end
+
+      validate_key_type_prefixes!(key_types_hash)
+    end
+
+    def validate_config_name!(value, label)
+      return if valid_config_name?(value)
+
+      raise ArgumentError, "#{label} must contain only letters, numbers, underscores, or hyphens (1-64 characters)"
+    end
+
+    def valid_config_name?(value)
+      (value.is_a?(String) || value.is_a?(Symbol)) && value.to_s.match?(CONFIG_NAME_PATTERN)
+    end
+
+    def valid_scope_name?(value)
+      value.is_a?(String) && value.present? && value.valid_encoding? && value.bytesize <= 128 &&
+        value.each_codepoint.none? { |codepoint| codepoint <= 0x20 || codepoint == 0x7f }
+    rescue ArgumentError
+      false
+    end
+
     # Validates that all key type prefixes are unique to prevent token collision
     def validate_key_type_prefixes!(key_types_hash)
-      prefixes = key_types_hash.map { |_type, config| config[:prefix] }.compact
+      prefixes = key_types_hash.map { |_type, config| config[:prefix].to_s }.compact
       duplicates = prefixes.group_by(&:itself).select { |_k, v| v.size > 1 }.keys
 
       if duplicates.any?
         raise ArgumentError, "Key type prefixes must be unique. Duplicate prefix(es): #{duplicates.join(', ')}"
       end
+    end
+
+    def validate_duplicate_config_names!(configuration, label)
+      duplicates = configuration.keys.map(&:to_s).group_by(&:itself).select { |_name, names| names.length > 1 }.keys
+      return if duplicates.empty?
+
+      raise ArgumentError, "#{label} names must be unique after string normalization: #{duplicates.join(', ')}"
+    end
+
+    def validate_composite_prefixes!(key_types, environments)
+      return if key_types.empty?
+
+      environment_entries = environments.empty? ? [[nil, {}]] : environments.to_a
+      combinations = key_types.flat_map do |type_name, type_config|
+        environment_entries.map do |environment_name, environment_config|
+          segment = environment_config[:prefix_segment]
+          prefix = segment.nil? ? "#{type_config[:prefix]}_" : "#{type_config[:prefix]}_#{segment}_"
+          [prefix, "#{type_name}/#{environment_name || 'default'}"]
+        end
+      end
+      collisions = combinations.group_by(&:first).select { |_prefix, entries| entries.length > 1 }
+      return if collisions.empty?
+
+      details = collisions.map { |prefix, entries| "#{prefix} (#{entries.map(&:last).join(', ')})" }.join("; ")
+      raise ArgumentError, "Key type/environment prefixes must be unique: #{details}"
+    end
+
+    def validate_callback!(value, setting)
+      raise ArgumentError, "#{setting} must be a Proc" unless value.is_a?(Proc)
+    end
+
+    def validate_queue_name!(value, setting)
+      unless (value.is_a?(String) || value.is_a?(Symbol)) && value.to_s.match?(/\A[a-zA-Z0-9_-]{1,128}\z/)
+        raise ArgumentError, "#{setting} must be a safe String or Symbol"
+      end
+
+      value
+    end
+
+    def validate_method_name!(value, setting)
+      unless value.nil? || ((value.is_a?(String) || value.is_a?(Symbol)) && value.to_s.match?(METHOD_NAME_PATTERN))
+        raise ArgumentError, "#{setting} must be a valid method name or nil"
+      end
+
+      value
+    end
+
+    def deep_copy_and_freeze(value)
+      copied = case value
+               when Hash
+                 value.to_h { |key, nested_value| [deep_copy_and_freeze(key), deep_copy_and_freeze(nested_value)] }
+               when Array
+                 value.map { |nested_value| deep_copy_and_freeze(nested_value) }
+               when String
+                 value.dup
+               else
+                 value
+               end
+      copied.freeze
     end
 
     public
@@ -164,14 +481,14 @@ module ApiKeys
       @default_max_keys_per_owner = nil # No global key limit per owner
       @require_key_name = false # Don't require names for keys globally
       @expire_after = nil # Keys do not expire by default (e.g., 90.days)
-      @default_scopes = [] # No default scopes assigned globally
+      @default_scopes = [].freeze # No default scopes assigned globally
 
       # Performance
       @cache_ttl = 5.seconds # Good balance: fast revocation, mostly-cached – still allows most repeated requests to benefit from cache
 
       # Security
       @https_only_production = true # Warn if used over HTTP in production
-      @https_strict_mode = false # Don't raise error, just warn
+      @https_strict_mode = true # Fail closed if a production request is not HTTPS
 
       # Background Job Queues
       @stats_job_queue = :default
@@ -198,8 +515,8 @@ module ApiKeys
       @tenant_resolver = ->(api_key) { api_key.owner if api_key.respond_to?(:owner) }
 
       # Key Types & Environments (default to empty/disabled for backwards compatibility)
-      @key_types = {}  # Empty = feature disabled, legacy behavior
-      @environments = {}  # Empty = no environment-based prefixes
+      @key_types = {}.freeze  # Empty = feature disabled, legacy behavior
+      @environments = {}.freeze  # Empty = no environment-based prefixes
       @current_environment = -> { :default }  # Default environment detection
       @strict_environment_isolation = false  # Don't enforce environment isolation by default
       @default_key_type = nil  # No default key type (must be specified explicitly)

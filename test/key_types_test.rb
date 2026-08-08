@@ -395,7 +395,7 @@ class KeyTypesTest < ApiKeys::Test
     assert result.success?
   end
 
-  test "isolation check skipped when current_environment returns nil" do
+  test "isolation check fails closed when current_environment returns nil" do
     configure_key_types_and_environments!
     ApiKeys.configuration.strict_environment_isolation = true
     ApiKeys.configuration.current_environment = -> { nil }  # Returns nil!
@@ -403,15 +403,15 @@ class KeyTypesTest < ApiKeys::Test
     user = User.create!(name: "Nil Env User")
     test_key = user.create_api_key!(name: "Test Key", key_type: :secret, environment: :test)
 
-    # Should pass isolation check since current_environment is nil
+    # Strict mode must never silently bypass isolation when configuration is invalid.
     api_key = find_key_by_token(test_key.token)
     result = ApiKeys::Services::Authenticator.send(:check_environment_isolation, api_key, ApiKeys.configuration)
 
-    # Should return nil (check passed) not an error
-    assert_nil result
+    refute result.success?
+    assert_equal :environment_misconfigured, result.error_code
   end
 
-  test "isolation check skipped when current_environment returns empty string" do
+  test "isolation check fails closed when current_environment returns empty string" do
     configure_key_types_and_environments!
     ApiKeys.configuration.strict_environment_isolation = true
     ApiKeys.configuration.current_environment = -> { "" }  # Returns empty string!
@@ -419,12 +419,11 @@ class KeyTypesTest < ApiKeys::Test
     user = User.create!(name: "Empty Env User")
     test_key = user.create_api_key!(name: "Test Key", key_type: :secret, environment: :test)
 
-    # Should pass isolation check since current_environment is blank
     api_key = find_key_by_token(test_key.token)
     result = ApiKeys::Services::Authenticator.send(:check_environment_isolation, api_key, ApiKeys.configuration)
 
-    # Should return nil (check passed) not an error
-    assert_nil result
+    refute result.success?
+    assert_equal :environment_misconfigured, result.error_code
   end
 
   test "isolation check normalizes environments to strings for comparison" do
@@ -671,8 +670,8 @@ class KeyTypesTest < ApiKeys::Test
 
     error_messages = key.errors[:expires_at]
     assert_not_empty error_messages
-    assert error_messages.any? { |msg| msg.include?("non-revocable") }
-    assert error_messages.any? { |msg| msg.include?("cannot be revoked or deleted") }
+    assert(error_messages.any? { |msg| msg.include?("non-revocable") })
+    assert(error_messages.any? { |msg| msg.include?("cannot be revoked or deleted") })
   end
 
   # =============================================================================
@@ -795,25 +794,19 @@ class KeyTypesTest < ApiKeys::Test
     refute key.public_key_type?
   end
 
-  test "public_key_type? returns false when public is true but revocable is true" do
-    ApiKeys.configure do |config|
-      config.key_types = {
-        weird: {
-          prefix: "wk",
-          permissions: %w[read],
-          revocable: true,  # revocable
-          public: true      # but public
+  test "configuration rejects public key types that are revocable" do
+    assert_raises(ArgumentError) do
+      ApiKeys.configure do |config|
+        config.key_types = {
+          weird: {
+            prefix: "wk",
+            permissions: %w[read],
+            revocable: true,
+            public: true
+          }
         }
-      }
-      config.environments = { test: { prefix_segment: "test" } }
-      config.current_environment = -> { :test }
+      end
     end
-
-    user = User.create!(name: "Weird Key User")
-    key = user.create_api_key!(name: "Weird Key", key_type: :weird, environment: :test)
-
-    # Should be false because revocable is true
-    refute key.public_key_type?
   end
 
   test "viewable_token returns stored token for public keys" do
@@ -937,29 +930,19 @@ class KeyTypesTest < ApiKeys::Test
     assert_nil key.viewable_token, "SECRET KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
   end
 
-  test "SECURITY: revocable keys with public:true do NOT store token" do
-    # This is a critical edge case - someone might misconfigure public:true on a revocable key
-    ApiKeys.configure do |config|
-      config.key_types = {
-        misconfigured: {
-          prefix: "mc",
-          permissions: :all,
-          revocable: true,   # Revocable!
-          public: true       # But marked as public - should be ignored!
+  test "SECURITY: revocable keys with public:true are rejected at configuration time" do
+    assert_raises(ArgumentError) do
+      ApiKeys.configure do |config|
+        config.key_types = {
+          misconfigured: {
+            prefix: "mc",
+            permissions: :all,
+            revocable: true,
+            public: true
+          }
         }
-      }
-      config.environments = { test: { prefix_segment: "test" } }
-      config.current_environment = -> { :test }
+      end
     end
-
-    user = User.create!(name: "Misconfigured Key User")
-    key = user.create_api_key!(name: "Misconfigured Key", key_type: :misconfigured, environment: :test)
-
-    key.reload
-
-    # Even though public:true is set, revocable:true should prevent storage
-    assert_nil key.metadata["token"], "REVOCABLE KEY TOKEN WAS STORED - SECURITY VIOLATION!"
-    assert_nil key.viewable_token, "REVOCABLE KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
   end
 
   test "SECURITY: legacy keys without key_type NEVER store token" do
@@ -973,10 +956,9 @@ class KeyTypesTest < ApiKeys::Test
     assert_nil key.viewable_token, "LEGACY KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
   end
 
-  test "SECURITY: key with nil key_type NEVER stores token" do
-    configure_key_types_with_public!
-
-    # Create a key directly without going through create_api_key! to test edge case
+  test "SECURITY: an existing key with nil key_type NEVER stores token" do
+    # Create the legacy key before enabling typed-key policy. New untyped keys
+    # are rejected once key types are configured, but existing rows remain safe.
     user = User.create!(name: "Nil Type User")
 
     # Use build to bypass some validations, simulating edge case
@@ -987,6 +969,7 @@ class KeyTypesTest < ApiKeys::Test
       environment: nil
     )
     key.save!
+    configure_key_types_with_public!
 
     key.reload
 
@@ -1049,7 +1032,6 @@ class KeyTypesTest < ApiKeys::Test
     secret = user.create_api_key!(name: "Secret", key_type: :secret, environment: :test)
 
     publishable_token = publishable.token
-    secret_token = secret.token
 
     publishable.reload
     secret.reload
@@ -1075,18 +1057,27 @@ class KeyTypesTest < ApiKeys::Test
     ]
 
     test_cases.each_with_index do |tc, idx|
-      ApiKeys.configure do |config|
-        config.key_types = {
-          testkey: {
-            prefix: "t#{idx}",
-            permissions: %w[read],
-            revocable: tc[:revocable],
-            public: tc[:public]
-          }.compact  # Remove nil values
-        }
-        config.environments = { test: { prefix_segment: "test" } }
-        config.current_environment = -> { :test }
+      configure = lambda do
+        ApiKeys.configure do |config|
+          config.key_types = {
+            testkey: {
+              prefix: "t#{idx}",
+              permissions: %w[read],
+              revocable: tc[:revocable],
+              public: tc[:public]
+            }.compact
+          }
+          config.environments = { test: { prefix_segment: "test" } }
+          config.current_environment = -> { :test }
+        end
       end
+
+      if tc[:public] == true && tc[:revocable] != false
+        assert_raises(ArgumentError, "Expected invalid public key config to fail for #{tc[:desc]}", &configure)
+        next
+      end
+
+      configure.call
 
       user = User.create!(name: "Combo Test User #{idx}")
       key = user.create_api_key!(name: "Test Key", key_type: :testkey, environment: :test)

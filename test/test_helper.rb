@@ -14,6 +14,12 @@ require "minitest/mock"
 require "minitest/reporters"
 require "mocha/minitest"
 
+# Plain Ruby test doubles that include controller concerns need this Rails class
+# macro. Define it once to avoid noisy method-redefinition warnings.
+module Kernel
+  def helper_method(*); end unless method_defined?(:helper_method)
+end
+
 # ActiveSupport test case and helpers
 require "active_support/test_case"
 require "active_support/testing/time_helpers"
@@ -62,6 +68,7 @@ ActiveRecord::Schema.define do
 
     t.index :token_digest, unique: true
     t.index :prefix
+    t.index [:prefix, :last4, :digest_algorithm], name: "index_api_keys_authentication_lookup"
     t.index [:owner_type, :owner_id]
     t.index :expires_at
     t.index :revoked_at
