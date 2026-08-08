@@ -1,7 +1,7 @@
 <%# Shared form for creating and editing API Keys %>
 <%= form_with(model: [:keys, api_key], url: (api_key.persisted? ? key_path(api_key) : keys_path), local: true) do |form| %>
   <% if api_key.errors.any? %>
-    <div style="color: red;">
+    <div class="api-keys-form-errors">
       <strong><%= pluralize(api_key.errors.count, "error") %> prohibited this API key from being saved:</strong>
       <ul>
         <% api_key.errors.full_messages.each do |message| %>
@@ -30,7 +30,7 @@
         %>
         <% ApiKeys.configuration.key_types.each do |type, config| %>
           <% if config[:permissions] != :all %>
-            <small style="display: block; color: #666;">
+            <small class="api-keys-form-help">
               <strong><%= type.to_s.humanize %>:</strong>
               Limited to <%= config[:permissions]&.join(", ") || "no" %> permissions
               <% unless config.fetch(:revocable, true) %>
@@ -132,4 +132,4 @@
       <%= link_to "Cancel", keys_path %>
     <% end %>
   </div>
-<% end %> 
+<% end %>

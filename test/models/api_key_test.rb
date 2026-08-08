@@ -38,6 +38,27 @@ module ApiKeys
         assert_nil reloaded_key.token
       end
 
+      test "reload clears the plaintext token on the same instance" do
+        api_key = ApiKeys::ApiKey.create!(owner: @user, name: "Reload Safety")
+        refute_nil api_key.token
+
+        api_key.reload
+
+        assert_nil api_key.token
+      end
+
+      test "token generator mismatch errors never contain plaintext credentials" do
+        leaked_token = "attacker_visible_secret"
+        ApiKeys::Services::TokenGenerator.stubs(:call).returns(leaked_token)
+
+        error = assert_raises(ApiKeys::Error) do
+          ApiKeys::ApiKey.create!(owner: @user, name: "Generator Failure")
+        end
+
+        refute_includes error.message, leaked_token
+        refute_includes error.message, "ak_"
+      end
+
       test "allows_scope? checks correctly" do
         api_key = ApiKeys::ApiKey.create!(owner: @user, name: "Scope Test", scopes: %w[read write])
         assert api_key.allows_scope?("read")
@@ -54,18 +75,212 @@ module ApiKeys
       end
 
       test "allows_scope? with blank scopes in key_types mode denies all" do
-        # In key_types mode, blank scopes = no permissions
+        # Existing untyped keys remain readable after key-types mode is enabled,
+        # but the configured policy must make blank scopes deny all access.
+        api_key = ApiKeys::ApiKey.create!(owner: @user, name: "Empty Scopes", scopes: [])
         original_key_types = ApiKeys.configuration.key_types
         ApiKeys.configuration.key_types = {
           publishable: { prefix: "pk", permissions: %w[read] },
           secret: { prefix: "sk", permissions: :all }
         }
 
-        api_key = ApiKeys::ApiKey.create!(owner: @user, name: "Empty Scopes", scopes: [])
         assert_not api_key.allows_scope?("read")
         assert_not api_key.allows_scope?("admin")
       ensure
         ApiKeys.configuration.key_types = original_key_types
+      end
+
+      test "new untyped records are rejected after key types are configured" do
+        legacy_key = ApiKeys::ApiKey.create!(owner: @user, name: "Legacy")
+        ApiKeys.configuration.key_types = {
+          secret: { prefix: "sk", permissions: :all }
+        }
+
+        direct_key = ApiKeys::ApiKey.new(owner: @user, name: "Untyped Direct")
+        refute direct_key.valid?
+        assert_includes direct_key.errors[:key_type], "must be present when key types are configured"
+
+        assert_raises(ArgumentError) do
+          @user.create_api_key!(name: "Untyped Helper")
+        end
+
+        assert legacy_key.persisted?
+      end
+
+      test "configured simple-mode scopes form a runtime permission ceiling" do
+        original_settings = User.api_keys_settings
+        User.api_keys_settings = original_settings.merge(default_scopes: %w[read write])
+        api_key = ApiKeys::ApiKey.create!(owner: @user, name: "Scoped", scopes: %w[read])
+
+        assert api_key.allows_scope?("read")
+        refute api_key.allows_scope?("admin")
+
+        api_key.update_column(:scopes, ["admin"].to_json)
+        api_key.reload
+        refute api_key.allows_scope?("admin"), "stored scopes must not bypass the configured ceiling"
+      ensure
+        User.api_keys_settings = original_settings
+      end
+
+      test "blank scopes deny access when a simple-mode scope policy is configured" do
+        original_settings = User.api_keys_settings
+        User.api_keys_settings = original_settings.merge(default_scopes: %w[read write])
+        api_key = ApiKeys::ApiKey.create!(owner: @user, name: "No Permissions", scopes: [])
+
+        refute api_key.allows_scope?("read")
+      ensure
+        User.api_keys_settings = original_settings
+      end
+
+      test "scope attributes must be a bounded array of safe strings" do
+        key = ApiKeys::ApiKey.new(owner: @user, name: "Invalid Scopes")
+        key.scopes = "read"
+        refute key.valid?
+        assert_includes key.errors[:scopes], "must be an array"
+
+        key.scopes = ["a" * 129]
+        refute key.valid?
+
+        key.scopes = Array.new(101) { |index| "scope:#{index}" }
+        refute key.valid?
+      end
+
+      test "pre-hashed records require a supported algorithm and valid digest" do
+        attributes = {
+          owner: @user,
+          name: "Imported",
+          prefix: "ak_",
+          last4: "abcd",
+          token_digest: "not-a-digest"
+        }
+
+        unsupported = ApiKeys::ApiKey.new(**attributes, digest_algorithm: "md5")
+        refute unsupported.valid?
+        assert_includes unsupported.errors[:digest_algorithm], "is not included in the list"
+
+        malformed_sha = ApiKeys::ApiKey.new(**attributes, digest_algorithm: "sha256")
+        refute malformed_sha.valid?
+        assert_includes malformed_sha.errors[:token_digest], "is not a valid sha256 digest"
+
+        malformed_bcrypt = ApiKeys::ApiKey.new(**attributes, digest_algorithm: "bcrypt")
+        refute malformed_bcrypt.valid?
+        assert_includes malformed_bcrypt.errors[:token_digest], "is not a valid bcrypt digest"
+      end
+
+      test "typed records require a configured environment on every creation path" do
+        ApiKeys.configuration.key_types = {
+          secret: { prefix: "sk", permissions: :all }
+        }
+        ApiKeys.configuration.environments = {
+          test: { prefix_segment: "test" }
+        }
+
+        missing = ApiKeys::ApiKey.new(owner: @user, name: "Missing Environment", key_type: "secret")
+        refute missing.valid?
+        assert_includes missing.errors[:environment], "must be present for typed API keys"
+
+        unknown = ApiKeys::ApiKey.new(
+          owner: @user,
+          name: "Unknown Environment",
+          key_type: "secret",
+          environment: "live"
+        )
+        refute unknown.valid?
+        assert_includes unknown.errors[:environment], "is not configured"
+      end
+
+      test "prefix, last4, and metadata are structurally bounded" do
+        key = ApiKeys::ApiKey.new(owner: @user, name: "Malformed")
+        key.valid? # Generate otherwise valid token fields first.
+
+        key.prefix = "bad prefix"
+        key.last4 = "a b!"
+        key.metadata = "not-a-hash"
+
+        refute key.valid?
+        assert_not_empty key.errors[:prefix]
+        assert_not_empty key.errors[:last4]
+        assert_includes key.errors[:metadata], "must be an object"
+      end
+
+      test "metadata size is bounded" do
+        key = ApiKeys::ApiKey.new(owner: @user, name: "Large Metadata", metadata: { "data" => "x" * 20_000 })
+
+        refute key.valid?
+        assert_includes key.errors[:metadata], "is too large"
+      end
+
+      test "authentication identity cannot be reassigned after creation" do
+        key = @user.create_api_key!(name: "Immutable")
+        other_owner = User.create!(name: "Other Owner")
+        replacement_digest = Digest::SHA256.hexdigest("replacement-token")
+
+        key.assign_attributes(
+          token_digest: replacement_digest,
+          digest_algorithm: "sha256",
+          prefix: "other_",
+          last4: "zzzz",
+          owner: other_owner,
+          key_type: "other",
+          environment: "other"
+        )
+
+        refute key.valid?
+        %i[token_digest prefix last4 owner_id key_type environment].each do |attribute_name|
+          assert_includes key.errors[attribute_name], "cannot be changed after creation"
+        end
+      end
+
+      test "inspection and serialization redact credential material" do
+        ApiKeys.configuration.key_types = {
+          publishable: {
+            prefix: "pk",
+            permissions: %w[read],
+            revocable: false,
+            public: true
+          }
+        }
+        key = @user.create_api_key!(name: "Public", key_type: :publishable, scopes: %w[read])
+        token = key.token
+        digest = key.token_digest
+
+        inspected = key.inspect
+        serialized = key.as_json
+
+        refute_includes inspected, token
+        refute_includes inspected, digest
+        refute serialized.key?("token_digest")
+        refute_equal token, serialized.dig("metadata", "token")
+        assert_equal token, key.viewable_token
+
+        restricted = key.serializable_hash(only: [:id])
+        assert_equal({ "id" => key.id }, restricted)
+      end
+
+      test "key type permission ceiling is enforced on updates and corrupted rows" do
+        ApiKeys.configuration.key_types = {
+          limited: { prefix: "lk", permissions: %w[read write] }
+        }
+        key = @user.create_api_key!(name: "Limited", key_type: :limited, scopes: %w[read])
+
+        refute key.update(scopes: %w[read admin])
+        assert_includes key.errors[:scopes].join, "permission ceiling"
+
+        key.update_column(:scopes, %w[admin].to_json)
+        key.reload
+        refute key.allows_scope?("admin")
+      end
+
+      test "unknown typed keys are not revocable and have no permissions" do
+        ApiKeys.configuration.key_types = {
+          retired: { prefix: "rk", permissions: %w[read] }
+        }
+        key = @user.create_api_key!(name: "Soon Retired", key_type: :retired, scopes: %w[read])
+        ApiKeys.configuration.key_types = {}
+
+        refute key.revocable?
+        refute key.allows_scope?("read")
+        assert_raises(ApiKeys::Errors::KeyNotRevocableError) { key.revoke! }
       end
 
       test "creates with sha256 digest by default" do

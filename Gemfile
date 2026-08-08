@@ -16,6 +16,8 @@ group :development, :test do
   gem "rack-test"
   gem "simplecov", require: false
   gem "sqlite3", ">= 2.1"
+  gem "brakeman", "~> 8.0", require: false
+  gem "bundler-audit", "~> 0.9", require: false
 
   # Speed up boot time for the dummy app
   gem "bootsnap", require: false

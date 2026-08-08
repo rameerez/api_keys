@@ -32,17 +32,21 @@ module ApiKeys
       current_api_key&.owner
     end
 
+    alias_method :current_api_key_owner, :current_api_owner
+
     # Convenience helper: returns the owner if it's a User instance.
     # @return [User, nil]
     def current_api_user
       owner = current_api_owner
-      owner if owner.is_a?(::User) # Assumes a User class exists
+      owner if defined?(::User) && owner.is_a?(::User)
     end
 
     private
 
     # The core authentication method.
     def authenticate_api_key!(scope: nil)
+      @current_api_key = nil
+      remove_instance_variable(:@current_api_tenant) if instance_variable_defined?(:@current_api_tenant)
       log_debug "[ApiKeys Auth] authenticate_api_key! started for request: #{request.uuid}"
 
       # Enqueue before_authentication callback asynchronously
@@ -50,13 +54,12 @@ module ApiKeys
 
       # Perform synchronous authentication
       result = Services::Authenticator.call(request)
-      log_debug "[ApiKeys Auth] Authenticator result: #{result.inspect}"
+      log_debug "[ApiKeys Auth] Authentication result: success=#{result.success?}, error_code=#{result.error_code || 'none'}"
 
       # Prepare context for after_authentication callback
       after_auth_context = {
         success: result.success?,
         error_code: result.error_code,
-        message: result.message,
         api_key_id: result.api_key&.id # Pass ID only, not the full object
       }
 
@@ -65,9 +68,12 @@ module ApiKeys
         log_debug "[ApiKeys Auth] Authentication successful. Key ID: #{@current_api_key.id}"
 
         if scope && !check_api_key_scopes(scope)
-          log_debug "[ApiKeys Auth] Scope check failed. Required: #{scope}, Key scopes: #{@current_api_key.scopes}"
+          log_debug "[ApiKeys Auth] Scope check failed for key ID #{@current_api_key.id}."
           # Add required scope info to context before rendering/enqueueing
           after_auth_context[:required_scope_check] = { required: scope, passed: false }
+          after_auth_context[:success] = false
+          after_auth_context[:error_code] = :missing_scope
+          @current_api_key = nil
           render_unauthorized(error_code: :missing_scope, message: "API key does not have the required scope(s): #{scope}", required_scope: scope)
         else
           after_auth_context[:required_scope_check] = { required: scope, passed: true } if scope
@@ -90,7 +96,7 @@ module ApiKeys
     # @param required_scopes [String, Array<String>] The required scope(s).
     # @return [Boolean] True if the key has all required scopes, false otherwise.
     def check_api_key_scopes(required_scopes)
-      return true unless current_api_key # Should not happen if authenticate_api_key! ran
+      return false unless current_api_key
       return true if required_scopes.blank?
 
       Array(required_scopes).all? do |req_scope|
@@ -124,8 +130,8 @@ module ApiKeys
         timestamp = Time.current # Capture time once for the job
         log_debug "[ApiKeys Auth] Enqueuing UpdateStatsJob for ApiKey ID: #{current_api_key.id} at #{timestamp}"
         ApiKeys::Jobs::UpdateStatsJob.perform_later(current_api_key.id, timestamp)
-      rescue StandardError => e
-        log_error "[ApiKeys Auth] Failed to enqueue UpdateStatsJob for key #{current_api_key.id}: #{e.message}"
+      rescue StandardError => error
+        log_error "[ApiKeys Auth] Failed to enqueue UpdateStatsJob for key #{current_api_key.id} (#{error.class})."
       end
     end
 
@@ -148,10 +154,10 @@ module ApiKeys
 
       # Proceed with enqueueing if it's a configured callback
       begin
-        log_debug "[ApiKeys Auth] Enqueuing CallbacksJob for type: #{callback_type} with context: #{context.inspect}"
+        log_debug "[ApiKeys Auth] Enqueuing callback job for type: #{callback_type}"
         ApiKeys::Jobs::CallbacksJob.perform_later(callback_type, context)
-      rescue StandardError => e
-        log_error "[ApiKeys Auth] Failed to enqueue CallbacksJob for type #{callback_type}: #{e.message}"
+      rescue StandardError => error
+        log_error "[ApiKeys Auth] Failed to enqueue CallbacksJob for type #{callback_type} (#{error.class})."
         # Don't fail the request if callback enqueueing fails
       end
     end

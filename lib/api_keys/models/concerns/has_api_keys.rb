@@ -10,6 +10,50 @@ module ApiKeys
       module HasApiKeys
         extend ActiveSupport::Concern
 
+        SUPPORTED_SETTINGS = %i[max_keys require_name default_scopes].freeze
+        MAX_DEFAULT_SCOPES = 100
+        MAX_SCOPE_BYTESIZE = 128
+
+        class << self
+          def validate_and_freeze_settings(settings)
+            max_keys = settings[:max_keys]
+            unless max_keys.nil? || (max_keys.is_a?(Integer) && max_keys >= 0)
+              raise ArgumentError, "max_keys must be a non-negative Integer or nil"
+            end
+
+            require_name = settings[:require_name]
+            unless require_name == true || require_name == false
+              raise ArgumentError, "require_name must be true or false"
+            end
+
+            scopes = settings[:default_scopes]
+            unless scopes.is_a?(Array) && scopes.length <= MAX_DEFAULT_SCOPES
+              raise ArgumentError, "default_scopes must be a bounded Array of safe scope strings"
+            end
+
+            normalized_scopes = scopes.map { |scope| scope.is_a?(Symbol) ? scope.to_s : scope }
+            unless normalized_scopes.all? { |scope| valid_scope_name?(scope) }
+              raise ArgumentError, "default_scopes must be a bounded Array of safe scope strings"
+            end
+
+            {
+              max_keys: max_keys,
+              require_name: require_name,
+              default_scopes: normalized_scopes.uniq.map { |scope| scope.dup.freeze }.freeze
+            }.freeze
+          end
+
+          private
+
+          def valid_scope_name?(scope)
+            scope.is_a?(String) && scope.present? && scope.valid_encoding? &&
+              scope.bytesize <= MAX_SCOPE_BYTESIZE &&
+              scope.each_codepoint.none? { |codepoint| codepoint <= 0x20 || codepoint == 0x7f }
+          rescue ArgumentError
+            false
+          end
+        end
+
         # Module containing class methods to be extended onto ActiveRecord::Base
         module ClassMethods
           # Defines the association and allows configuration for the specific owner model.
@@ -27,20 +71,9 @@ module ApiKeys
           #     end
           #   end
           def has_api_keys(**options, &block)
-            # Include the concern's instance methods into the calling class (e.g., User)
-            # Ensures any instance-level helpers in HasApiKeys are available on the owner.
-            include ApiKeys::Models::Concerns::HasApiKeys unless included_modules.include?(ApiKeys::Models::Concerns::HasApiKeys)
-
-            # Define the core association on the specific class calling this method
-            has_many :api_keys,
-                     class_name: "ApiKeys::ApiKey",
-                     as: :owner,
-                     dependent: :destroy # Consider :nullify based on requirements
-
-            # Define class_attribute for settings if not already defined.
-            # This ensures inheritance works correctly (subclasses get their own copy).
-            unless respond_to?(:api_keys_settings)
-              class_attribute :api_keys_settings, instance_writer: false, default: {}
+            unknown_settings = options.keys - SUPPORTED_SETTINGS
+            if unknown_settings.any?
+              raise ArgumentError, "Unknown has_api_keys setting(s): #{unknown_settings.join(', ')}"
             end
 
             # Initialize settings for this specific class, merging defaults and options
@@ -57,8 +90,27 @@ module ApiKeys
               dsl.instance_eval(&block)
             end
 
-            # Assign the final settings hash to the class attribute for this class
-            self.api_keys_settings = current_settings
+            validated_settings = HasApiKeys.validate_and_freeze_settings(current_settings)
+
+            # Include the concern's instance methods into the calling class (e.g., User)
+            # Ensures any instance-level helpers in HasApiKeys are available on the owner.
+            include ApiKeys::Models::Concerns::HasApiKeys unless included_modules.include?(ApiKeys::Models::Concerns::HasApiKeys)
+
+            # Define the core association on the specific class calling this method
+            has_many :api_keys,
+                     class_name: "ApiKeys::ApiKey",
+                     as: :owner,
+                     dependent: :destroy # Consider :nullify based on requirements
+
+            # Define class_attribute for settings if not already defined.
+            # This ensures inheritance works correctly (subclasses get their own copy).
+            unless respond_to?(:api_keys_settings)
+              class_attribute :api_keys_settings, instance_writer: false, default: {}
+            end
+
+            # Assign an immutable copy so later mutations cannot silently change
+            # quota, naming, or permission policy at runtime.
+            self.api_keys_settings = validated_settings
 
             # TODO: Add validation hook to check key limit on create?
             # validates_with ApiKeys::Validators::MaxKeysValidator, on: :create, if: -> { api_keys_settings[:max_keys].present? }
@@ -133,7 +185,7 @@ module ApiKeys
           resolved_environment = resolve_environment(environment, key_type, config)
 
           # Get type-specific limit
-          type_config = config.key_types&.dig(key_type.to_sym)
+          type_config = config.key_types&.find { |type, _settings| type.to_s == key_type.to_s }&.last
           return within_global_quota? unless type_config
 
           limit = type_config[:limit]
@@ -194,6 +246,8 @@ module ApiKeys
           # Validate key_type if provided and key_types feature is enabled
           if resolved_key_type.present?
             validate_key_type!(resolved_key_type, config)
+          elsif key_types_feature_enabled?(config)
+            raise ArgumentError, "key_type is required when key types are configured"
           end
 
           # Determine environment: use provided, or default from config
@@ -216,16 +270,22 @@ module ApiKeys
             key_scopes = filter_scopes_by_permissions(key_scopes, resolved_key_type, config)
           end
 
-          # Create the key using the association, letting AR handle owner_id/type.
-          api_key = self.api_keys.create!(
-            name: name,
-            scopes: key_scopes,
-            expires_at: expires_at,
-            metadata: metadata || {}, # Ensure metadata is at least an empty hash
-            key_type: resolved_key_type&.to_s,
-            environment: resolved_environment&.to_s
-            # prefix, token_digest, digest_algorithm are set by ApiKey callbacks
-          )
+          raise ArgumentError, "API key owner must be persisted before creating a key" unless persisted?
+
+          # ApiKey's creation callback locks the owner row before quota validation.
+          # Keep an explicit transaction here so the helper's creation workflow is
+          # a single atomic unit; direct ApiKey.create! calls are protected too.
+          api_key = self.class.transaction do
+            self.api_keys.create!(
+              name: name,
+              scopes: key_scopes,
+              expires_at: expires_at,
+              metadata: metadata || {}, # Ensure metadata is at least an empty hash
+              key_type: resolved_key_type&.to_s,
+              environment: resolved_environment&.to_s
+              # prefix, token_digest, digest_algorithm are set by ApiKey callbacks
+            )
+          end
 
           # Return the ApiKey instance itself.
           # The plaintext token is available via `api_key.token` immediately after this.
@@ -249,8 +309,8 @@ module ApiKeys
         def validate_key_type!(key_type, config)
           return unless key_types_feature_enabled?(config)
 
-          valid_types = config.key_types.keys.map(&:to_sym)
-          unless valid_types.include?(key_type.to_sym)
+          valid_types = config.key_types.keys.map(&:to_s)
+          unless valid_types.include?(key_type.to_s)
             raise ArgumentError, "Invalid key type '#{key_type}'. Valid types: #{valid_types.join(', ')}"
           end
         end
@@ -258,8 +318,8 @@ module ApiKeys
         def validate_environment!(environment, config)
           return unless config.environments.present? && config.environments.any?
 
-          valid_environments = config.environments.keys.map(&:to_sym)
-          unless valid_environments.include?(environment.to_sym)
+          valid_environments = config.environments.keys.map(&:to_s)
+          unless valid_environments.include?(environment.to_s)
             raise ArgumentError, "Invalid environment '#{environment}'. Valid environments: #{valid_environments.join(', ')}"
           end
         end
@@ -280,7 +340,7 @@ module ApiKeys
         def filter_scopes_by_permissions(scopes, key_type, config)
           return scopes unless key_types_feature_enabled?(config)
 
-          type_config = config.key_types[key_type.to_sym]
+          type_config = config.key_types.find { |type, _settings| type.to_s == key_type.to_s }&.last
           return scopes unless type_config
 
           permissions = type_config[:permissions]

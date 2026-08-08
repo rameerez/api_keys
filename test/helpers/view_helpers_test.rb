@@ -237,10 +237,23 @@ module ApiKeys
         assert_equal :secret, info[:type]
       end
 
+      test "api_key_type_info does not intern untrusted database values" do
+        key = mock("corrupted key")
+        raw_type = "attacker_type_#{SecureRandom.hex(8)}"
+        key.stubs(:key_type).returns(raw_type)
+        key.stubs(:revoked?).returns(false)
+        key.stubs(:expired?).returns(false)
+
+        refute(Symbol.all_symbols.any? { |symbol| symbol.to_s == raw_type })
+        info = api_key_type_info(key)
+
+        assert_equal raw_type, info[:type]
+        refute(Symbol.all_symbols.any? { |symbol| symbol.to_s == raw_type })
+      end
+
       private
 
       def with_environments
-        original = ApiKeys.configuration.environments
         ApiKeys.configuration.stubs(:environments).returns({
           test: { prefix_segment: "test" },
           live: { prefix_segment: "live" }

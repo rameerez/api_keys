@@ -4,14 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>🔑 API Keys</title>
-  <%# Note: No CSS included here to keep it CSS-framework-agnostic %>
-  <link rel="stylesheet" href="https://unpkg.com/chota@latest">
-  <%# Host application is expected to provide styling %>
+  <%# Self-contained styles: do not load mutable third-party assets on secret-bearing pages. %>
   <%= csrf_meta_tags %>
   <%= csp_meta_tag %>
 </head>
 <body>
-  <style>
+  <style nonce="<%= content_security_policy_nonce %>">
     /*
      * API Keys CSS Variables
      * Override these in your host application to customize the dashboard appearance.
@@ -56,6 +54,92 @@
 
     body {
       font-family: var(--api-keys-font-family);
+      margin: 0;
+      color: var(--font-color, #222);
+      background: var(--bg-color, #fff);
+      line-height: 1.5;
+    }
+
+    .container {
+      width: min(94%, 1080px);
+      margin-inline: auto;
+    }
+
+    .nav, .row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .nav {
+      justify-content: space-between;
+      min-height: 4rem;
+    }
+
+    .nav-left, .nav-right {
+      display: flex;
+      gap: 1rem;
+    }
+
+    .col { flex: 1; }
+    .col-5 { width: min(100%, 42rem); }
+    .col-7 { flex: 0 0 58%; }
+    .col-8 { width: min(100%, 54rem); }
+    .is-right { justify-content: flex-end; }
+    .is-center { justify-content: center; }
+    .text-center { text-align: center; }
+
+    input, select, button, .button {
+      box-sizing: border-box;
+      font: inherit;
+    }
+
+    input[type="text"], select {
+      width: 100%;
+      padding: 0.65rem;
+      border: 1px solid var(--color-grey, #bbb);
+      border-radius: 4px;
+      background: var(--bg-color, #fff);
+      color: inherit;
+    }
+
+    button, .button {
+      display: inline-block;
+      padding: 0.55rem 0.85rem;
+      border: 1px solid currentColor;
+      border-radius: 4px;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .primary {
+      color: #fff;
+      background: var(--api-keys-primary-color);
+    }
+
+    .card {
+      padding: 1rem;
+      border: 1px solid var(--color-grey, #ccc);
+      border-radius: var(--api-keys-border-radius);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      padding: 0.65rem;
+      border-bottom: 1px solid var(--color-grey, #ddd);
+      text-align: left;
+    }
+
+    .api-keys-table-wrapper { overflow-x: auto; }
+    .tag, .api-keys-badge {
+      display: inline-block;
+      padding: 0.15rem 0.4rem;
+      border-radius: 999px;
+      background: var(--bg-secondary-color, #eee);
     }
 
     @media (prefers-color-scheme: dark) {
@@ -107,6 +191,50 @@
       color: var(--api-keys-danger-color);
     }
 
+    [hidden] { display: none !important; }
+    .api-keys-form-errors { color: var(--api-keys-danger-color); }
+    .api-keys-form-help { display: block; color: var(--color-darkGrey, #666); }
+    .api-keys-empty-state { text-align: center; padding: 2em; }
+    .api-keys-expired-text { color: var(--api-keys-status-expired-color); }
+    .api-keys-token-panel { padding: 1em; margin: 1em 0; border-radius: 4px; }
+    .api-keys-token-value { overflow-wrap: anywhere; }
+    .api-keys-token-scopes, .api-keys-show-footer { margin-top: 2em; }
+    .api-keys-token-break { overflow-wrap: anywhere; }
+    .btn-show-token, .btn-copy-token {
+      margin-left: 0.5rem;
+      padding: 0.15rem 0.4rem;
+      font-size: 0.75em;
+    }
+    .api-keys-action-disabled {
+      color: var(--api-keys-muted-color);
+      cursor: help;
+    }
+    .api-keys-status-active { color: var(--api-keys-status-active-color); }
+    .api-keys-status-revoked { color: var(--api-keys-status-revoked-color); }
+    .api-keys-status-expired { color: var(--api-keys-status-expired-color); }
+    .api-keys-badge-type, .api-keys-badge-env {
+      margin-left: 0.25rem;
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+      font-size: 0.75em;
+    }
+    .api-keys-badge-publishable {
+      color: var(--api-keys-badge-publishable-color);
+      background-color: var(--api-keys-badge-publishable-bg);
+    }
+    .api-keys-badge-secret {
+      color: var(--api-keys-badge-secret-color);
+      background-color: var(--api-keys-badge-secret-bg);
+    }
+    .api-keys-badge-live {
+      color: var(--api-keys-badge-live-color);
+      background-color: var(--api-keys-badge-live-bg);
+    }
+    .api-keys-badge-test {
+      color: var(--api-keys-badge-test-color);
+      background-color: var(--api-keys-badge-test-bg);
+    }
+
     .api-keys-button-text {
       padding-left: 0.2em;
     }
@@ -114,7 +242,7 @@
     #api-keys-flash-container {
       margin-top: 1em;
     }
-    
+
     .api-keys-flash-message {
       background-color: rgba(255, 255, 255, 0.15);
       padding: 0.8em 0;
@@ -168,7 +296,7 @@
       <%# Use configured return URL and text %>
       <%= link_to ApiKeys.configuration.return_text, ApiKeys.configuration.return_url %>
       <%# Link to keys index using engine's path helper %>
-      <%= link_to "My API Keys", api_keys.keys_path, class: "active" %>
+      <%= link_to "My API Keys", keys_path, class: "active" %>
     </div>
     <div class="nav-center">
     </div>
@@ -193,16 +321,16 @@
     <%# Footer content %>
   </footer>
 
-  <script>
+  <script nonce="<%= content_security_policy_nonce %>">
     // Minimal JS for API Keys dashboard - event delegation for show/copy tokens
     document.addEventListener('click', function(e) {
       // Show token (one-way: masked -> full, no hiding back)
       if (e.target.matches('.btn-show-token')) {
         var cell = e.target.closest('td');
-        cell.querySelector('.token-masked').style.display = 'none';
-        cell.querySelector('.token-full').style.display = 'inline';
-        e.target.style.display = 'none';
-        cell.querySelector('.btn-copy-token').style.display = 'inline';
+        cell.querySelector('.token-masked').hidden = true;
+        cell.querySelector('.token-full').hidden = false;
+        e.target.hidden = true;
+        cell.querySelector('.btn-copy-token').hidden = false;
       }
 
       // Copy token to clipboard
@@ -212,10 +340,29 @@
           var originalText = e.target.textContent;
           e.target.textContent = 'Copied!';
           setTimeout(function() { e.target.textContent = originalText; }, 2000);
+        }).catch(function() {
+          e.target.textContent = 'Copy failed';
+          setTimeout(function() { e.target.textContent = 'Copy'; }, 2000);
+        });
+      }
+
+      // Copy a newly issued secret without duplicating it into an HTML attribute.
+      if (e.target.closest('.btn-copy-new-token')) {
+        var button = e.target.closest('.btn-copy-new-token');
+        var tokenElement = document.getElementById('api-key-token');
+        var buttonText = button.querySelector('.api-keys-button-text');
+        if (!navigator.clipboard || !tokenElement || !buttonText) return;
+
+        navigator.clipboard.writeText(tokenElement.textContent || '').then(function() {
+          buttonText.textContent = 'Copied!';
+          setTimeout(function() { buttonText.textContent = 'Copy'; }, 2000);
+        }).catch(function() {
+          buttonText.textContent = 'Copy failed';
+          setTimeout(function() { buttonText.textContent = 'Copy'; }, 2000);
         });
       }
     });
   </script>
 
 </body>
-</html> 
+</html>

@@ -20,7 +20,22 @@ module ApiKeys
         end
         def write(*args)
           @recorded_writes << args
+          @read_map[args.first] = args[1]
           true
+        end
+
+        def delete(key)
+          @read_map.delete(key)
+        end
+      end
+
+      class FailingCache
+        def read(*)
+          raise IOError, "cache unavailable"
+        end
+
+        def write(*)
+          raise IOError, "cache unavailable"
         end
       end
 
@@ -36,9 +51,14 @@ module ApiKeys
 
       # === Helper Methods ===
 
-      def mock_request(headers: {}, query_params: {})
+      def mock_request(headers: {}, query_params: {}, protocol: "https://")
         # Simple mock request object responding to headers and query_parameters
-        OpenStruct.new(headers: headers, query_parameters: query_params)
+        OpenStruct.new(
+          headers: headers,
+          query_parameters: query_params,
+          protocol: protocol,
+          uuid: SecureRandom.uuid
+        )
       end
 
       def mock_cache(read_map = {})
@@ -99,6 +119,34 @@ module ApiKeys
         end
       end
 
+      test "stale prefix cache cannot strand a valid bcrypt key" do
+        with_hash_strategy(:bcrypt) do
+          key = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Cached Prefix")
+          token = key.token
+          cache = mock_cache(Authenticator::KNOWN_PREFIXES_CACHE_KEY => ["stale_"])
+
+          result = Authenticator.call(mock_request(headers: { "Authorization" => "Bearer #{token}" }))
+
+          assert result.success?
+          assert_equal key.id, result.api_key.id
+          assert(cache.recorded_writes.any? { |write| write.first == Authenticator::KNOWN_PREFIXES_CACHE_KEY })
+        end
+      end
+
+      test "overfull prefix cache falls back to a bounded last4 lookup" do
+        with_hash_strategy(:bcrypt) do
+          key = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Prefix Flood")
+          token = key.token
+          poisoned_prefixes = (Authenticator::MAX_KNOWN_PREFIXES + 1).times.map { |index| "p#{index}_" }
+          mock_cache(Authenticator::KNOWN_PREFIXES_CACHE_KEY => poisoned_prefixes)
+
+          result = Authenticator.call(mock_request(headers: { "Authorization" => "Bearer #{token}" }))
+
+          assert result.success?
+          assert_equal key.id, result.api_key.id
+        end
+      end
+
       test "authenticates successfully with valid token in custom header" do
         ApiKeys.configure { |config| config.header = "X-Api-Key" }
         request = mock_request(headers: { "X-Api-Key" => @token })
@@ -123,18 +171,76 @@ module ApiKeys
 
       test "authenticates successfully using cached result" do
         request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })
-        cache_key = "api_keys:token:#{Digest::SHA1.hexdigest(@token)}"
-        mock_cache(cache_key => @api_key)
+        cache_key = "api_keys:v2:token:#{Digest::SHA256.hexdigest(@token)}"
+        mock_cache(cache_key => @api_key.id)
 
         result = ApiKeys::Services::Authenticator.call(request)
         assert result.success?
         assert_equal @api_key, result.api_key
       end
 
+      test "cached key id is reloaded and revoked keys fail immediately" do
+        request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })
+        cache_key = "api_keys:v2:token:#{Digest::SHA256.hexdigest(@token)}"
+        mock_cache(cache_key => @api_key.id)
+        @api_key.revoke!
+
+        result = ApiKeys::Services::Authenticator.call(request)
+
+        refute result.success?
+        assert_equal :revoked_key, result.error_code
+      end
+
+      test "a poisoned cache entry cannot authenticate a different key" do
+        other_key = ApiKeys::ApiKey.create!(owner: @user, name: "Other Key")
+        request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })
+        cache_key = "api_keys:v2:token:#{Digest::SHA256.hexdigest(@token)}"
+        mock_cache(cache_key => other_key.id)
+
+        result = ApiKeys::Services::Authenticator.call(request)
+
+        assert result.success?
+        assert_equal @api_key.id, result.api_key.id
+      end
+
+      test "legacy cached Active Record objects are ignored" do
+        request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })
+        cache_key = "api_keys:v2:token:#{Digest::SHA256.hexdigest(@token)}"
+        stale_key = ApiKeys::ApiKey.find(@api_key.id)
+        stale_key.revoke!
+        stale_key.revoked_at = nil
+        mock_cache(cache_key => stale_key)
+
+        result = ApiKeys::Services::Authenticator.call(request)
+
+        refute result.success?
+        assert_equal :revoked_key, result.error_code
+      end
+
+      test "cache failures fall back to database verification" do
+        Rails.stubs(:cache).returns(FailingCache.new)
+        request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })
+
+        result = ApiKeys::Services::Authenticator.call(request)
+
+        assert result.success?
+        assert_equal @api_key.id, result.api_key.id
+      end
+
+      test "nil cache ttl disables caching without raising" do
+        ApiKeys.configuration.cache_ttl = nil
+        Rails.expects(:cache).never
+
+        result = ApiKeys::Services::Authenticator.call(
+          mock_request(headers: { "Authorization" => "Bearer #{@token}" })
+        )
+
+        assert result.success?
+      end
+
       test "caches nil when token does not match any key" do
         invalid_token = "invalid_token_string"
         request = mock_request(headers: { "Authorization" => "Bearer #{invalid_token}" })
-        cache_key = "api_keys:token:#{Digest::SHA1.hexdigest(invalid_token)}"
         mock_cache # defaults to misses
 
         result = ApiKeys::Services::Authenticator.call(request)
@@ -163,6 +269,41 @@ module ApiKeys
         assert_equal :invalid_token, result.error_code
       end
 
+      test "rejects oversized tokens before querying the database" do
+        oversized_token = "ak_#{"a" * (ApiKeys::Services::Authenticator::MAX_TOKEN_BYTESIZE + 1)}"
+        ApiKeys::ApiKey.expects(:find_by).never
+
+        result = ApiKeys::Services::Authenticator.call(
+          mock_request(headers: { "Authorization" => "Bearer #{oversized_token}" })
+        )
+
+        refute result.success?
+        assert_equal :invalid_token, result.error_code
+      end
+
+      test "never writes plaintext credentials to debug logs" do
+        ApiKeys.configuration.debug_logging = true
+        secret = @token.dup
+        messages = []
+        Authenticator.stubs(:log_debug).with { |message| messages << message; true }
+        Authenticator.stubs(:log_warn).with { |message| messages << message; true }
+
+        Authenticator.call(mock_request(headers: { "Authorization" => "Bearer #{secret}" }))
+
+        refute messages.any? { |message| message.include?(secret) },
+          "plaintext API key was present in a log message"
+      end
+
+      test "authentication results have credential-safe inspection" do
+        result = Authenticator.call(mock_request(headers: { "Authorization" => "Bearer #{@token}" }))
+        inspected = result.inspect
+
+        refute_includes inspected, @token
+        refute_includes inspected, @api_key.token_digest
+        assert_includes inspected, "api_key_id=#{@api_key.id}"
+        assert_equal inspected, result.to_s
+      end
+
       test "returns failure for revoked key" do
         @api_key.revoke!
         request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })
@@ -187,42 +328,144 @@ module ApiKeys
         assert_equal :expired_key, result.error_code
       end
 
-      test "calls before_authentication callback" do
+      test "does not execute callbacks directly because the controller enqueues them once" do
         request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })
-        mock_callback = Minitest::Mock.new
-        mock_callback.expect(:call, nil, [request])
-        ApiKeys.configure { |config| config.before_authentication = mock_callback }
+        calls = []
+        ApiKeys.configure do |config|
+          config.before_authentication = ->(context) { calls << [:before, context] }
+          config.after_authentication = ->(context) { calls << [:after, context] }
+        end
 
         mock_cache
 
         ApiKeys::Services::Authenticator.call(request)
-        mock_callback.verify
+
+        assert_empty calls
       end
 
-      test "calls after_authentication callback on success" do
-        request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })
-        mock_callback = Minitest::Mock.new
-        # Expect call with a success Result object
-        mock_callback.expect(:call, nil) { |result| result.success? && result.api_key == @api_key }
-        ApiKeys.configure { |config| config.after_authentication = mock_callback }
+      test "bcrypt lookup only compares candidates with the matching prefix and last4" do
+        with_hash_strategy(:bcrypt) do
+          first = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Candidate One")
+          second = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Candidate Two")
+          second = ApiKeys::ApiKey.create!(owner: @user, name: "BCrypt Candidate Three") while second.last4 == first.last4
+          invalid_token = "#{first.prefix}#{"A" * 20}#{first.last4}"
+          Digestor.expects(:match?).once.returns(false)
 
-        mock_cache
+          result = Authenticator.call(
+            mock_request(headers: { "Authorization" => "Bearer #{invalid_token}" })
+          )
 
-        ApiKeys::Services::Authenticator.call(request)
-        mock_callback.verify
+          refute result.success?
+          assert_equal :invalid_token, result.error_code
+        end
       end
 
-      test "calls after_authentication callback on failure" do
-        request = mock_request(headers: { "Authorization" => "Bearer invalid" })
-        mock_callback = Minitest::Mock.new
-        # Expect call with a failure Result object
-        mock_callback.expect(:call, nil) { |result| !result.success? && result.error_code == :invalid_token }
-        ApiKeys.configure { |config| config.after_authentication = mock_callback }
+      test "bcrypt candidate work is bounded for corrupted or hostile rows" do
+        now = Time.current
+        rows = (Authenticator::MAX_BCRYPT_CANDIDATES + 1).times.map do |index|
+          {
+            prefix: "overfull_",
+            last4: "zzzz",
+            digest_algorithm: "bcrypt",
+            token_digest: "malformed-#{index}",
+            scopes: "[]",
+            metadata: "{}",
+            requests_count: 0,
+            created_at: now,
+            updated_at: now
+          }
+        end
+        ApiKeys::ApiKey.insert_all!(rows)
+        Digestor.expects(:match?).never
 
-        mock_cache
+        result = Authenticator.send(:find_bcrypt_key_by_last4, "overfull_abcdefghijklzzzz")
 
-        ApiKeys::Services::Authenticator.call(request)
-        mock_callback.verify
+        assert_nil result
+      end
+
+      test "invalid cached identifiers are ignored safely" do
+        ApiKeys::ApiKey.stubs(:find_by).raises(RangeError, "out of range")
+
+        assert_nil Authenticator.send(:safe_find_by_id, "bad-cache-id")
+      end
+
+      test "existing sha256 keys authenticate after changing the generation strategy" do
+        ApiKeys.configuration.hash_strategy = :bcrypt
+
+        result = Authenticator.call(mock_request(headers: { "Authorization" => "Bearer #{@token}" }))
+
+        assert result.success?
+        assert_equal @api_key.id, result.api_key.id
+      end
+
+      test "typed keys fail closed after their type is removed from configuration" do
+        ApiKeys.configuration.key_types = {
+          temporary: { prefix: "tk", permissions: %w[read] }
+        }
+        key = @user.create_api_key!(name: "Typed Key", key_type: :temporary, scopes: %w[read])
+        token = key.token
+        ApiKeys.configuration.key_types = {}
+
+        result = Authenticator.call(mock_request(headers: { "Authorization" => "Bearer #{token}" }))
+
+        refute result.success?
+        assert_equal :unknown_key_type, result.error_code
+      end
+
+      test "typed keys fail closed when their environment is blank or retired" do
+        ApiKeys.configuration.key_types = {
+          temporary: { prefix: "tk", permissions: %w[read] }
+        }
+        ApiKeys.configuration.environments = {
+          test: { prefix_segment: "test" },
+          live: { prefix_segment: "live" }
+        }
+        ApiKeys.configuration.current_environment = :test
+        key = @user.create_api_key!(name: "Environment Key", key_type: :temporary, scopes: %w[read])
+        token = key.token
+
+        key.update_column(:environment, nil)
+        blank_result = Authenticator.call(mock_request(headers: { "Authorization" => "Bearer #{token}" }))
+        refute blank_result.success?
+        assert_equal :unknown_environment, blank_result.error_code
+
+        key.update_column(:environment, "test")
+        ApiKeys.configuration.environments = { live: { prefix_segment: "live" } }
+        retired_result = Authenticator.call(mock_request(headers: { "Authorization" => "Bearer #{token}" }))
+        refute retired_result.success?
+        assert_equal :unknown_environment, retired_result.error_code
+      end
+
+      test "strict environment isolation fails closed when its resolver raises" do
+        ApiKeys.configuration.key_types = {
+          secret: { prefix: "sk", permissions: %w[read] }
+        }
+        ApiKeys.configuration.strict_environment_isolation = true
+        ApiKeys.configuration.current_environment = -> { raise "resolver failure" }
+        key = @user.create_api_key!(
+          name: "Resolver Failure",
+          key_type: :secret,
+          environment: :test,
+          scopes: %w[read]
+        )
+
+        result = Authenticator.call(
+          mock_request(headers: { "Authorization" => "Bearer #{key.token}" })
+        )
+
+        refute result.success?
+        assert_equal :environment_misconfigured, result.error_code
+      end
+
+      test "https enforcement fails closed by default in production" do
+        Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new("production"))
+
+        result = Authenticator.call(
+          mock_request(headers: { "Authorization" => "Bearer #{@token}" }, protocol: "http://")
+        )
+
+        refute result.success?
+        assert_equal :insecure_connection, result.error_code
       end
 
       # === Prefix changes are SAFE for existing keys ===

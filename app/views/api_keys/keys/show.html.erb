@@ -4,7 +4,7 @@
   <%= render partial: 'show_token', locals: { api_key: @api_key, plaintext_token: @plaintext_token } %>
 
   <%# Add navigation links %>
-  <p style="margin-top: 2em;">
+  <p class="api-keys-show-footer">
     <%= link_to ApiKeys.configuration.return_text, ApiKeys.configuration.return_url, class: "button outline" %>
     <%= link_to "All API Keys", keys_path, class: "button" %>
   </p>

@@ -55,6 +55,7 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
 
       # Index to optimize prefix-based lookups (especially for bcrypt)
       t.index [:prefix, :digest_algorithm], name: "index_api_keys_on_prefix_and_digest_algorithm"
+      t.index [:prefix, :last4, :digest_algorithm], name: "index_api_keys_authentication_lookup"
 
       # Optional indexes
       t.index :prefix
@@ -106,4 +107,4 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       ""
     end
   end
-end 
+end

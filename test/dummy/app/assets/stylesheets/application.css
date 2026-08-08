@@ -8,3 +8,39 @@
  *
  * Consider organizing styles into separate files for maintainability.
  */
+
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  width: min(92%, 72rem);
+  margin: 2rem auto;
+}
+
+input, button, select, textarea {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 0.55rem;
+  font: inherit;
+}
+
+pre {
+  overflow-x: auto;
+  padding: 1rem;
+  border: 1px solid currentColor;
+  border-radius: 0.4rem;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  padding: 0.6rem;
+  border-bottom: 1px solid currentColor;
+  text-align: left;
+}

@@ -19,7 +19,7 @@
   <td class="api-keys-cell-expires">
     <% if key.expires_at? %>
       <% if key.expired? %>
-        <strong style="color: var(--api-keys-status-expired-color);" title="<%= key.expires_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
+        <strong class="api-keys-expired-text" title="<%= key.expires_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
           Expired <%= time_ago_in_words(key.expires_at) %> ago
         </strong>
       <% else %>

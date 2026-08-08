@@ -24,7 +24,7 @@ module ApiKeys
         { label: "60 days", value: "60_days", days: 60 },
         { label: "90 days", value: "90_days", days: 90 },
         { label: "1 year", value: "365_days", days: 365 }
-      ].freeze
+      ].map(&:freeze).freeze
 
       class << self
         # Returns options suitable for a Rails select helper.
@@ -65,9 +65,13 @@ module ApiKeys
         #   ExpirationOptions.parse("30_days")  # => 30.days.from_now
         #   ExpirationOptions.parse("no_expiration")  # => nil
         #   ExpirationOptions.parse(nil)  # => nil
-        #   ExpirationOptions.parse("invalid")  # => nil
+        #   ExpirationOptions.parse("invalid")  # => raises ArgumentError
         #
         def parse(preset)
+          return nil if preset.nil? || preset == ""
+          unless preset.is_a?(String) && preset.valid_encoding? && preset.bytesize <= 32
+            raise ArgumentError, "Invalid API key expiration preset"
+          end
           return nil if preset.blank? || preset == "no_expiration"
 
           # Try to extract days from the preset string (e.g., "30_days" => 30)
@@ -81,7 +85,7 @@ module ApiKeys
           known = DEFAULT_PRESETS.find { |p| p[:value] == preset }
           return known[:days].days.from_now if known && known[:days]
 
-          nil
+          raise ArgumentError, "Invalid API key expiration preset"
         end
 
         # Returns the default preset value (useful for form defaults)
@@ -102,6 +106,10 @@ module ApiKeys
         end
 
         def build_custom_presets(days_list, include_no_expiration)
+          unless days_list.is_a?(Array) && days_list.all? { |days| days.is_a?(Integer) && days.between?(1, 3650) }
+            raise ArgumentError, "Expiration presets must be an array of integers between 1 and 3650"
+          end
+
           options = []
 
           if include_no_expiration

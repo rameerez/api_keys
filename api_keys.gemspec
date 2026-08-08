@@ -38,7 +38,8 @@ Gem::Specification.new do |spec|
   # Runtime Dependencies (only what end-users need to run the gem)
   spec.add_dependency "rails", ">= 6.1"
   spec.add_dependency "base58", "~> 0.2"    # For Base58 token alphabet
-  spec.add_dependency "bcrypt", "~> 3.1"    # For secure token hashing
+  # 3.1.22 fixes CVE-2026-33306 (incorrect handling of long secrets).
+  spec.add_dependency "bcrypt", ">= 3.1.22", "< 4" # For secure token hashing
 
   # Development dependencies should go in Gemfile, not gemspec
   # See: https://guides.rubygems.org/patterns/

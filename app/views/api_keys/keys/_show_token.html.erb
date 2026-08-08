@@ -17,15 +17,15 @@
 </p>
 
 
-<div style="padding: 1em; margin: 1em 0; border-radius: 4px;">
+<div class="api-keys-token-panel">
   <div class="card bd-primary">
     <div class="row">
       <div class="col-7 is-vertical-align is-center">
-        <pre id="api-key-token" style="word-wrap: break-word;"><%= plaintext_token %></pre>
+        <pre id="api-key-token" class="api-keys-token-value"><%= plaintext_token %></pre>
       </div>
 
       <div class="col is-vertical-align is-center">
-        <button id="copy-api-key-button" onclick="copyTokenToClipboard()" class="button primary api-keys-align-center">
+        <button id="copy-api-key-button" type="button" class="button primary api-keys-align-center btn-copy-new-token">
           <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M7 5a3 3 0 0 1 3-3h9a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3h-2v2a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3v-9a3 3 0 0 1 3-3h2V5Zm2 2h5a3 3 0 0 1 3 3v5h2a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1h-9a1 1 0 0 0-1 1v2ZM5 9a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1H5Z" clip-rule="evenodd"></path></svg>
           <span class="api-keys-button-text">Copy</span>
         </button>
@@ -36,7 +36,7 @@
 
 
   <% if api_key.scopes.present? %>
-    <div style="margin-top: 2em;">
+    <div class="api-keys-token-scopes">
       <p><strong>Permissions</strong></p>
 
       <% if api_key.scopes.present? %>
@@ -49,44 +49,3 @@
     </div>
   <% end %>
 </div>
-
-<%# Simple JavaScript for copy-to-clipboard functionality %>
-<%# Ensure this script is loaded only once if rendering multiple components %>
-<script>
-function copyTokenToClipboard() {
-  const tokenElement = document.getElementById('api-key-token');
-  const copyButton = document.getElementById('copy-api-key-button');
-  const buttonTextElement = copyButton.querySelector('.api-keys-button-text'); // Target the span containing the text
-  const originalButtonText = buttonTextElement.innerHTML; // Store original HTML
-
-  if (navigator.clipboard && tokenElement && copyButton && buttonTextElement) {
-    navigator.clipboard.writeText(tokenElement.textContent || '').then(() => {
-      buttonTextElement.innerHTML = 'Copied!'; // Update text
-      copyButton.classList.add('success'); // Optional: Add class for styling
-      setTimeout(() => {
-        buttonTextElement.innerHTML = originalButtonText; // Revert text
-        copyButton.classList.remove('success'); // Optional: Remove class
-      }, 2000);
-    }).catch(err => {
-      buttonTextElement.innerHTML = 'Failed'; // Update text on error
-      copyButton.classList.add('error'); // Optional: Add class for styling
-      console.error('Failed to copy text: ', err);
-      setTimeout(() => {
-        buttonTextElement.innerHTML = originalButtonText; // Revert text
-        copyButton.classList.remove('error'); // Optional: Remove class
-      }, 2000);
-    });
-  } else {
-    // Fallback or indicate unavailability more clearly if needed
-    buttonTextElement.innerHTML = 'Cannot Copy';
-    copyButton.classList.add('error'); // Optional: Add class for styling
-    console.warn('Clipboard API not available or element missing.');
-    setTimeout(() => {
-      buttonTextElement.innerHTML = originalButtonText; // Revert text
-      copyButton.classList.remove('error'); // Optional: Remove class
-    }, 2000);
-  }
-}
-// Automatically try to copy when the partial is rendered, if desired?
-// document.addEventListener('DOMContentLoaded', copyTokenToClipboard); // Example
-</script> 

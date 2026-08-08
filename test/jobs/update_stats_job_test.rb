@@ -42,6 +42,36 @@ module ApiKeys
           ApiKeys::Jobs::UpdateStatsJob.perform_now(999_999, Time.current)
         end
       end
+
+      test "out-of-order jobs never move last_used_at backwards" do
+        user = User.create!(name: "Ordered Stats User")
+        key = ApiKeys::ApiKey.create!(owner: user, name: "Ordered Stats Key")
+        newest = Time.current
+        oldest = 1.hour.ago
+
+        ApiKeys::Jobs::UpdateStatsJob.perform_now(key.id, newest)
+        ApiKeys::Jobs::UpdateStatsJob.perform_now(key.id, oldest)
+
+        assert_in_delta newest.to_f, key.reload.last_used_at.to_f, 1
+      end
+
+      test "future timestamps cannot poison usage statistics" do
+        user = User.create!(name: "Future Stats User")
+        key = ApiKeys::ApiKey.create!(owner: user, name: "Future Stats Key")
+        ApiKeys.configuration.track_requests_count = true
+
+        ApiKeys::Jobs::UpdateStatsJob.perform_now(key.id, 1.day.from_now)
+
+        key.reload
+        assert_nil key.last_used_at
+        assert_equal 0, key.requests_count
+      end
+
+      test "queue name is resolved from current configuration at enqueue time" do
+        ApiKeys.configuration.stats_job_queue = :api_key_security
+
+        assert_equal "api_key_security", ApiKeys::Jobs::UpdateStatsJob.new.queue_name
+      end
     end
   end
 end

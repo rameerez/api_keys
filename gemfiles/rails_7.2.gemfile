@@ -3,16 +3,18 @@
 source "https://rubygems.org"
 
 gem "rake", "~> 13.0"
-gem "rails", "~> 7.2.3"
+gem "minitest", "~> 5.25"
+gem "rails", ">= 7.2.3.2", "< 8.0.a"
 
 group :development, :test do
   gem "appraisal"
-  gem "minitest", "~> 6.0"
   gem "minitest-mock"
   gem "minitest-reporters"
   gem "rack-test"
   gem "simplecov", require: false
   gem "sqlite3", ">= 2.1"
+  gem "brakeman", "~> 8.0", require: false
+  gem "bundler-audit", "~> 0.9", require: false
   gem "bootsnap", require: false
   gem "mocha", "~> 2.0"
   gem "ostruct"

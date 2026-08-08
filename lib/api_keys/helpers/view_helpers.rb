@@ -185,7 +185,11 @@ module ApiKeys
       #   # => { type: :publishable, label: "Publishable", color: :green }
       #
       def api_key_type_info(api_key)
-        type = api_key.key_type.presence&.to_sym || :secret
+        type = case api_key.key_type.to_s
+               when "", "secret" then :secret
+               when "publishable" then :publishable
+               else api_key.key_type.to_s
+               end
         {
           type: type,
           label: api_key_type_label(api_key),

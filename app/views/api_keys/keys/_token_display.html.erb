@@ -3,9 +3,9 @@
 
 <% if key.public_key_type? && key.viewable_token.present? %>
   <span class="token-masked"><code><%= key.masked_token %></code></span>
-  <span class="token-full" style="display: none;"><code style="word-break: break-all;"><%= key.viewable_token %></code></span>
-  <button type="button" class="btn-show-token" style="margin-left: 8px; font-size: 0.75em; padding: 2px 6px; cursor: pointer;" title="Show full token">Show</button>
-  <button type="button" class="btn-copy-token" style="display: none; margin-left: 4px; font-size: 0.75em; padding: 2px 6px; cursor: pointer;" title="Copy to clipboard" data-token="<%= key.viewable_token %>">Copy</button>
+  <span class="token-full" hidden><code class="api-keys-token-break"><%= key.viewable_token %></code></span>
+  <button type="button" class="btn-show-token" title="Show full token">Show</button>
+  <button type="button" class="btn-copy-token" title="Copy to clipboard" data-token="<%= key.viewable_token %>" hidden>Copy</button>
 <% else %>
   <code><%= key.masked_token %></code>
 <% end %>

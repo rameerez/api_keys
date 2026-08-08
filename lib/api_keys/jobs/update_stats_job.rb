@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_job"
+require "active_support/core_ext/numeric/time"
 require_relative "../models/api_key"
 require_relative "../logging"
 
@@ -11,8 +12,10 @@ module ApiKeys
     class UpdateStatsJob < ActiveJob::Base
       include ApiKeys::Logging # Include logging helpers
 
-      # Use the queue name specified in the configuration (evaluated at load time)
-      queue_as ApiKeys.configuration.stats_job_queue
+      MAX_FUTURE_CLOCK_SKEW = 5.minutes
+
+      # Resolve the configured queue for each job so initializer changes apply.
+      queue_as { ApiKeys.configuration.stats_job_queue }
 
       # Perform the database updates for the given ApiKey.
       #
@@ -26,11 +29,25 @@ module ApiKeys
           return
         end
 
-        log_debug "[ApiKeys::Jobs::UpdateStatsJob] Updating stats for ApiKey ID: #{api_key_id} at #{timestamp}"
+        unless timestamp.respond_to?(:to_time)
+          log_warn "[ApiKeys::Jobs::UpdateStatsJob] Invalid timestamp for ApiKey ID: #{api_key_id}. Skipping stats update."
+          return
+        end
+        timestamp = timestamp.to_time
 
-        # Use provided timestamp for consistency
-        # Use update_column to skip validations/callbacks for performance
-        api_key.update_column(:last_used_at, timestamp)
+        if timestamp > Time.current + MAX_FUTURE_CLOCK_SKEW
+          log_warn "[ApiKeys::Jobs::UpdateStatsJob] Rejected a timestamp too far in the future."
+          return
+        end
+
+        log_debug "[ApiKeys::Jobs::UpdateStatsJob] Updating stats for ApiKey ID: #{api_key_id}"
+
+        # Jobs may execute out of order. Update only when this event is newer so
+        # last_used_at can never regress to an earlier request timestamp.
+        ApiKey
+          .where(id: api_key.id)
+          .where("last_used_at IS NULL OR last_used_at < ?", timestamp)
+          .update_all(last_used_at: timestamp)
 
         # Conditionally increment requests_count if configured
         if ApiKeys.configuration.track_requests_count
@@ -41,16 +58,14 @@ module ApiKeys
 
         log_debug "[ApiKeys::Jobs::UpdateStatsJob] Finished updating stats for ApiKey ID: #{api_key_id}"
 
-      rescue ActiveRecord::ActiveRecordError => e
+      rescue ActiveRecord::ActiveRecordError => error
         # Log error but don't automatically retry unless configured to do so.
         # Frequent stats updates might tolerate occasional failures better than endless retries.
-        log_error "[ApiKeys::Jobs::UpdateStatsJob] Failed to update stats for ApiKey ID: #{api_key_id}. Error: #{e.message}"
+        log_error "[ApiKeys::Jobs::UpdateStatsJob] Failed to update stats for ApiKey ID: #{api_key_id} (#{error.class})."
         # Depending on ActiveJob adapter, specific retry logic might be needed here
         # or configured globally. For now, just log.
-      rescue StandardError => e
-        log_error "[ApiKeys::Jobs::UpdateStatsJob] Unexpected error processing ApiKey ID: #{api_key_id}. Error: #{e.class}: #{e.message}
-#{e.backtrace.join("
-")}"
+      rescue StandardError => error
+        log_error "[ApiKeys::Jobs::UpdateStatsJob] Unexpected error processing ApiKey ID: #{api_key_id} (#{error.class})."
         # Consider re-raising or using a dead-letter queue strategy depending on job system
       end
     end

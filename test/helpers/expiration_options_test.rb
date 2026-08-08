@@ -18,7 +18,7 @@ module ApiKeys
         options = ExpirationOptions.for_select(include_no_expiration: false)
 
         assert_equal 5, options.length
-        refute options.any? { |label, _| label == "No Expiration" }
+        refute(options.any? { |label, _| label == "No Expiration" })
         assert_equal ["7 days", "7_days"], options.first
       end
 
@@ -79,15 +79,17 @@ module ApiKeys
         end
       end
 
-      test "parse returns nil for invalid preset" do
-        assert_nil ExpirationOptions.parse("invalid")
-        assert_nil ExpirationOptions.parse("abc_days")
-        assert_nil ExpirationOptions.parse("0_days")
+      test "parse rejects invalid presets instead of silently removing expiration" do
+        %w[invalid abc_days 0_days].each do |preset|
+          assert_raises(ArgumentError) { ExpirationOptions.parse(preset) }
+        end
       end
 
-      test "parse returns nil for excessively large days value" do
-        assert_nil ExpirationOptions.parse("99999999999_days")
-        assert_nil ExpirationOptions.parse("3651_days") # Just over 10 years
+      test "parse rejects excessively large days values" do
+        assert_raises(ArgumentError) { ExpirationOptions.parse("99999999999_days") }
+        assert_raises(ArgumentError) { ExpirationOptions.parse("3651_days") }
+        assert_raises(ArgumentError) { ExpirationOptions.parse("9" * 100_000 + "_days") }
+        assert_raises(ArgumentError) { ExpirationOptions.parse({ days: 30 }) }
       end
 
       test "parse accepts maximum allowed days" do
@@ -103,8 +105,8 @@ module ApiKeys
           # 3650 days (exactly 10 years) should work
           assert_not_nil ExpirationOptions.parse("3650_days")
 
-          # 3651 days (just over 10 years) should not work
-          assert_nil ExpirationOptions.parse("3651_days")
+          # 3651 days (just over 10 years) must fail closed
+          assert_raises(ArgumentError) { ExpirationOptions.parse("3651_days") }
 
           # Large but valid values
           result = ExpirationOptions.parse("1000_days")
@@ -112,10 +114,16 @@ module ApiKeys
         end
       end
 
-      test "parse handles negative and zero days" do
-        assert_nil ExpirationOptions.parse("0_days")
-        assert_nil ExpirationOptions.parse("-1_days")
-        assert_nil ExpirationOptions.parse("-365_days")
+      test "parse rejects negative and zero days" do
+        %w[0_days -1_days -365_days].each do |preset|
+          assert_raises(ArgumentError) { ExpirationOptions.parse(preset) }
+        end
+      end
+
+      test "custom presets must be bounded positive integers" do
+        assert_raises(ArgumentError) { ExpirationOptions.for_select(presets: "30") }
+        assert_raises(ArgumentError) { ExpirationOptions.for_select(presets: [0, 30]) }
+        assert_raises(ArgumentError) { ExpirationOptions.for_select(presets: [3651]) }
       end
 
       test "parse works with known presets" do

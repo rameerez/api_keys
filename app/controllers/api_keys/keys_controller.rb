@@ -39,7 +39,7 @@ module ApiKeys
       # We need to retrieve the plaintext token stored temporarily
       # after creation. This relies on how we handle creation.
       # We'll likely store it in the session flash or pass it directly.
-      @plaintext_token = session.delete(:plaintext_api_key) # Retrieve and delete from session
+      @plaintext_token = ApiKeys::TokenSession.retrieve_once(session, api_key: @api_key)
       unless @plaintext_token
         # If accessed directly without the token, redirect or show an error
         redirect_to keys_path, alert: "API key token can only be shown once immediately after creation."
@@ -53,22 +53,21 @@ module ApiKeys
 
     # POST /keys
     def create
+      submitted_params = api_key_params
+
       # Use the HasApiKeys helper method to create the key
       begin
         # create_api_key! now returns the ApiKey instance
         @api_key = current_api_keys_owner.create_api_key!(
-          name: api_key_params[:name],
-          scopes: api_key_params[:scopes],
-          expires_at: parse_expiration(api_key_params[:expires_at_preset]),
-          key_type: api_key_params[:key_type].presence&.to_sym
+          name: submitted_params[:name],
+          scopes: submitted_params[:scopes],
+          expires_at: parse_expiration(submitted_params[:expires_at_preset]),
+          key_type: submitted_params[:key_type].presence
           # Metadata could be added here if needed
         )
 
-        # Get the plaintext token from the instance's attr_reader
-        plaintext_token = @api_key.token
-
         # Store the plaintext token in session to display on the show page
-        session[:plaintext_api_key] = plaintext_token
+        ApiKeys::TokenSession.store(session, @api_key)
 
         redirect_to key_path(@api_key)
       rescue ActiveRecord::RecordInvalid => e
@@ -76,11 +75,18 @@ module ApiKeys
         @api_key = e.record # Get the invalid ApiKey instance
         flash.now[:alert] = "Failed to create API key: #{e.record.errors.full_messages.join(', ')}"
         render :new, status: :unprocessable_entity
-      rescue => e # Catch other potential errors
-        flash.now[:alert] = "An unexpected error occurred: #{e.message}"
-        @api_key = current_api_keys_owner.api_keys.build(api_key_params) # Rebuild form
+      rescue ArgumentError
+        flash.now[:alert] = "Failed to create API key: invalid options."
+        @api_key = rebuild_api_key_for_form(submitted_params)
+        render :new, status: :unprocessable_entity
+      rescue StandardError => error
+        log_error "[ApiKeys Dashboard] Unexpected key creation failure (#{error.class}); request ID: #{request.uuid}"
+        flash.now[:alert] = "An unexpected error occurred while creating the API key."
+        @api_key = rebuild_api_key_for_form(submitted_params)
         render :new, status: :unprocessable_entity
       end
+    rescue ActionController::ParameterMissing
+      head :bad_request
     end
 
     # GET /keys/:id/edit
@@ -96,6 +102,8 @@ module ApiKeys
         flash.now[:alert] = "Failed to update API key: #{@api_key.errors.full_messages.join(', ')}"
         render :edit, status: :unprocessable_entity
       end
+    rescue ActionController::ParameterMissing
+      head :bad_request
     end
 
     # POST /keys/:id/revoke
@@ -104,9 +112,9 @@ module ApiKeys
       redirect_to keys_path, notice: "API key revoked successfully."
     rescue ApiKeys::Errors::KeyNotRevocableError
       redirect_to keys_path, alert: "This API key cannot be revoked."
-    rescue => e
-      # This shouldn't typically fail unless there's a callback issue
-      redirect_to keys_path, alert: "Failed to revoke API key: #{e.message}"
+    rescue StandardError => error
+      log_error "[ApiKeys Dashboard] Unexpected key revocation failure (#{error.class}); key ID: #{@api_key&.id}; request ID: #{request.uuid}"
+      redirect_to keys_path, alert: "Failed to revoke API key."
     end
 
     private
@@ -122,14 +130,20 @@ module ApiKeys
     # Added :expires_at_preset for the dropdown selector.
     # Added :key_type for the key types feature.
     def api_key_params
-      permitted_params = params.require(:api_key).permit(:name, :expires_at_preset, :key_type, scopes: [])
+      submitted = params.require(:api_key)
+      raise ActionController::ParameterMissing, :api_key unless submitted.respond_to?(:permit)
+
+      permitted_params = submitted.permit(:name, :expires_at_preset, :key_type, scopes: [])
       permitted_params[:scopes]&.reject!(&:blank?) # Filter out blank strings
       permitted_params
     end
 
     # Only allow updating name and scopes.
     def api_key_update_params
-      permitted_params = params.require(:api_key).permit(:name, scopes: [])
+      submitted = params.require(:api_key)
+      raise ActionController::ParameterMissing, :api_key unless submitted.respond_to?(:permit)
+
+      permitted_params = submitted.permit(:name, scopes: [])
       permitted_params[:scopes]&.reject!(&:blank?) # Filter out blank strings
       permitted_params
     end
@@ -143,8 +157,16 @@ module ApiKeys
       when "90_days" then 90.days.from_now
       when "365_days" then 365.days.from_now
       when "no_expiration" then nil
-      else nil # Default to no expiration if invalid preset
+      when nil, "" then nil
+      else raise ArgumentError, "Invalid expiration preset"
       end
+    end
+
+    def rebuild_api_key_for_form(submitted_params)
+      current_api_keys_owner.api_keys.build(
+        name: submitted_params[:name],
+        scopes: submitted_params[:scopes]
+      )
     end
 
     # Check if key types feature is enabled

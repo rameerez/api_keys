@@ -3,7 +3,7 @@
 source "https://rubygems.org"
 
 gem "rake", "~> 13.0"
-gem "rails", "~> 8.0"
+gem "rails", ">= 8.0.5.1", "< 8.1.a"
 
 group :development, :test do
   gem "appraisal"
@@ -13,6 +13,8 @@ group :development, :test do
   gem "rack-test"
   gem "simplecov", require: false
   gem "sqlite3", ">= 2.1"
+  gem "brakeman", "~> 8.0", require: false
+  gem "bundler-audit", "~> 0.9", require: false
   gem "bootsnap", require: false
   gem "mocha", "~> 2.0"
   gem "ostruct"

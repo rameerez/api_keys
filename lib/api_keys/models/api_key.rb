@@ -1,12 +1,20 @@
 # frozen_string_literal: true
 
 require "active_record"
+require "json"
 require_relative "../services/token_generator"
 require_relative "../services/digestor"
 
 module ApiKeys
   # The core ActiveRecord model representing an API key.
   class ApiKey < ActiveRecord::Base
+    MAX_SCOPES = 100
+    MAX_SCOPE_BYTESIZE = 128
+    MAX_METADATA_BYTESIZE = 16_384
+    IMMUTABLE_IDENTITY_ATTRIBUTES = %w[
+      token_digest digest_algorithm prefix last4 owner_type owner_id key_type environment
+    ].freeze
+
     self.table_name = "api_keys"
 
     # == Concerns ==
@@ -27,7 +35,10 @@ module ApiKeys
     # Works for both create and update operations.
     def scopes=(value)
       cleaned = if value.is_a?(Array)
-                  value.reject { |s| s.blank? }
+                  value
+                    .map { |scope| scope.is_a?(Symbol) ? scope.to_s : scope }
+                    .reject { |scope| scope.respond_to?(:blank?) && scope.blank? }
+                    .uniq
                 else
                   value
                 end
@@ -36,8 +47,8 @@ module ApiKeys
 
     # == Validations ==
     validates :token_digest, presence: true, uniqueness: { case_sensitive: true }
-    validates :prefix, presence: true
-    validates :digest_algorithm, presence: true
+    validates :prefix, presence: true, length: { maximum: 64 }
+    validates :digest_algorithm, presence: true, inclusion: { in: %w[sha256 bcrypt] }
     validates :last4, presence: true, length: { is: 4 }
     # validates :scopes, presence: true # Default handled by attribute def
     # validates :metadata, presence: true # Default handled by attribute def
@@ -54,6 +65,15 @@ module ApiKeys
     validate :expiration_date_cannot_be_in_the_past, if: :expires_at?
     validate :within_key_type_limit, on: :create, if: -> { key_type.present? && owner.present? }
     validate :non_revocable_keys_cannot_expire, if: -> { key_type.present? && expires_at.present? }
+    validate :scopes_are_well_formed
+    validate :scopes_respect_permission_ceiling
+    validate :key_type_present_when_feature_enabled, on: :create
+    validate :key_type_is_configured, if: -> { key_type.present? }
+    validate :environment_is_configured, if: -> { key_type.present? }
+    validate :token_digest_matches_algorithm
+    validate :token_identifiers_are_well_formed
+    validate :metadata_is_well_formed
+    validate :authentication_identity_is_immutable, on: :update
 
     # TODO: Add validation for scope string format
     # TODO: Add validation for prefix format (e.g., must end with _)
@@ -62,6 +82,10 @@ module ApiKeys
     before_validation :set_defaults, on: :create
     # Generate digest BEFORE validation runs
     before_validation :generate_token_and_digest, on: :create
+    # Serialize quota validation and insertion for every creation path, including
+    # direct ApiKey.create! calls that do not use HasApiKeys#create_api_key!.
+    before_validation :lock_owner_for_creation, on: :create
+    after_commit :clear_known_prefixes_cache, on: :create
 
     # == Scopes ==
     scope :active, -> { where(revoked_at: nil).where("expires_at IS NULL OR expires_at > ?", Time.current) }
@@ -132,26 +156,68 @@ module ApiKeys
       !revoked? && !expired?
     end
 
+    # The plaintext token is an ephemeral creation-time value. Active Record's
+    # reload does not clear arbitrary instance variables, so clear it explicitly.
+    def reload(...)
+      @token = nil
+      super
+    end
+
+    # Keep credentials and credential-derived values out of logs and consoles.
+    def inspect
+      attributes = %w[id prefix last4 name owner_type owner_id key_type environment expires_at revoked_at]
+                   .select { |attribute_name| has_attribute?(attribute_name) }
+                   .map { |attribute_name| "#{attribute_name}: #{attribute_for_inspect(attribute_name)}" }
+      "#<#{self.class.name} #{attributes.join(', ')}>"
+    rescue StandardError
+      "#<#{self.class.name}>"
+    end
+
+    def pretty_print(printer)
+      printer.text(inspect)
+    end
+
+    # Rendering a model as JSON must never expose the verification digest or a
+    # public token stored in the reserved metadata field. Call #viewable_token
+    # explicitly when an authenticated UI intentionally needs a public token.
+    def serializable_hash(options = nil)
+      serialized = super(options)
+      serialized.delete("token_digest")
+      serialized.delete(:token_digest)
+
+      metadata_value = serialized["metadata"] || serialized[:metadata]
+      if metadata_value.is_a?(Hash)
+        sanitized_metadata = metadata_value.dup
+        sanitized_metadata.delete("token")
+        sanitized_metadata.delete(:token)
+        serialized[serialized.key?("metadata") ? "metadata" : :metadata] = sanitized_metadata
+      end
+
+      serialized
+    end
+
     # Returns true if this key can be revoked/destroyed
     # Keys without a key_type (legacy) are always revocable
     # Keys with a key_type check the configuration
     def revocable?
       return true if key_type.blank?
       config = key_type_config
-      return true if config.nil?
+      return false if config.nil?
       config.fetch(:revocable, true)
     end
 
     # Returns the configuration hash for this key's type
     def key_type_config
       return nil if key_type.blank?
-      ApiKeys.configuration.key_types&.dig(key_type.to_sym)
+      configured_pair = ApiKeys.configuration.key_types&.find { |type, _settings| type.to_s == key_type.to_s }
+      configured_pair&.last
     end
 
     # Returns the configuration hash for this key's environment
     def environment_config
       return nil if environment.blank?
-      ApiKeys.configuration.environments&.dig(environment.to_sym)
+      configured_pair = ApiKeys.configuration.environments&.find { |name, _settings| name.to_s == environment.to_s }
+      configured_pair&.last
     end
 
     # Returns true if this key type is configured as public AND non-revocable.
@@ -192,15 +258,20 @@ module ApiKeys
     #   key types with permission ceilings, an empty scope list should deny access,
     #   not silently bypass the entire permission system.
     def allows_scope?(required_scope)
-      return true unless respond_to?(:scopes) # Guard clause if loaded before attribute definition
+      return false unless respond_to?(:scopes)
+      return false unless required_scope.present?
+      return false unless scopes.is_a?(Array)
 
       if scopes.blank?
-        # In key_types mode, blank scopes = no access (deny by default)
-        # In simple mode, blank scopes = unrestricted (allow by default)
-        return !ApiKeys.configuration.key_types.present?
+        return !scope_policy_enabled?
       end
 
-      scopes.include?(required_scope.to_s)
+      required = required_scope.to_s
+      return false unless scopes.all? { |scope| valid_scope_value?(scope) }
+      return false unless scopes.include?(required)
+
+      ceiling = permission_ceiling
+      ceiling == :all || ceiling.include?(required)
     end
 
     # Alias for scopes - provides a more user-friendly API that matches
@@ -299,7 +370,8 @@ module ApiKeys
 
       # Safety check: Ensure generated token starts with the expected prefix
       unless @token.start_with?(self.prefix)
-        raise ApiKeys::Error, "Generated token '#{@token}' does not match expected prefix '#{self.prefix}'. Check TokenGenerator."
+        @token = nil
+        raise ApiKeys::Error, "Generated token does not match the configured prefix. Check TokenGenerator configuration."
       end
 
       # Use the configured digestor
@@ -328,6 +400,163 @@ module ApiKeys
     end
 
     # == Validation Helpers ==
+
+    def lock_owner_for_creation
+      return unless owner&.persisted?
+
+      # Query a separate relation so locking does not reload or discard unsaved
+      # attributes on the caller's in-memory owner object. `unscoped` ensures a
+      # tenant/default scope cannot accidentally bypass quota serialization.
+      owner.class.unscoped.lock(true).find(owner.id)
+    end
+
+    def scopes_are_well_formed
+      unless scopes.is_a?(Array)
+        errors.add(:scopes, "must be an array")
+        return
+      end
+
+      if scopes.length > MAX_SCOPES
+        errors.add(:scopes, "cannot contain more than #{MAX_SCOPES} entries")
+      end
+
+      unless scopes.all? { |scope| valid_scope_value?(scope) }
+        errors.add(:scopes, "must contain only non-blank strings of at most #{MAX_SCOPE_BYTESIZE} bytes without whitespace or control characters")
+      end
+    end
+
+    def token_digest_matches_algorithm
+      return if token_digest.blank? || digest_algorithm.blank?
+
+      valid = case digest_algorithm.to_s
+              when "sha256"
+                token_digest.is_a?(String) && token_digest.match?(/\A\h{64}\z/)
+              when "bcrypt"
+                ApiKeys::Services::Digestor.valid_bcrypt_digest?(token_digest)
+              else
+                true # The inclusion validation reports unsupported algorithms.
+              end
+      errors.add(:token_digest, "is not a valid #{digest_algorithm} digest") unless valid
+    end
+
+    def token_identifiers_are_well_formed
+      unless safe_token_component?(prefix, maximum_bytes: 64)
+        errors.add(:prefix, "must not contain whitespace or control characters")
+      end
+      unless safe_token_component?(last4, maximum_bytes: 4)
+        errors.add(:last4, "must not contain whitespace or control characters")
+      end
+
+      %i[key_type environment].each do |attribute_name|
+        value = public_send(attribute_name)
+        next if value.blank?
+        next if value.is_a?(String) && value.bytesize <= 64 && value.match?(/\A[a-zA-Z0-9_-]+\z/)
+
+        errors.add(attribute_name, "must contain only letters, numbers, underscores, or hyphens (maximum 64 bytes)")
+      end
+    end
+
+    def metadata_is_well_formed
+      unless metadata.is_a?(Hash)
+        errors.add(:metadata, "must be an object")
+        return
+      end
+
+      errors.add(:metadata, "is too large") if JSON.generate(metadata).bytesize > MAX_METADATA_BYTESIZE
+    rescue JSON::GeneratorError, EncodingError
+      errors.add(:metadata, "must contain valid JSON data")
+    end
+
+    def authentication_identity_is_immutable
+      IMMUTABLE_IDENTITY_ATTRIBUTES.each do |attribute_name|
+        next unless will_save_change_to_attribute?(attribute_name)
+
+        errors.add(attribute_name, "cannot be changed after creation")
+      end
+    end
+
+    def scopes_respect_permission_ceiling
+      return unless scopes.is_a?(Array)
+
+      ceiling = permission_ceiling
+      return if ceiling == :all
+      return if scopes.all? { |scope| ceiling.include?(scope) }
+
+      errors.add(:scopes, "exceed the configured permission ceiling")
+    end
+
+    def key_type_is_configured
+      return if key_type_config
+
+      errors.add(:key_type, "is not configured")
+    end
+
+    def key_type_present_when_feature_enabled
+      return unless key_types_feature_enabled?
+      return if key_type.present?
+
+      errors.add(:key_type, "must be present when key types are configured")
+    end
+
+    def environment_is_configured
+      if environment.blank?
+        errors.add(:environment, "must be present for typed API keys")
+        return
+      end
+
+      configured_environments = ApiKeys.configuration.environments
+      return if configured_environments.blank? || environment_config
+
+      errors.add(:environment, "is not configured")
+    end
+
+    def valid_scope_value?(scope)
+      scope.is_a?(String) && scope.present? && scope.valid_encoding? &&
+        scope.bytesize <= MAX_SCOPE_BYTESIZE &&
+        scope.each_codepoint.none? { |codepoint| codepoint <= 0x20 || codepoint == 0x7f }
+    rescue ArgumentError
+      false
+    end
+
+    def safe_token_component?(value, maximum_bytes:)
+      value.is_a?(String) && value.present? && value.valid_encoding? && value.bytesize <= maximum_bytes &&
+        value.each_codepoint.none? { |codepoint| codepoint <= 0x20 || codepoint == 0x7f }
+    rescue ArgumentError
+      false
+    end
+
+    def permission_ceiling
+      if key_type.present?
+        config = key_type_config
+        return [] unless config
+
+        permissions = config[:permissions]
+        return :all if permissions == :all
+
+        return Array(permissions).map(&:to_s)
+      end
+
+      configured_simple_scopes = simple_scope_configuration
+      configured_simple_scopes.present? ? configured_simple_scopes : :all
+    end
+
+    def scope_policy_enabled?
+      key_type.present? || ApiKeys.configuration.key_types.present? || simple_scope_configuration.present?
+    end
+
+    def simple_scope_configuration
+      owner_scopes = if owner&.class.respond_to?(:api_keys_settings)
+                       owner.class.api_keys_settings&.[](:default_scopes)
+                     end
+      configured = owner_scopes.presence || ApiKeys.configuration.default_scopes
+      Array(configured).map(&:to_s)
+    end
+
+    def clear_known_prefixes_cache
+      return unless defined?(ApiKeys::Services::Authenticator)
+
+      ApiKeys::Services::Authenticator.clear_known_prefixes_cache
+    end
 
     def owner_present_and_configured?
       owner.present? && owner_configured?
@@ -385,9 +614,8 @@ module ApiKeys
       end
     end
 
-    # Check if creating this key would exceed the limit for this key type/environment
-    # Uses row-level locking to prevent race conditions when multiple requests
-    # try to create keys concurrently.
+    # Check if creating this key would exceed the limit for this key type/environment.
+    # HasApiKeys#create_api_key! locks the owner row around this validation and insert.
     def within_key_type_limit
       return unless key_types_feature_enabled?
 
@@ -397,20 +625,11 @@ module ApiKeys
       limit = config[:limit]
       return unless limit # nil limit = unlimited
 
-      # Use pessimistic locking to prevent race conditions.
-      # Lock the owner's existing keys of this type/environment while counting.
-      # This ensures atomic check-then-create semantics.
-      #
-      # Note: We use .ids.size instead of .count because PostgreSQL doesn't allow
-      # FOR UPDATE with aggregate functions (COUNT). By selecting IDs with the
-      # lock and counting in Ruby, we achieve the same race condition protection.
       existing_count = owner.api_keys
                             .active
                             .where(key_type: key_type.to_s)
                             .where(environment: environment.to_s)
-                            .lock(true)
-                            .ids
-                            .size
+                            .count
 
       if existing_count >= limit
         errors.add(:base, "Maximum number of #{key_type} keys (#{limit}) reached for #{environment} environment")

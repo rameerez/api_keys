@@ -6,7 +6,7 @@ export default class extends Controller {
     "tokenInput", // Input field for the API key token
     "output", // <pre> tag to display the JSON result
     "testedUrl", // <code> tag to show which URL was tested
-    "sendMethodInput", // Radio buttons for send method (header/query)
+    "sendMethodInput", // Header method selector
     "curlOutput", // <pre> tag for the cURL command equivalent
   ];
 
@@ -51,22 +51,14 @@ export default class extends Controller {
       // body: JSON.stringify({ key: "value" }) // Example if body is needed
     };
 
-    let finalUrl = url;
-
-    // Add authentication based on selected method
+    // Add authentication via the Authorization header only.
     if (token) {
-      // Add token if provided, even for public (server should ignore)
-      if (sendMethod === "header") {
-        fetchOptions.headers["Authorization"] = `Bearer ${token}`;
-      } else if (sendMethod === "query") {
-        // Basic query param addition - assumes no existing query params in test URLs
-        finalUrl = `${url}?api_key=${encodeURIComponent(token)}`;
-      }
+      fetchOptions.headers["Authorization"] = `Bearer ${token}`;
     }
 
     // Perform Fetch
     try {
-      const response = await fetch(finalUrl, fetchOptions);
+      const response = await fetch(url, fetchOptions);
       const data = await response.json().catch((err) => {
         console.error(
           "Failed to parse JSON response:",
@@ -123,17 +115,11 @@ export default class extends Controller {
   -H "X-CSRF-Token: ${csrf}"`;
     }
 
-    // Add token based on method
+    // Add token via the Authorization header only.
     const isPublic = currentUrl.includes("/public");
     if (!isPublic && currentToken !== "YOUR_API_KEY") {
-      if (currentSendMethod === "header") {
-        curlCommand += ` \
+      curlCommand += ` \
   -H "Authorization: Bearer ${currentToken}"`;
-      } else if (currentSendMethod === "query") {
-        fullUrl += `${
-          fullUrl.includes("?") ? "&" : "?"
-        }api_key=${encodeURIComponent(currentToken)}`;
-      }
     }
 
     // Add URL last

@@ -15,8 +15,6 @@ module ApiKeys
       alias_method :current_api_key_tenant, :current_api_tenant
       alias_method :current_api_account, :current_api_tenant
       alias_method :current_api_key_account, :current_api_tenant
-      alias_method :current_api_owner, :current_api_tenant
-      alias_method :current_api_key_owner, :current_api_tenant
     end
 
     # Returns the tenant associated with the current API key.
@@ -31,10 +29,10 @@ module ApiKeys
 
       resolver = ApiKeys.configuration.tenant_resolver
       @current_api_tenant = resolver&.call(current_api_key)
-    rescue StandardError => e
+    rescue StandardError => error
       # Log error but don't break the request if resolver fails
       if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
-        Rails.logger.error "[ApiKeys] Tenant resolution failed: #{e.message}"
+        Rails.logger.error "[ApiKeys] Tenant resolution failed (#{error.class})."
       end
       @current_api_tenant = nil
     end
