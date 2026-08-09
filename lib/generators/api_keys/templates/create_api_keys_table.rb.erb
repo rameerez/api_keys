@@ -94,15 +94,4 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
     # Fallback during initial setup or if connection isn't available
     :text
   end
-
-  # Provides the appropriate migration version syntax for the current Rails version.
-  def migration_version
-    major = ActiveRecord::VERSION::MAJOR
-    minor = ActiveRecord::VERSION::MINOR
-    if major >= 5
-      "[#{major}.#{minor}]"
-    else
-      ""
-    end
-  end
 end

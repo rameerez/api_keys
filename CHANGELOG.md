@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+### Fixed
+
+- Stop generated install and authentication-index migrations from carrying an unreachable `migration_version` instance method; the generator already renders the Active Record version into each migration superclass.
+
+### Maintenance
+
+- Move SimpleCov startup/reporting into the test helper and replace deprecated filtering/tracking APIs so the enforced line and branch coverage gates remain compatible with future SimpleCov releases.
+
 ## [0.4.0] - 2026-08-09
 
 This security-focused release hardens authentication, authorization, credential handling, the self-serve dashboard, background jobs, configuration, dependencies, CI, and the release supply chain. Upgrading is strongly recommended. Existing installations must apply the authentication lookup migration before deploying this version.

@@ -3,6 +3,18 @@
 # SimpleCov must be loaded BEFORE any application code
 # Configuration is auto-loaded from .simplecov file
 require "simplecov"
+SimpleCov.start
+
+# Print coverage summary to terminal after tests complete.
+SimpleCov.at_exit do
+  SimpleCov.result.format!
+  puts "\n" + "=" * 60
+  puts "COVERAGE SUMMARY"
+  puts "=" * 60
+  puts "Line Coverage:   #{SimpleCov.result.covered_percent.round(2)}%"
+  puts "Branch Coverage: #{SimpleCov.result.coverage_statistics[:branch]&.percent&.round(2) || 'N/A'}%"
+  puts "=" * 60
+end
 
 ENV["RAILS_ENV"] ||= "test"
 $LOAD_PATH.unshift File.expand_path("../lib", __dir__)

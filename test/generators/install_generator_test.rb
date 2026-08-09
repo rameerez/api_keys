@@ -19,6 +19,7 @@ module ApiKeys
           assert_includes migration, "[:owner_type, :owner_id, :key_type, :environment]"
           refute_match(/^\s*t\.index :owner_id\b/, migration)
           refute_match(/^\s*t\.index :owner_type\b/, migration)
+          refute_includes migration, "def migration_version"
         end
       end
     end

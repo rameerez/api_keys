@@ -21,12 +21,4 @@ class AddAuthenticationIndexToApiKeys < ActiveRecord::Migration<%= migration_ver
     options[:algorithm] = :concurrently if connection.adapter_name.downcase.include?("postgres")
     remove_index :api_keys, **options
   end
-
-  private
-
-  def migration_version
-    major = ActiveRecord::VERSION::MAJOR
-    minor = ActiveRecord::VERSION::MINOR
-    major >= 5 ? "[#{major}.#{minor}]" : ""
-  end
 end
