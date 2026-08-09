@@ -23,6 +23,12 @@ ApiKeys.configure do |config|
   # Configure how the dashboard integrates with your application's auth system.
   # ============================================================================
 
+  # Controller class that the engine dashboard inherits from. Configure this in
+  # the initializer before engine controllers load. Accepts a Class or constant
+  # name string.
+  # Default: "::ApplicationController"
+  # config.parent_controller = "Admin::ApplicationController"
+
   # The method that returns the current API key owner in your controllers.
   # This should return the model instance that has_api_keys.
   # Default: :current_user (works with Devise out of the box)
@@ -269,9 +275,16 @@ ApiKeys.configure do |config|
   # config.enable_async_operations = true
 
   # Track request counts (increments requests_count on each authentication).
-  # Note: High-frequency counter updates can impact database performance.
+  # Exact counting bypasses last-used debouncing and therefore enqueues one stats
+  # job per successful request. High-frequency updates can impact queue/database
+  # performance.
   # Default: false
   # config.track_requests_count = false
+
+  # Minimum interval between last_used_at jobs when exact request counting is
+  # disabled. Set to 0 or nil to update on every successful authentication.
+  # Default: 1.minute
+  # config.stats_update_interval = 1.minute
 
   # Queue names for background jobs.
   # Default: :default

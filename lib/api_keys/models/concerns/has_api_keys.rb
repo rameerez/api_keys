@@ -100,7 +100,10 @@ module ApiKeys
             has_many :api_keys,
                      class_name: "ApiKeys::ApiKey",
                      as: :owner,
-                     dependent: :destroy # Consider :nullify based on requirements
+                     # An owner deletion is an administrative lifecycle event and
+                     # must remove every credential, including key types that users
+                     # cannot revoke individually through the normal API.
+                     dependent: :delete_all
 
             # Define class_attribute for settings if not already defined.
             # This ensures inheritance works correctly (subclasses get their own copy).

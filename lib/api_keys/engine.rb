@@ -8,9 +8,11 @@ module ApiKeys
   class Engine < ::Rails::Engine
     isolate_namespace ApiKeys
 
-    # Allows configuring the parent controller for the engine's controllers
-    # Defaults to ::ApplicationController, assuming a standard Rails app structure.
-    config.parent_controller = '::ApplicationController'
+    # Backward-compatible fallback for applications that used the old internal
+    # Engine config directly. New applications should configure
+    # ApiKeys.configuration.parent_controller; an explicit public configuration
+    # value takes precedence over this fallback.
+    config.parent_controller = nil
 
     # Add has_api_keys method to ActiveRecord::Base
     initializer "api_keys.active_record" do

@@ -74,7 +74,12 @@ module ApiKeys
           after_auth_context[:success] = false
           after_auth_context[:error_code] = :missing_scope
           @current_api_key = nil
-          render_unauthorized(error_code: :missing_scope, message: "API key does not have the required scope(s): #{scope}", required_scope: scope)
+          render_unauthorized(
+            error_code: :missing_scope,
+            message: "API key does not have the required scope(s): #{scope}",
+            status: :forbidden,
+            required_scope: scope
+          )
         else
           after_auth_context[:required_scope_check] = { required: scope, passed: true } if scope
           # Authentication and scope check successful, enqueue stats update
@@ -118,6 +123,11 @@ module ApiKeys
       return unless ApiKeys.configuration.enable_async_operations
       return unless current_api_key
 
+      if stats_update_debounced?
+        log_debug "[ApiKeys Auth] Skipping a recently recorded last-used update for ApiKey ID: #{current_api_key.id}"
+        return
+      end
+
       # Check ActiveJob configuration and warn if using suboptimal adapters
       adapter = ActiveJob::Base.queue_adapter
       if adapter.is_a?(ActiveJob::QueueAdapters::InlineAdapter)
@@ -133,6 +143,18 @@ module ApiKeys
       rescue StandardError => error
         log_error "[ApiKeys Auth] Failed to enqueue UpdateStatsJob for key #{current_api_key.id} (#{error.class})."
       end
+    end
+
+    def stats_update_debounced?
+      config = ApiKeys.configuration
+      return false if config.track_requests_count
+
+      interval = config.stats_update_interval
+      seconds = interval.to_f if interval.respond_to?(:to_f)
+      return false unless seconds&.finite? && seconds.positive?
+      return false unless current_api_key.last_used_at
+
+      current_api_key.last_used_at >= Time.current - seconds
     end
 
     # Helper to safely enqueue callback jobs.

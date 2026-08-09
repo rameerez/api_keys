@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-09
+
+This security-focused release hardens authentication, authorization, credential handling, the self-serve dashboard, background jobs, configuration, dependencies, CI, and the release supply chain. Upgrading is strongly recommended. Existing installations must apply the authentication lookup migration before deploying this version.
+
 ### Security
 
 - Make token caching a non-authoritative ID lookup hint: every hit reloads current database state and cryptographically re-verifies the presented token, so revocation, expiration, scope changes, and cache poisoning fail closed.
@@ -14,6 +18,8 @@
 - Apply an enforcing nonce-based dashboard Content Security Policy and remove inline handlers, un-nonced scripts, third-party assets, and inline style attributes from credential-bearing views.
 - Enforce HTTPS authentication by default in production, disable query-string credentials in the demo, and remove third-party code from pages that handle tokens.
 - Pin GitHub Actions to immutable commits and add dependency auditing, Brakeman, CodeQL, dependency review, and Dependabot configuration.
+- Remove the unused Claude Code workflow and its third-party CI/OIDC surface.
+- Encrypt one-time secret-token handoffs inside the Rails session with an application-derived AES-256-GCM key, bind them to the created key, expire them after ten minutes, and delete them on first retrieval. Legacy in-flight plaintext handoffs remain readable for upgrade continuity but are never newly written.
 
 ### Reliability
 
@@ -21,6 +27,10 @@
 - Resolve job queues dynamically, prevent out-of-order/future jobs from corrupting usage timestamps, and keep request counters atomic.
 - Validate security-sensitive global and per-owner configuration early and store permission policy as defensive frozen copies.
 - Ensure each appraisal excludes the next Rails line's prereleases; Rails 7.2 uses its upstream-compatible Minitest 5 while Rails 8/default suites remain on Minitest 6.
+- Return `403 Forbidden` when a valid key lacks a required scope while retaining `401 Unauthorized` for missing or invalid credentials.
+- Honor the public `parent_controller` configuration (with a backward-compatible internal Engine fallback), cascade owner deletion across non-revocable keys, and debounce `last_used_at` jobs for one minute by default when exact request counting is disabled.
+- Remove redundant single-column polymorphic-owner indexes from new-install migrations and exclude development-only metadata from built gems.
+- Resolve every finding recorded in [issue #12](https://github.com/rameerez/api_keys/issues/12) through a code fix, test, explicit bounded design, or superseding hardening control.
 
 ### Upgrade notes
 
@@ -29,6 +39,15 @@
 - Authentication identity fields (`token_digest`, algorithm, prefix, last four, owner, key type, and environment) can no longer be changed through normal Active Record updates after creation.
 - Typed keys with blank or retired environments now fail closed. Repair any such legacy rows before deployment; untyped legacy keys are unaffected.
 - When `key_types` is configured, new keys must pass `key_type:` or use a configured `default_key_type`; this does not invalidate existing untyped keys.
+- Authentication callbacks now execute asynchronously exactly once with small, credential-free context hashes instead of request, result, or model objects. Update callback consumers and ensure the application has a durable Active Job backend where delivery matters.
+- Production authentication now requires HTTPS by default and fails closed when a request appears insecure. Verify TLS termination and trusted proxy forwarding before deployment.
+- Scope and permission policy is enforced at creation, update, and authentication time. Malformed scopes and scopes above a configured ceiling are rejected; blank scopes deny access whenever a scope policy is enabled.
+- Reassess every permission ceiling configured with `public: true`. The gem validates that public tokens are non-revocable and finitely scoped, but only the host application can determine whether each named permission is safe for an untrusted client.
+- The actively security-tested matrix is Ruby 3.3, 3.4, and 4.0 with Rails 7.2, 8.0, and 8.1. The gemspec continues to permit Ruby 3.1+ for compatibility, but older runtimes are outside the documented security-support matrix.
+- Missing-scope responses now use HTTP 403 instead of 401. Clients that branch on the previous status should update.
+- New one-time token handoffs are encrypted and expire after ten minutes. Custom integrations must use `ApiKeys::TokenSession` rather than reading its internal session payload directly.
+- `last_used_at` updates are debounced for one minute by default when `track_requests_count` is false. Set `stats_update_interval = 0` for per-request timestamps; enabling exact request counting necessarily enqueues a stats job for every successful authentication.
+- Deleting an owner now removes all associated API-key rows, including non-revocable types. Direct user-level `revoke!`, `destroy`, and `destroy!` protections remain unchanged.
 
 ## [0.3.0] - 2026-02-09
 

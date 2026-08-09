@@ -31,6 +31,29 @@ module ApiKeys
         assert key.persisted?
       end
 
+      test "destroying an owner deletes even non-revocable keys" do
+        ApiKeys.configure do |config|
+          config.key_types = {
+            publishable: {
+              prefix: "pk",
+              permissions: %w[read],
+              public: true,
+              revocable: false
+            }
+          }
+          config.environments = { test: { prefix_segment: "test" } }
+          config.current_environment = -> { :test }
+        end
+        user = User.create!(name: "Deletable Owner")
+        key = user.create_api_key!(name: "Public Key", key_type: :publishable)
+
+        refute key.revocable?
+        assert_difference -> { ApiKeys::ApiKey.count }, -1 do
+          user.destroy!
+        end
+        assert_nil ApiKeys::ApiKey.find_by(id: key.id)
+      end
+
       test "invalid expiration presets do not silently create permanent keys" do
         user = User.create!(name: "Expiration Owner")
 
