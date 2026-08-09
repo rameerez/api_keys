@@ -100,6 +100,13 @@ class ApiKeys::Test < ActiveSupport::TestCase
   # Reset configuration before each test
   def setup
     ApiKeys.reset_configuration!
+    token_session_key = "t" * ActiveSupport::MessageEncryptor.key_len("aes-256-gcm")
+    @token_session_encryptor = ActiveSupport::MessageEncryptor.new(
+      token_session_key,
+      cipher: "aes-256-gcm",
+      serializer: JSON
+    )
+    ApiKeys::TokenSession.stubs(:token_encryptor).returns(@token_session_encryptor)
     # Clear any existing records between tests
     ApiKeys::ApiKey.delete_all
     User.delete_all

@@ -8,6 +8,7 @@ module ApiKeys
       assert ApiKeys.configuration.https_only_production
       assert ApiKeys.configuration.https_strict_mode
       assert_nil ApiKeys.configuration.query_param
+      assert_equal 1.minute, ApiKeys.configuration.stats_update_interval
     end
 
     test "validates token generation configuration when assigned" do
@@ -85,6 +86,9 @@ module ApiKeys
       ApiKeys.configuration.cache_ttl = 0
       ApiKeys.configuration.cache_ttl = 5.seconds
       ApiKeys.configuration.cache_ttl = nil
+      ApiKeys.configuration.stats_update_interval = 0
+      ApiKeys.configuration.stats_update_interval = 5.minutes
+      ApiKeys.configuration.stats_update_interval = nil
 
       assert_equal %w[read write], ApiKeys.configuration.default_scopes
       assert ApiKeys.configuration.default_scopes.frozen?
@@ -100,7 +104,36 @@ module ApiKeys
       end
       [-1, Float::INFINITY, Float::NAN, "5"].each do |value|
         assert_raises(ArgumentError) { ApiKeys.configuration.cache_ttl = value }
+        assert_raises(ArgumentError) { ApiKeys.configuration.stats_update_interval = value }
       end
+    end
+
+    test "resolves the configured engine parent controller" do
+      custom_parent = Class.new
+
+      ApiKeys.configuration.parent_controller = custom_parent
+      assert_same custom_parent, ApiKeys.configuration.parent_controller_class
+
+      ApiKeys.configuration.parent_controller = "ApiKeys::Configuration"
+      assert_equal ApiKeys::Configuration, ApiKeys.configuration.parent_controller_class
+
+      [nil, Object.new, "not a constant", "Kernel.system('unsafe')"].each do |value|
+        assert_raises(ArgumentError) { ApiKeys.configuration.parent_controller = value }
+      end
+    end
+
+    test "preserves the legacy engine parent fallback without overriding explicit public configuration" do
+      original_engine_parent = ApiKeys::Engine.config.parent_controller
+      legacy_parent = Class.new
+      explicit_parent = Class.new
+      ApiKeys::Engine.config.parent_controller = legacy_parent
+
+      assert_same legacy_parent, ApiKeys.configuration.parent_controller_class
+
+      ApiKeys.configuration.parent_controller = explicit_parent
+      assert_same explicit_parent, ApiKeys.configuration.parent_controller_class
+    ensure
+      ApiKeys::Engine.config.parent_controller = original_engine_parent
     end
 
     test "validates boolean configuration" do

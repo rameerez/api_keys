@@ -92,9 +92,9 @@ module ApiKeys
       clear_enqueued_jobs
       controller.send(:authenticate_api_key!, scope: "write")
 
-      # Rendered unauthorized with missing scope
+      # The key authenticated, but lacks authorization for the requested scope.
       resp = controller.rendered
-      assert_equal :unauthorized, resp[:status]
+      assert_equal :forbidden, resp[:status]
       assert_equal :missing_scope, resp[:json][:error]
       assert_equal "write", resp[:json][:required_scope]
       assert_nil controller.send(:current_api_key), "a scope-denied key must not remain in controller state"
@@ -157,8 +157,91 @@ module ApiKeys
       controller2 = FakeController.new(FakeRequest.new(headers: { "Authorization" => "Bearer #{token2}" }))
       controller2.send(:authenticate_api_key!, scope: %w[read write])
       refute_nil controller2.rendered
+      assert_equal :forbidden, controller2.rendered[:status]
       assert_equal :missing_scope, controller2.rendered[:json][:error]
       assert_equal %w[read write], controller2.rendered[:json][:required_scope]
+    end
+
+    test "recent last-used updates are debounced when exact request counts are disabled" do
+      user = User.create!(name: "Debounced User")
+      key = user.create_api_key!(name: "Debounced Key")
+      token = key.token
+      key.update_column(:last_used_at, 30.seconds.ago)
+      controller = FakeController.new(FakeRequest.new(headers: { "Authorization" => "Bearer #{token}" }))
+
+      ApiKeys.configure do |config|
+        config.enable_async_operations = true
+        config.track_requests_count = false
+        config.stats_update_interval = 1.minute
+      end
+
+      clear_enqueued_jobs
+      controller.send(:authenticate_api_key!)
+
+      job_classes = ActiveJob::Base.queue_adapter.enqueued_jobs.map { |job| job[:job] }
+      refute_includes job_classes, ApiKeys::Jobs::UpdateStatsJob
+    end
+
+    test "stale last-used timestamps still enqueue a stats update" do
+      user = User.create!(name: "Stale Stats User")
+      key = user.create_api_key!(name: "Stale Stats Key")
+      token = key.token
+      key.update_column(:last_used_at, 2.minutes.ago)
+      controller = FakeController.new(FakeRequest.new(headers: { "Authorization" => "Bearer #{token}" }))
+
+      ApiKeys.configure do |config|
+        config.enable_async_operations = true
+        config.track_requests_count = false
+        config.stats_update_interval = 1.minute
+      end
+
+      clear_enqueued_jobs
+      controller.send(:authenticate_api_key!)
+
+      job_classes = ActiveJob::Base.queue_adapter.enqueued_jobs.map { |job| job[:job] }
+      assert_includes job_classes, ApiKeys::Jobs::UpdateStatsJob
+    end
+
+    test "request counting bypasses last-used debouncing so every request is counted" do
+      user = User.create!(name: "Counted Stats User")
+      key = user.create_api_key!(name: "Counted Stats Key")
+      token = key.token
+      key.update_column(:last_used_at, 1.second.ago)
+      controller = FakeController.new(FakeRequest.new(headers: { "Authorization" => "Bearer #{token}" }))
+
+      ApiKeys.configure do |config|
+        config.enable_async_operations = true
+        config.track_requests_count = true
+        config.stats_update_interval = 1.hour
+      end
+
+      clear_enqueued_jobs
+      controller.send(:authenticate_api_key!)
+
+      job_classes = ActiveJob::Base.queue_adapter.enqueued_jobs.map { |job| job[:job] }
+      assert_includes job_classes, ApiKeys::Jobs::UpdateStatsJob
+    end
+
+    test "zero or nil stats intervals disable last-used debouncing" do
+      user = User.create!(name: "Undebounced Stats User")
+      key = user.create_api_key!(name: "Undebounced Stats Key")
+      token = key.token
+      key.update_column(:last_used_at, 1.second.ago)
+
+      [0, nil].each do |interval|
+        ApiKeys.configure do |config|
+          config.enable_async_operations = true
+          config.track_requests_count = false
+          config.stats_update_interval = interval
+        end
+        controller = FakeController.new(FakeRequest.new(headers: { "Authorization" => "Bearer #{token}" }))
+
+        clear_enqueued_jobs
+        controller.send(:authenticate_api_key!)
+
+        job_classes = ActiveJob::Base.queue_adapter.enqueued_jobs.map { |job| job[:job] }
+        assert_includes job_classes, ApiKeys::Jobs::UpdateStatsJob
+      end
     end
 
       test "scope checks fail closed when authentication has not established a key" do

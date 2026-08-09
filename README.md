@@ -112,6 +112,16 @@ class ApplicationController < ActionController::Base
 end
 ```
 
+If the mounted dashboard should inherit from a different controller, configure it in the same initializer before the engine controllers load:
+
+```ruby
+ApiKeys.configure do |config|
+  config.parent_controller = "Admin::ApplicationController"
+end
+```
+
+The setting accepts a controller class or a valid constant-name string and defaults to `::ApplicationController`.
+
 #### Common scenarios
 
 **Organization with user membership:**
@@ -418,7 +428,7 @@ Methods available on `ApiKeys::ApiKey` instances:
 
 ### Token Session Helper
 
-Manages the "show token once" pattern for secret keys:
+Manages the "show token once" pattern for secret keys. The helper encrypts each handoff with an application-derived AES-256-GCM key, binds it to the created key, expires it after ten minutes, and deletes it on first retrieval. The session contains only ciphertext and the non-secret key ID—not the plaintext token—even when the host uses Rails' encrypted cookie session store.
 
 ```ruby
 # Store token after creation
@@ -435,6 +445,8 @@ ApiKeys::TokenSession.store(session, @api_key, key: :my_custom_key)
   api_key: @api_key
 )
 ```
+
+Treat the session payload as private implementation detail; use `store`, `available?`, and `retrieve_once` rather than reading it directly. A failed, expired, tampered, mismatched, or reused handoff returns `nil` and fails closed.
 
 ---
 
@@ -829,6 +841,8 @@ You can require a specific scope for any endpoint like:
 authenticate_api_key!(scope: "write")
 ```
 
+A missing or invalid credential returns HTTP 401. A valid key that lacks the requested scope is authenticated but unauthorized, so it returns HTTP 403 with `error: "missing_scope"`.
+
 It may be cleaner if you pass it as a Proc to `before_action` – and it may result in better-organized code if you do it endpoint-per-endpoint, immediately before each method definition, like this:
 
 ```ruby
@@ -993,6 +1007,15 @@ There's also a `track_requests_count` config option that you can turn on so the 
 
 But again, this is turned off by default for performance purposes, and depends on having a working, well-configured Active Job backend.
 
+When exact request counting is off, `last_used_at` updates are debounced for one minute by default to avoid one queue insert and database write for every high-volume API call:
+
+```ruby
+config.stats_update_interval = 5.minutes # coarser, lower write volume
+config.stats_update_interval = 0         # record every successful request
+```
+
+Enabling `track_requests_count` bypasses this debounce because every successful request must be counted. Set `enable_async_operations = false` if the application handles statistics and callbacks elsewhere and wants the gem to enqueue no background jobs.
+
 ## Key Types: Stripe-style Publishable & Secret Keys
 
 For applications that distribute software with embedded API keys (desktop apps, mobile apps, CLI tools), you may want to differentiate between key types with different permission levels. The `api_keys` gem supports Stripe-style publishable/secret key types with optional test/live environment isolation.
@@ -1095,6 +1118,7 @@ pk.destroy!    # Raises ApiKeys::Errors::KeyNotRevocableError
 ```
 
 The dashboard UI automatically hides the revoke button for non-revocable keys.
+Deleting the owning record still cascades deletion to all of its API keys, including non-revocable types, so account deletion and privacy-erasure flows cannot be blocked. The non-revocable guard applies to direct key-level user actions, not owner lifecycle cleanup.
 
 ### Public Keys (Viewable Tokens)
 

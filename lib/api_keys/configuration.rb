@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_support/core_ext/numeric/time"
+require "active_support/core_ext/string/inflections"
 require "active_support/security_utils"
 
 module ApiKeys
@@ -9,6 +10,7 @@ module ApiKeys
   class Configuration
     # Default empty callback proc
     DEFAULT_CALLBACK = ->(_context){}.freeze
+    DEFAULT_PARENT_CONTROLLER = "::ApplicationController"
 
     # == Accessors ==
 
@@ -24,7 +26,7 @@ module ApiKeys
     attr_accessor :key_store_adapter, :policy_provider
 
     # Engine Configuration
-    attr_accessor :parent_controller
+    attr_reader :parent_controller
 
     # Owner Context Configuration
     attr_reader :current_owner_method, :authenticate_owner_method
@@ -34,7 +36,7 @@ module ApiKeys
     attr_reader :expire_after, :default_scopes, :track_requests_count
 
     # Performance
-    attr_reader :cache_ttl
+    attr_reader :cache_ttl, :stats_update_interval
 
     # Security
     attr_reader :https_only_production, :https_strict_mode
@@ -112,6 +114,7 @@ module ApiKeys
     HTTP_HEADER_PATTERN = /\A[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}\z/
     QUERY_PARAM_PATTERN = /\A[a-zA-Z0-9_.~-]{1,128}\z/
     METHOD_NAME_PATTERN = /\A[a-zA-Z_]\w*[!?]?\z/
+    CONSTANT_NAME_PATTERN = /\A(?:::)?[A-Z]\w*(?:::[A-Z]\w*)*\z/
     BOOLEAN_SETTINGS = %i[
       require_key_name track_requests_count https_only_production https_strict_mode
       enable_async_operations debug_logging strict_environment_isolation
@@ -168,6 +171,34 @@ module ApiKeys
       end
 
       @cache_ttl = value
+    end
+
+    def stats_update_interval=(value)
+      unless value.nil?
+        seconds = value.to_f if value.respond_to?(:to_f)
+        valid = (value.is_a?(Numeric) || value.respond_to?(:from_now)) && seconds&.finite? && !seconds.negative?
+        raise ArgumentError, "stats_update_interval must be a finite non-negative duration/number or nil" unless valid
+      end
+
+      @stats_update_interval = value
+    end
+
+    def parent_controller=(value)
+      valid = value.is_a?(Class) || (value.is_a?(String) && value.match?(CONSTANT_NAME_PATTERN))
+      raise ArgumentError, "parent_controller must be a controller Class or a valid constant name" unless valid
+
+      @parent_controller = value.is_a?(String) ? value.dup.freeze : value
+      @parent_controller_explicitly_configured = true
+    end
+
+    def parent_controller_class
+      candidate = if !@parent_controller_explicitly_configured && defined?(ApiKeys::Engine) &&
+                     ApiKeys::Engine.config.parent_controller.present?
+                    ApiKeys::Engine.config.parent_controller
+                  else
+                    parent_controller
+                  end
+      candidate.is_a?(Class) ? candidate : candidate.constantize
     end
 
     BOOLEAN_SETTINGS.each do |setting|
@@ -471,7 +502,8 @@ module ApiKeys
       @policy_provider = "ApiKeys::BasePolicy" # Default authorization policy class name
 
       # Engine Configuration
-      @parent_controller = '::ApplicationController'
+      @parent_controller = DEFAULT_PARENT_CONTROLLER
+      @parent_controller_explicitly_configured = false
 
       # Owner Context Configuration
       @current_owner_method = :current_user # Default to current_user for backward compatibility
@@ -485,6 +517,7 @@ module ApiKeys
 
       # Performance
       @cache_ttl = 5.seconds # Good balance: fast revocation, mostly-cached – still allows most repeated requests to benefit from cache
+      @stats_update_interval = 1.minute # Debounce last_used_at writes unless exact request counting is enabled
 
       # Security
       @https_only_production = true # Warn if used over HTTP in production

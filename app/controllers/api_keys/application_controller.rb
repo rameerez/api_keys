@@ -7,7 +7,7 @@ module ApiKeys
   # Inherits from the host application's configured controller
   # (defaults to ::ApplicationController).
   # Includes common engine functionality.
-  class ApplicationController < ApiKeys::Engine.config.parent_controller.constantize
+  class ApplicationController < ApiKeys.configuration.parent_controller_class
     # Protect from forgery if the parent controller does
     # This ensures CSRF protection behaves consistently with the host app.
     protect_from_forgery with: :exception if respond_to?(:protect_from_forgery)

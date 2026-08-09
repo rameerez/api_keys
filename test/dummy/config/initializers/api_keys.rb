@@ -84,8 +84,10 @@ ApiKeys.configure do |config|
 
   # IMPORTANT: Usage Statistics & Background Jobs
   # ---------------------------------------------
-  # The api_keys gem executes callbacks and updates the `last_used_at` timestamp on every successful authentication
-  # and optionally increments `requests_count` if `track_requests_count` is true.
+  # The api_keys gem executes callbacks and updates `last_used_at` asynchronously.
+  # Timestamp updates are debounced for one minute by default when exact request
+  # counting is disabled. Enabling `track_requests_count` necessarily processes
+  # every successful authentication.
   # To avoid blocking the request cycle, these calls and updates are performed asynchronously
   # using ActiveJob (`ApiKeys::Jobs::UpdateStatsJob` and `ApiKeys::Jobs::CallbacksJob`)
   #
@@ -127,6 +129,11 @@ ApiKeys.configure do |config|
   # Note: Incrementing counters frequently can impact DB performance.
   # Default: false
   # config.track_requests_count = true
+
+  # Minimum interval between last_used_at jobs when exact request counting is
+  # disabled. Set to 0 or nil for per-request timestamp updates.
+  # Default: 1.minute
+  # config.stats_update_interval = 1.minute
 
   # === Callbacks ===
 

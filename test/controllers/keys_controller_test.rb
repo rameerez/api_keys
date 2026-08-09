@@ -35,6 +35,13 @@ module ApiKeys
     def setup
       super
       ApiKeys.reset_configuration!
+      token_session_key = "t" * ActiveSupport::MessageEncryptor.key_len("aes-256-gcm")
+      @token_session_encryptor = ActiveSupport::MessageEncryptor.new(
+        token_session_key,
+        cipher: "aes-256-gcm",
+        serializer: JSON
+      )
+      ApiKeys::TokenSession.stubs(:token_encryptor).returns(@token_session_encryptor)
       ApiKeys::ApiKey.delete_all
       User.delete_all
       @user = User.create!(name: "Dashboard Owner")
@@ -104,8 +111,13 @@ module ApiKeys
       assert_redirected_to key_path(key)
       payload = @request.session[ApiKeys::TokenSession::DEFAULT_SESSION_KEY]
       assert_equal key.id.to_s, payload["api_key_id"]
+      decrypted_payload = @token_session_encryptor.decrypt_and_verify(
+        payload["ciphertext"],
+        purpose: ApiKeys::TokenSession::ENCRYPTION_PURPOSE
+      )
+      refute_includes payload.inspect, decrypted_payload["token"]
       assert ApiKeys::Services::Digestor.match?(
-        token: payload["token"],
+        token: decrypted_payload["token"],
         stored_digest: key.token_digest,
         strategy: key.digest_algorithm.to_sym
       )
