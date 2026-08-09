@@ -20,6 +20,7 @@ module ApiKeys
           assert_includes migration, "index_exists?(:api_keys, COLUMNS, name: INDEX_NAME)"
           assert_includes migration, "algorithm] = :concurrently"
           assert_includes migration, "disable_ddl_transaction!"
+          refute_includes migration, "def migration_version"
         end
       end
     end
