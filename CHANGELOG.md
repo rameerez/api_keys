@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-09
+
+This security-focused release hardens authentication, authorization, credential handling, the self-serve dashboard, background jobs, configuration, dependencies, CI, and the release supply chain. Upgrading is strongly recommended. Existing installations must apply the authentication lookup migration before deploying this version.
+
 ### Security
 
 - Make token caching a non-authoritative ID lookup hint: every hit reloads current database state and cryptographically re-verifies the presented token, so revocation, expiration, scope changes, and cache poisoning fail closed.
@@ -29,6 +33,11 @@
 - Authentication identity fields (`token_digest`, algorithm, prefix, last four, owner, key type, and environment) can no longer be changed through normal Active Record updates after creation.
 - Typed keys with blank or retired environments now fail closed. Repair any such legacy rows before deployment; untyped legacy keys are unaffected.
 - When `key_types` is configured, new keys must pass `key_type:` or use a configured `default_key_type`; this does not invalidate existing untyped keys.
+- Authentication callbacks now execute asynchronously exactly once with small, credential-free context hashes instead of request, result, or model objects. Update callback consumers and ensure the application has a durable Active Job backend where delivery matters.
+- Production authentication now requires HTTPS by default and fails closed when a request appears insecure. Verify TLS termination and trusted proxy forwarding before deployment.
+- Scope and permission policy is enforced at creation, update, and authentication time. Malformed scopes and scopes above a configured ceiling are rejected; blank scopes deny access whenever a scope policy is enabled.
+- Reassess every permission ceiling configured with `public: true`. The gem validates that public tokens are non-revocable and finitely scoped, but only the host application can determine whether each named permission is safe for an untrusted client.
+- The actively security-tested matrix is Ruby 3.3, 3.4, and 4.0 with Rails 7.2, 8.0, and 8.1. The gemspec continues to permit Ruby 3.1+ for compatibility, but older runtimes are outside the documented security-support matrix.
 
 ## [0.3.0] - 2026-02-09
 
