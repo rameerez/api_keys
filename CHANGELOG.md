@@ -1,3 +1,7 @@
+## [0.4.3] - 2026-08-24
+
+- Republish of 0.4.2 with a clean package: the 0.4.2 gem shipped carrying a stray 200 KB `api_keys-0.4.1.gem` blob at its root (committed by accident during the release, harmless but dead weight). No code changes. Prefer this over 0.4.2.
+
 ## [0.4.2] - 2026-08-24
 
 ### Changed
