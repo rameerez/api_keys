@@ -58,6 +58,24 @@ ApiKeys.configure do |config|
   # Default: "‹ Home"
   # config.return_text = "‹ Back to Settings"
 
+  # Content Security Policy for the mounted dashboard pages.
+  #
+  #   :default (default) - Hardened, but compatible with a normal host layout.
+  #                        Blocks framing, plugins, <base> hijacking, and
+  #                        cross-origin form posts, while allowing same-origin
+  #                        scripts, styles, and fonts so your layout's asset
+  #                        tags keep working.
+  #   :strict            - Nonce-only: no script or stylesheet loads unless it
+  #                        carries the engine's per-request nonce. Only use this
+  #                        if your layout serves nothing un-nonced on these pages
+  #                        (Rails only nonces asset tags when you also set
+  #                        config.content_security_policy_nonce_auto = true).
+  #   false / nil        - Declare nothing; your application's own policy applies
+  #                        unchanged. You then have to allow the dashboard's
+  #                        nonced inline <style>/<script> yourself.
+  #
+  # config.dashboard_content_security_policy = :default
+
   # ============================================================================
   # TOKEN PREFIXES
   # ============================================================================

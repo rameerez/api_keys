@@ -63,15 +63,74 @@ module ApiKeys
       assert_equal "nosniff", response.headers["X-Content-Type-Options"]
       assert_equal "DENY", response.headers["X-Frame-Options"]
       assert_equal "camera=(), microphone=(), geolocation=()", response.headers["Permissions-Policy"]
-      csp = response.headers["Content-Security-Policy"] || @request.content_security_policy.build(
-        @controller,
-        @request.content_security_policy_nonce,
-        @request.content_security_policy_nonce_directives
-      )
-      assert_includes csp, "default-src 'none'"
+      csp = emitted_content_security_policy
       assert_includes csp, "frame-ancestors 'none'"
       assert_includes csp, "form-action 'self'"
       assert_match(/script-src[^;]*'nonce-[^']+'/i, csp)
+    end
+
+    test "default dashboard policy keeps host layout assets loadable" do
+      get :index
+
+      assert_response :success
+      csp = emitted_content_security_policy
+
+      # A host layout's own stylesheet_link_tag / javascript_include_tag never
+      # carry the nonce unless the host enables content_security_policy_nonce_auto,
+      # so the default policy has to trust same-origin assets or the dashboard
+      # renders unstyled and inert in a browser.
+      assert_includes csp, "default-src 'self'"
+      assert_match(/(\A|;\s*)script-src 'self' 'nonce-[^']+'/, csp)
+      assert_match(/(\A|;\s*)style-src 'self' 'nonce-[^']+'/, csp)
+      assert_includes csp, "font-src 'self' data:"
+      assert_includes csp, "img-src 'self' https: data:"
+
+      # Structural hardening survives the relaxation.
+      assert_includes csp, "base-uri 'none'"
+      assert_includes csp, "object-src 'none'"
+      assert_includes csp, "frame-ancestors 'none'"
+      assert_includes csp, "frame-src 'none'"
+      assert_includes csp, "form-action 'self'"
+      assert_includes csp, "connect-src 'self'"
+      refute_includes csp, "'unsafe-inline'"
+      refute_includes csp, "'unsafe-eval'"
+    end
+
+    test "strict dashboard policy still emits the nonce-only policy" do
+      ApiKeys.configuration.dashboard_content_security_policy = :strict
+
+      get :index
+
+      assert_response :success
+      csp = emitted_content_security_policy
+
+      # `'none'` next to a nonce is ignored by the CSP grammar, so the nonce is
+      # the only effective source: no same-origin script or stylesheet loads.
+      assert_includes csp, "default-src 'none'"
+      assert_match(/(\A|;\s*)script-src 'none' 'nonce-[^']+'/, csp)
+      assert_match(/(\A|;\s*)style-src 'none' 'nonce-[^']+'/, csp)
+      refute_match(/script-src[^;]*'self'/, csp)
+      refute_match(/style-src[^;]*'self'/, csp)
+      assert_includes csp, "img-src 'self' data:"
+      refute_includes csp, "font-src"
+
+      assert_includes csp, "base-uri 'none'"
+      assert_includes csp, "object-src 'none'"
+      assert_includes csp, "frame-ancestors 'none'"
+    end
+
+    test "disabled dashboard policy leaves the host policy untouched" do
+      ApiKeys.configuration.dashboard_content_security_policy = false
+
+      get :index
+
+      assert_response :success
+      assert_nil @request.content_security_policy
+      assert_nil response.headers["Content-Security-Policy"]
+
+      # Security headers are independent of the CSP setting.
+      assert_equal "DENY", response.headers["X-Frame-Options"]
+      assert_includes response.headers["Cache-Control"], "no-store"
     end
 
     test "configured authentication method cannot succeed without an owner" do
@@ -164,6 +223,18 @@ module ApiKeys
 
       assert_redirected_to keys_path
       assert_equal "API key not found.", flash[:alert]
+    end
+
+    private
+
+    # Functional tests bypass the CSP middleware, so build the header the way the
+    # middleware would from whatever policy the controller declared.
+    def emitted_content_security_policy
+      response.headers["Content-Security-Policy"] || @request.content_security_policy.build(
+        @controller,
+        @request.content_security_policy_nonce,
+        @request.content_security_policy_nonce_directives
+      )
     end
   end
 end

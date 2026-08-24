@@ -184,6 +184,8 @@ Tweak colors and spacing by overriding CSS variables in your application's style
 }
 ```
 
+Engine pages ship an enforcing Content Security Policy. The default allows same-origin scripts, styles, and fonts, so your own stylesheet loads normally — see [Dashboard Content Security Policy](#dashboard-content-security-policy) to tighten or disable it.
+
 #### Building Custom Integrations
 
 If you need complete control over the UI (e.g., to match your design system with Tailwind, Bootstrap, etc.), you can build your own views and controllers while using the gem's model layer and helpers.
@@ -972,6 +974,51 @@ Increase the TTL to reduce repeated lookup work without making cached state auth
 ```ruby
 config.cache_ttl = 2.minutes
 ```
+
+### Dashboard Content Security Policy
+
+The mounted dashboard renders credential material, so it declares its own enforcing `Content-Security-Policy` on engine pages even when your application has none. You choose how strict it is:
+
+```ruby
+config.dashboard_content_security_policy = :default # :default (default), :strict, or false/nil
+```
+
+| Value | Behavior |
+|-------|----------|
+| `:default` | Hardened, but compatible with a normal host layout. |
+| `:strict` | Nonce-only: nothing loads unless it carries the engine's per-request nonce. |
+| `false` / `nil` | The gem declares nothing; your application's policy applies unchanged. |
+
+**`:default`** emits (nonce regenerated per request):
+
+```
+base-uri 'none'; object-src 'none'; frame-ancestors 'none'; frame-src 'none';
+form-action 'self'; connect-src 'self'; default-src 'self';
+script-src 'self' 'nonce-…'; style-src 'self' 'nonce-…';
+font-src 'self' data:; img-src 'self' https: data:
+```
+
+Framing, plugins, `<base>` hijacking, and cross-origin form posts stay blocked, and the dashboard's own inline `<style>`/`<script>` blocks stay nonce-gated — but your layout's stylesheets, scripts, and self-hosted webfonts still load.
+
+**`:strict`** restores the nonce-only policy: `default-src 'none'` with no source expression for scripts or styles, so the per-request nonce is the only thing that can run.
+
+```ruby
+config.dashboard_content_security_policy = :strict
+```
+
+Only use `:strict` if the layout rendered on engine pages serves nothing un-nonced. Rails does **not** put the nonce on `stylesheet_link_tag` / `javascript_include_tag` unless the host application opts in:
+
+```ruby
+# config/application.rb — required for :strict with a normal host layout
+config.content_security_policy_nonce_generator = ->(request) { SecureRandom.base64(16) }
+config.content_security_policy_nonce_auto = true
+```
+
+Without that, `:strict` blocks your layout's own asset tags and the dashboard renders unstyled and inert. The gem's built-in layout is fully self-contained and works under `:strict` as-is.
+
+**`false` / `nil`** leaves your application's policy completely alone. If your policy is nonce-based, allow the dashboard's nonced inline `<style>` and `<script>` yourself.
+
+Any directive the gem does not set is inherited from your application's policy.
 
 
 ## Callbacks: analytics, logging, usage monitoring & auditing

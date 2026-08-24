@@ -18,25 +18,11 @@ module ApiKeys
     # The dashboard renders credential material, so give it an enforcing,
     # self-contained CSP even when the host application has not configured one.
     # Preserve any host directives we do not explicitly tighten.
-    before_action :prepare_api_keys_content_security_policy_nonce
-    if respond_to?(:content_security_policy)
-      content_security_policy do |policy|
-        policy.default_src :none
-        policy.base_uri :none
-        policy.object_src :none
-        policy.frame_ancestors :none
-        policy.frame_src :none
-        policy.form_action :self
-        # Rails appends the per-request nonce to these directives. `none` leaves
-        # the nonce as the only effective source instead of trusting every
-        # same-origin script or stylesheet.
-        policy.script_src :none
-        policy.style_src :none
-        policy.img_src :self, :data
-        policy.connect_src :self
-      end
-      content_security_policy_report_only false
-    end
+    #
+    # The policy is selected by `ApiKeys.configuration.dashboard_content_security_policy`
+    # and resolved per request, so host applications can relax or disable it from
+    # an initializer. See `apply_api_keys_content_security_policy` below.
+    before_action :apply_api_keys_content_security_policy
 
     # Ensure the owner is authenticated for all actions within this engine
     # This uses the configured authentication method (defaults to authenticate_user!)
@@ -44,6 +30,54 @@ module ApiKeys
     after_action :set_api_keys_security_headers
 
     private
+
+    # Declares the dashboard's Content Security Policy for this request.
+    #
+    # `:default` keeps every structural protection (no framing, no plugins, no
+    # `<base>` hijacking, same-origin form submission) while still trusting
+    # same-origin scripts, styles, and fonts. That matters because Rails only
+    # stamps the per-request nonce onto `stylesheet_link_tag` / `javascript_include_tag`
+    # when the host sets `config.content_security_policy_nonce_auto`, which is off
+    # by default and which this engine cannot turn on for the host. Without a
+    # source expression the host layout's own asset tags are blocked and the
+    # dashboard renders unstyled and inert.
+    #
+    # `:strict` restores the nonce-only policy for applications whose layout
+    # serves nothing un-nonced on engine pages. `false`/`nil` declares nothing.
+    def apply_api_keys_content_security_policy
+      mode = ApiKeys.configuration.dashboard_content_security_policy
+      return unless mode # false/nil: leave the host application's policy alone
+      return unless request.respond_to?(:content_security_policy=)
+
+      prepare_api_keys_content_security_policy_nonce
+
+      policy = request.content_security_policy&.clone || ActionDispatch::ContentSecurityPolicy.new
+      policy.base_uri :none
+      policy.object_src :none
+      policy.frame_ancestors :none
+      policy.frame_src :none
+      policy.form_action :self
+      policy.connect_src :self
+
+      if mode == :strict
+        # Rails appends the per-request nonce to script-src/style-src. `none`
+        # leaves the nonce as the only effective source instead of trusting
+        # every same-origin script or stylesheet.
+        policy.default_src :none
+        policy.script_src :none
+        policy.style_src :none
+        policy.img_src :self, :data
+      else
+        policy.default_src :self
+        policy.script_src :self
+        policy.style_src :self
+        policy.font_src :self, :data
+        policy.img_src :self, :https, :data
+      end
+
+      request.content_security_policy = policy
+      request.content_security_policy_report_only = false if request.respond_to?(:content_security_policy_report_only=)
+    end
 
     def prepare_api_keys_content_security_policy_nonce
       return unless request.respond_to?(:content_security_policy_nonce_generator=)
