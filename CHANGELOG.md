@@ -1,3 +1,10 @@
+## [0.4.2] - 2026-08-24
+
+### Changed
+
+- No library changes. Development-dependency and CI bumps (sqlite3 2.9.6 — clears GHSA-mwm8-39rw-8826 in the dummy app, thruster 0.1.25, brakeman 8.0.6, CodeQL and release-gem action pins).
+- Release housekeeping: 0.4.1 shipped to RubyGems with the dashboard CSP fix, but its GitHub release page was lost to the repository's immutable-release rule during the cut and its tag points at a pre-squash commit (tree-identical to main). 0.4.2 consolidates: this tag is on main and this release page carries 0.4.1's notes below.
+
 ## [0.4.1] - 2026-08-24
 
 ### Fixed
