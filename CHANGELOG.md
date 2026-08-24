@@ -1,8 +1,17 @@
-## [Unreleased]
+## [0.4.1] - 2026-08-24
 
 ### Fixed
 
+- Stop the dashboard's Content Security Policy from blocking the host application's own stylesheets, scripts, and self-hosted webfonts. The 0.4.0 policy declared `default-src 'none'` with `script-src`/`style-src` reduced to the per-request nonce, but Rails only stamps that nonce onto `stylesheet_link_tag`/`javascript_include_tag` when the host application sets `content_security_policy_nonce_auto` (off by default, and not something an engine can enable for its host). Any application rendering its normal layout on engine pages got an unstyled, inert dashboard with no server-side error. The default policy now trusts same-origin scripts, styles, and fonts, adds `font-src`, and allows `https:` images, while keeping the nonce, `default-src 'self'`, `base-uri 'none'`, `object-src 'none'`, `frame-ancestors 'none'`, `frame-src 'none'`, `form-action 'self'`, and `connect-src 'self'`.
 - Stop generated install and authentication-index migrations from carrying an unreachable `migration_version` instance method; the generator already renders the Active Record version into each migration superclass.
+
+### Added
+
+- `config.dashboard_content_security_policy` selects the policy the mounted dashboard declares: `:default` (new default, hardened but compatible with a normal host layout), `:strict` (the 0.4.0 nonce-only policy, unchanged), or `false`/`nil` to declare nothing and leave the host application's policy alone. The setting is resolved per request and validated on assignment.
+
+### Upgrade notes
+
+- Applications that relied on the 0.4.0 nonce-only dashboard policy should set `config.dashboard_content_security_policy = :strict` to keep it. That policy requires a layout that serves nothing un-nonced on engine pages; the gem's built-in layout satisfies it, and host layouts additionally need `config.content_security_policy_nonce_auto = true`.
 
 ### Maintenance
 

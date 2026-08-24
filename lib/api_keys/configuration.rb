@@ -56,6 +56,20 @@ module ApiKeys
     # Engine UI Configuration
     attr_accessor :return_url, :return_text
 
+    # Dashboard Content Security Policy
+    #
+    # @!attribute [rw] dashboard_content_security_policy
+    #   @return [Symbol, false, nil] Which Content-Security-Policy the mounted
+    #     dashboard declares for its own pages.
+    #     - `:default` (default) — hardened but host-compatible: same-origin
+    #       scripts, styles, and fonts are allowed alongside the engine's
+    #       per-request nonce, so a host layout's asset tags keep working.
+    #     - `:strict` — nonce-only: `default-src 'none'` with no source
+    #       expression for scripts or styles. Requires a host layout that
+    #       serves no un-nonced assets on engine pages.
+    #     - `false` / `nil` — declare nothing and leave the host policy alone.
+    attr_reader :dashboard_content_security_policy
+
     # Debugging
     attr_reader :debug_logging
 
@@ -108,6 +122,7 @@ module ApiKeys
 
     VALID_HASH_STRATEGIES = %i[sha256 bcrypt].freeze
     VALID_TOKEN_ALPHABETS = %i[base58 hex].freeze
+    VALID_DASHBOARD_CONTENT_SECURITY_POLICIES = [:default, :strict, false, nil].freeze
     TOKEN_LENGTH_RANGE = (16..64)
     MAX_CONFIGURED_SCOPES = 100
     CONFIG_NAME_PATTERN = /\A[a-zA-Z0-9_-]{1,64}\z/
@@ -292,6 +307,23 @@ module ApiKeys
       end
 
       @token_alphabet = value
+    end
+
+    # Selects the Content-Security-Policy the dashboard declares for its own pages.
+    # `true` is accepted as an alias for `:default`; Strings are normalized to Symbols.
+    def dashboard_content_security_policy=(value)
+      normalized = case value
+                   when true then :default
+                   when String then value.to_sym
+                   else value
+                   end
+
+      unless VALID_DASHBOARD_CONTENT_SECURITY_POLICIES.include?(normalized)
+        raise ArgumentError,
+              "dashboard_content_security_policy must be :default, :strict, false, or nil"
+      end
+
+      @dashboard_content_security_policy = normalized
     end
 
     def hash_strategy=(value)
@@ -540,6 +572,12 @@ module ApiKeys
       # Engine UI Configuration
       @return_url = "/" # Default fallback path
       @return_text = "‹ Home" # Default link text
+
+      # Dashboard Content Security Policy
+      # Hardened, but compatible with a normal host layout: same-origin scripts,
+      # styles, and fonts load, and the engine's inline blocks stay nonce-gated.
+      # Use :strict for the nonce-only policy, or false/nil to declare nothing.
+      @dashboard_content_security_policy = :default
 
       # Debugging
       @debug_logging = false # Disable debug logging by default (warn and error get logged regardless of this)

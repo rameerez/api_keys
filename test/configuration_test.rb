@@ -11,6 +11,30 @@ module ApiKeys
       assert_equal 1.minute, ApiKeys.configuration.stats_update_interval
     end
 
+    test "dashboard content security policy defaults to the host-compatible policy" do
+      assert_equal :default, ApiKeys.configuration.dashboard_content_security_policy
+    end
+
+    test "validates the dashboard content security policy setting" do
+      ApiKeys.configuration.dashboard_content_security_policy = :strict
+      assert_equal :strict, ApiKeys.configuration.dashboard_content_security_policy
+
+      ApiKeys.configuration.dashboard_content_security_policy = "default"
+      assert_equal :default, ApiKeys.configuration.dashboard_content_security_policy
+
+      ApiKeys.configuration.dashboard_content_security_policy = true
+      assert_equal :default, ApiKeys.configuration.dashboard_content_security_policy
+
+      ApiKeys.configuration.dashboard_content_security_policy = false
+      assert_equal false, ApiKeys.configuration.dashboard_content_security_policy
+
+      ApiKeys.configuration.dashboard_content_security_policy = nil
+      assert_nil ApiKeys.configuration.dashboard_content_security_policy
+
+      assert_raises(ArgumentError) { ApiKeys.configuration.dashboard_content_security_policy = :paranoid }
+      assert_raises(ArgumentError) { ApiKeys.configuration.dashboard_content_security_policy = 1 }
+    end
+
     test "validates token generation configuration when assigned" do
       assert_raises(ArgumentError) { ApiKeys.configuration.token_length = 0 }
       assert_raises(ArgumentError) { ApiKeys.configuration.token_length = 1_000_000 }
