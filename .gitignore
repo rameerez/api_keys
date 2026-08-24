@@ -41,3 +41,4 @@ deploy.yml
 # Global bundler/vendor ignores
 vendor/
 vendor/bundle/
+*.gem
