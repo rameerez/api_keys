@@ -69,6 +69,7 @@ ActiveRecord::Schema.define do
     t.references :owner, polymorphic: true, null: true # type: :bigint assumed by default
     t.text     :scopes, default: "[]", null: false # Use text for SQLite JSON
     t.text     :metadata, default: "{}", null: false # Use text for SQLite JSON
+    t.text     :restrictions, default: "{}", null: false # Origin/IP request restrictions
     t.datetime :expires_at
     t.datetime :last_used_at
     t.bigint   :requests_count, default: 0, null: false
@@ -95,6 +96,7 @@ end
 json_col_type = :json
 ApiKeys::ApiKey.attribute :scopes, json_col_type, default: []
 ApiKeys::ApiKey.attribute :metadata, json_col_type, default: {}
+ApiKeys::ApiKey.attribute :restrictions, json_col_type, default: {}
 
 puts "Database schema loaded."
 

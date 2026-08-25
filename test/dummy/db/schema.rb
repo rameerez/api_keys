@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_08_160000) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_25_120000) do
   create_table "api_keys", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "digest_algorithm", null: false
@@ -25,6 +25,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_08_160000) do
     t.string "owner_type"
     t.string "prefix", null: false
     t.bigint "requests_count", default: 0, null: false
+    t.json "restrictions", default: {}, null: false
     t.datetime "revoked_at"
     t.json "scopes", default: [], null: false
     t.string "token_digest", null: false
