@@ -581,7 +581,7 @@ module ApiKeys
       return if entries.all? { |entry| yield(entry) }
 
       message = if kind == :origins
-                  "origins must be bare hosts, optionally prefixed with a `*.` subdomain wildcard"
+                  "origins must be bare hosts like example.com or *.example.com"
                 else
                   "ips must be valid IPv4/IPv6 addresses or CIDR ranges"
                 end
