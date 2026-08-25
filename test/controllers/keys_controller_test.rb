@@ -189,6 +189,74 @@ module ApiKeys
       assert_match(/<script\s+nonce="[^"]+">/i, response.body)
     end
 
+    test "the new key form offers the request restriction fields" do
+      get :new
+
+      assert_response :success
+      assert_includes response.body, "Allowed web origins"
+      assert_includes response.body, "api_key[allowed_origins]"
+      assert_includes response.body, "Allowed IP addresses"
+      assert_includes response.body, "api_key[allowed_ips]"
+    end
+
+    test "the edit form shows a key's current restrictions" do
+      key = @user.create_api_key!(name: "Widget", allowed_origins: "example.com, *.example.com")
+
+      get :edit, params: { id: key.id }
+
+      assert_response :success
+      assert_includes response.body, "example.com, *.example.com"
+    end
+
+    test "create locks the new key to the submitted origins and addresses" do
+      post :create, params: { api_key: { name: "Widget Key", allowed_origins: "https://Example.com/, *.example.com",
+                                         allowed_ips: "10.0.0.0/8" } }
+
+      key = @user.api_keys.order(:created_at).last
+      assert_redirected_to key_path(key)
+      assert_equal ["example.com", "*.example.com"], key.allowed_origins
+      assert_equal ["10.0.0.0/8"], key.allowed_ips
+    end
+
+    test "update can tighten and clear a key's restrictions" do
+      key = @user.create_api_key!(name: "Widget", allowed_origins: "example.com")
+
+      patch :update, params: { id: key.id, api_key: { name: "Widget", allowed_origins: "shop.example.com" } }
+
+      assert_redirected_to keys_path
+      assert_equal ["shop.example.com"], key.reload.allowed_origins
+
+      patch :update, params: { id: key.id, api_key: { name: "Widget", allowed_origins: "" } }
+
+      refute key.reload.restricted?
+    end
+
+    test "update rejects a malformed restriction entry without saving it" do
+      key = @user.create_api_key!(name: "Widget", allowed_origins: "example.com")
+
+      patch :update, params: { id: key.id, api_key: { name: "Widget", allowed_origins: "*" } }
+
+      assert_response :unprocessable_entity
+      assert_includes flash[:alert], "bare hosts"
+      assert_equal ["example.com"], key.reload.allowed_origins
+    end
+
+    test "the restricted badge appears only for keys that carry restrictions" do
+      @user.create_api_key!(name: "Locked", allowed_origins: "example.com")
+
+      get :index
+
+      assert_response :success
+      assert_includes response.body, "api-keys-badge api-keys-badge-restricted"
+
+      ApiKeys::ApiKey.delete_all
+      @user.create_api_key!(name: "Open")
+
+      get :index
+
+      refute_includes response.body, "api-keys-badge api-keys-badge-restricted"
+    end
+
     test "malformed create payloads return bad request without entering error rendering" do
       post :create, params: { api_key: "not-an-object" }
 
