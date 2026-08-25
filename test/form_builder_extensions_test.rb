@@ -67,11 +67,11 @@ module ApiKeys
       builder = FakeBuilder.new
 
       html = builder.api_key_scopes_checkboxes(%w[read write], checked: [:read]) do |scope, checked|
-        "<#{scope}:#{checked}>".html_safe
+        ERB::Util.html_escape("<#{scope}:#{checked}>")
       end
 
       assert_instance_of ActiveSupport::SafeBuffer, html
-      assert_equal "<read:true><write:false>", html
+      assert_equal "&lt;read:true&gt;&lt;write:false&gt;", html
     end
 
     test "token data is empty for unrelated objects and safe for every key type" do
