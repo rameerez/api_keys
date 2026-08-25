@@ -6,7 +6,7 @@
   <% allowed_kinds = api_keys_allowed_restriction_kinds(api_key) %>
 
   <% if allowed_kinds.include?(:origins) %>
-    <div>
+    <div data-api-keys-restriction-kind="origins">
       <%= form.label :allowed_origins, "Allowed web origins (optional)" %>
       <%= form.text_field :allowed_origins,
                           value: api_key.allowed_origins.join(", "),
@@ -19,7 +19,7 @@
   <% end %>
 
   <% if allowed_kinds.include?(:ips) %>
-    <div>
+    <div data-api-keys-restriction-kind="ips">
       <%= form.label :allowed_ips, "Allowed IP addresses (optional)" %>
       <%= form.text_field :allowed_ips,
                           value: api_key.allowed_ips.join(", "),

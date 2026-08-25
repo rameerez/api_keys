@@ -312,7 +312,7 @@ module ApiKeys
         result = ApiKeys::Services::Authenticator.call(request)
 
         refute result.success?
-        assert_nil result.api_key
+        assert_equal @api_key.id, result.api_key&.id
         assert_equal :revoked_key, result.error_code
       end
 
@@ -324,7 +324,7 @@ module ApiKeys
         result = ApiKeys::Services::Authenticator.call(request)
 
         refute result.success?
-        assert_nil result.api_key
+        assert_equal @api_key.id, result.api_key&.id
         assert_equal :expired_key, result.error_code
       end
 
@@ -410,6 +410,7 @@ module ApiKeys
 
         refute result.success?
         assert_equal :unknown_key_type, result.error_code
+        assert_equal key.id, result.api_key&.id
       end
 
       test "typed keys fail closed when their environment is blank or retired" do
@@ -428,12 +429,14 @@ module ApiKeys
         blank_result = Authenticator.call(mock_request(headers: { "Authorization" => "Bearer #{token}" }))
         refute blank_result.success?
         assert_equal :unknown_environment, blank_result.error_code
+        assert_equal key.id, blank_result.api_key&.id
 
         key.update_column(:environment, "test")
         ApiKeys.configuration.environments = { live: { prefix_segment: "live" } }
         retired_result = Authenticator.call(mock_request(headers: { "Authorization" => "Bearer #{token}" }))
         refute retired_result.success?
         assert_equal :unknown_environment, retired_result.error_code
+        assert_equal key.id, retired_result.api_key&.id
       end
 
       test "strict environment isolation fails closed when its resolver raises" do

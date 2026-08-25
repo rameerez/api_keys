@@ -16,7 +16,7 @@ module ApiKeys
     # Failures where the credential is valid but the request context is refused.
     # The key itself is fine, so these answer 403 rather than 401 — the same
     # distinction `:missing_scope` already makes.
-    FORBIDDEN_ERROR_CODES = %i[origin_not_allowed ip_not_allowed].freeze
+    FORBIDDEN_ERROR_CODES = %i[origin_not_allowed ip_not_allowed restriction_misconfigured].freeze
 
     included do
       # Helper methods to access the authenticated key and its owner

@@ -51,10 +51,10 @@ module ApiKeys
       assert_equal "tenant_", ApiKeys.configuration.resolved_token_prefix
     end
 
-    test "public key types must be explicitly non-revocable and least privilege" do
-      assert_raises(ArgumentError) do
+    test "public key types must be least privilege but may be revocable" do
+      assert_nothing_raised do
         ApiKeys.configuration.key_types = {
-          unsafe: { prefix: "pk", permissions: %w[read], public: true, revocable: true }
+          safe: { prefix: "pk", permissions: %w[read], public: true, revocable: true }
         }
       end
 

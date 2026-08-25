@@ -97,6 +97,9 @@ class RestrictionsTest < ApiKeys::Test
     assert ApiKeys::Restrictions.valid_origin_entry?("example.com")
     assert ApiKeys::Restrictions.valid_origin_entry?("*.example.com")
     assert ApiKeys::Restrictions.valid_origin_entry?("localhost")
+    assert ApiKeys::Restrictions.valid_origin_entry?("2001:db8::1")
+    refute ApiKeys::Restrictions.valid_origin_entry?("#{'a' * 64}.example.com")
+    refute ApiKeys::Restrictions.valid_origin_entry?("#{'a' * 250}.com")
   end
 
   test "a locked origin list refuses a nil or blank host" do
@@ -131,14 +134,25 @@ class RestrictionsTest < ApiKeys::Test
     assert_equal ["example.com"], ApiKeys::Restrictions.normalize_origins("Example.com, https://example.com/, example.com")
   end
 
-  test "normalize_origins drops entries with nothing host-like in them" do
-    assert_equal ["example.com"], ApiKeys::Restrictions.normalize_origins("https://, example.com,   ")
+  test "normalize_origins preserves invalid nonblank entries for validation" do
+    assert_equal ["https://", "example.com"], ApiKeys::Restrictions.normalize_origins("https://, example.com,   ")
     assert_empty ApiKeys::Restrictions.normalize_origins(nil)
     assert_empty ApiKeys::Restrictions.normalize_origins("")
   end
 
   test "normalize_origins accepts arrays as well as raw strings" do
     assert_equal ["a.com", "b.com"], ApiKeys::Restrictions.normalize_origins(["A.com", "https://b.com"])
+    assert_equal ["a.com", 42], ApiKeys::Restrictions.normalize_origins(["A.com", "  ", 42])
+  end
+
+  test "origin normalization handles IP literals and empty host fragments" do
+    assert_equal "2001:db8::1", ApiKeys::Restrictions.origin_host("[2001:db8::1]:8443")
+    assert_equal "2001:db8::1", ApiKeys::Restrictions.origin_host("2001:DB8::1")
+    assert_nil ApiKeys::Restrictions.origin_host("")
+    assert_nil ApiKeys::Restrictions.origin_host("/")
+    assert_nil ApiKeys::Restrictions.host_from_url(42)
+    assert_nil ApiKeys::Restrictions.host_from_url("  ")
+    assert_nil ApiKeys::Restrictions.host_from_url("relative/path")
   end
 
   test "normalize_origins keeps invalid entries for validation to report" do
@@ -210,15 +224,12 @@ class RestrictionsTest < ApiKeys::Test
     assert ApiKeys::Restrictions.none.ip_allowed?(nil)
   end
 
-  test "an unparseable stored IP entry matches nothing and warns once" do
-    logger = RecordingLogger.new
-    Rails.stubs(:logger).returns(logger)
-
+  test "an unparseable stored IP entry makes the whole policy fail closed" do
     locked = restrictions(ips: ["10.0.0.0/8", "not-an-ip"])
 
-    assert locked.ip_allowed?("10.1.2.3"), "a valid sibling entry must still match"
+    assert locked.malformed?
+    refute locked.ip_allowed?("10.1.2.3"), "a valid sibling must not hide policy corruption"
     refute locked.ip_allowed?("192.0.2.1")
-    assert logger.warnings.any? { |message| message.include?("unparseable stored IP restriction entry") }
   end
 
   test "normalize_ips splits, downcases, and de-duplicates" do
@@ -303,9 +314,24 @@ class RestrictionsTest < ApiKeys::Test
   end
 
   test "wrap never raises on values that are not hashes" do
-    assert ApiKeys::Restrictions.wrap("garbage").unrestricted?
-    assert ApiKeys::Restrictions.wrap([1, 2, 3]).unrestricted?
-    assert ApiKeys::Restrictions.wrap(42).unrestricted?
+    ["garbage", [1, 2, 3], 42].each do |value|
+      wrapped = ApiKeys::Restrictions.wrap(value)
+      assert wrapped.malformed?
+      refute wrapped.unrestricted?
+    end
+  end
+
+  test "wrap fails closed when a hostile hash raises during coercion" do
+    hostile = Class.new(Hash) do
+      def partition
+        raise "hostile hash"
+      end
+    end.new
+
+    wrapped = ApiKeys::Restrictions.wrap(hostile)
+
+    assert wrapped.malformed?
+    refute wrapped.unrestricted?
   end
 
   test "wrap keeps unknown keys so validation can name them" do
@@ -324,8 +350,8 @@ class RestrictionsTest < ApiKeys::Test
 
   test "wrap coerces a scalar list value into a single entry" do
     assert_equal [42], ApiKeys::Restrictions.wrap("origins" => 42).origins
-    assert_empty ApiKeys::Restrictions.normalize_origins(42), "a scalar is not host-like, so nothing survives"
-    assert_empty ApiKeys::Restrictions.normalize_ips(42)
+    assert_equal [42], ApiKeys::Restrictions.normalize_origins(42)
+    assert_equal [42], ApiKeys::Restrictions.normalize_ips(42)
   end
 
   test "equal restrictions hash alike, so they work as hash keys" do

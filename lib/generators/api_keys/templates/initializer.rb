@@ -139,9 +139,9 @@ ApiKeys.configure do |config|
   # - permissions: Scope ceiling - array of allowed scopes, or :all for unrestricted
   # - revocable:   Whether keys of this type can be revoked/deleted (default: true)
   # - limit:       Max keys of this type per owner per environment (nil = unlimited)
-  # - public:      If true AND revocable: false, stores plaintext token in metadata
-  #                so it can be viewed again in the dashboard. Use ONLY for publishable
-  #                keys designed to be embedded in distributed apps. Public types must
+  # - public:      If true, stores plaintext token in metadata so it can be viewed
+  #                again in the dashboard. Use ONLY for publishable keys designed
+  #                to be embedded in distributed apps. Public types must
   #                use a finite, non-empty permissions array (never :all). (default: false)
   #                SECURITY: NEVER set public: true on secret keys!
   # - restrictions: Which request-restriction kinds keys of this type may carry:
@@ -153,7 +153,6 @@ ApiKeys.configure do |config|
   #   publishable: {
   #     prefix: "pk",                    # → pk_test_, pk_live_
   #     permissions: %w[read validate],  # Can ONLY have these scopes
-  #     revocable: false,                # Cannot be revoked - protects deployed apps!
   #     public: true,                    # Store token for later viewing in dashboard
   #     limit: 1,                        # Only 1 publishable key per environment
   #     restrictions: [:origins]         # Browser keys lock to domains, not IPs
@@ -294,7 +293,8 @@ ApiKeys.configure do |config|
   # Referer); IPs are matched with CIDR support. Within a list any entry
   # admits the request; every list that is set must pass. Keys with no
   # restrictions work from anywhere, so nothing changes until you opt in.
-  # Failures answer 403 with `origin_not_allowed` / `ip_not_allowed`.
+  # Policy mismatches answer 403 with `origin_not_allowed` / `ip_not_allowed`.
+  # Malformed stored policy also fails closed with `restriction_misconfigured`.
   #
   # Requires the restrictions column:
   #   rails generate api_keys:add_restrictions && rails db:migrate
@@ -303,10 +303,12 @@ ApiKeys.configure do |config|
   # How the client IP is resolved for `allowed_ips` checks.
   # The default trusts Rails' own resolution, which honors
   # config.action_dispatch.trusted_proxies. Behind a CDN that terminates the
-  # connection, either configure trusted_proxies or resolve the header yourself.
+  # connection, configure trusted_proxies whenever possible. Trust a vendor
+  # header directly only when your network ingress rejects requests that
+  # bypass that vendor; otherwise callers can spoof the address being checked.
   # Default: ->(request) { request.remote_ip }
   #
-  # config.client_ip_resolver = ->(request) { request.headers["CF-Connecting-IP"].presence || request.remote_ip }
+  # config.client_ip_resolver = ->(request) { request.headers.fetch("CF-Connecting-IP") }
 
   # ============================================================================
   # BACKGROUND JOBS & CALLBACKS

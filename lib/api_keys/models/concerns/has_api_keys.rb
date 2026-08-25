@@ -382,6 +382,10 @@ module ApiKeys
         def build_restrictions(restrictions, allowed_origins, allowed_ips)
           return nil if restrictions.nil? && allowed_origins.nil? && allowed_ips.nil?
 
+          unless restrictions.nil? || restrictions.is_a?(Hash) || restrictions.is_a?(ApiKeys::Restrictions)
+            raise ArgumentError, "restrictions must be a Hash or ApiKeys::Restrictions"
+          end
+
           attributes = ApiKeys::Restrictions.wrap(restrictions).to_h
           attributes["origins"] = ApiKeys::Restrictions.normalize_origins(allowed_origins) unless allowed_origins.nil?
           attributes["ips"] = ApiKeys::Restrictions.normalize_ips(allowed_ips) unless allowed_ips.nil?

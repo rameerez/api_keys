@@ -20,8 +20,29 @@ module ApiKeys
           assert_includes migration, "def json_column_type"
           assert_includes migration, ":jsonb"
           assert_includes migration, "rescue ActiveRecord::ConnectionNotEstablished"
+          assert_includes migration, "jsonb_typeof(restrictions) = 'object'"
+          assert_includes migration, "json_type(restrictions) = 'object'"
+          assert_includes migration, "JSON_TYPE(restrictions) = 'OBJECT'"
           refute_includes migration, "def migration_version"
         end
+      end
+
+      test "the SQLite constraint accepts objects and rejects scalar JSON" do
+        connection = ActiveRecord::Base.connection
+        table = :api_keys_restrictions_constraint_probe
+        connection.create_table(table) { |definition| definition.json :restrictions, null: false }
+        connection.add_check_constraint(
+          table,
+          "json_valid(restrictions) AND json_type(restrictions) = 'object'",
+          name: "restrictions_is_object"
+        )
+
+        connection.execute("INSERT INTO #{connection.quote_table_name(table)} (restrictions) VALUES ('{}')")
+        assert_raises(ActiveRecord::StatementInvalid) do
+          connection.execute("INSERT INTO #{connection.quote_table_name(table)} (restrictions) VALUES ('[]')")
+        end
+      ensure
+        connection&.drop_table(table, if_exists: true)
       end
     end
   end

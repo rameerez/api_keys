@@ -2,7 +2,6 @@
 
 require "ipaddr"
 require "uri"
-require_relative "logging"
 
 module ApiKeys
   # Value object describing *where* an API key may be used from: a list of web
@@ -22,12 +21,10 @@ module ApiKeys
   # - Every failure mode fails closed: a locked list plus an unreadable request
   #   context refuses the request.
   #
-  # The object is immutable, has no Active Record dependency, and never raises
-  # on malformed input: `wrap` coerces whatever it is given, and the model's
-  # validations are what reject nonsense before it reaches the database.
+  # The object is immutable and has no Active Record dependency. Malformed
+  # persisted values are represented explicitly and deny authentication; model
+  # validations keep them out during ordinary writes.
   class Restrictions
-    include ApiKeys::Logging
-
     # The restriction kinds this gem understands. Anything else stored in the
     # column is a validation error rather than a silently ignored key.
     KINDS = %i[origins ips].freeze
@@ -39,9 +36,10 @@ module ApiKeys
 
     # A bare host, optionally prefixed with a `*.` subdomain wildcard.
     # `*` alone is deliberately invalid: an empty list already means "anywhere".
-    ORIGIN_ENTRY_PATTERN = /\A(?:\*\.)?[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\z/
+    DNS_LABEL = /[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?/
+    ORIGIN_ENTRY_PATTERN = /\A(?:\*\.)?#{DNS_LABEL}(?:\.#{DNS_LABEL})*\z/
 
-    attr_reader :origins, :ips
+    attr_reader :origins, :ips, :extras
 
     class << self
       # Coerces anything into a Restrictions instance. Never raises.
@@ -52,7 +50,7 @@ module ApiKeys
       def wrap(value)
         return value if value.is_a?(self)
         return none if value.nil?
-        return new(origins: [], ips: [], extras: {}) unless value.is_a?(Hash)
+        return new(origins: [], ips: [], extras: {}, malformed: true) unless value.is_a?(Hash)
 
         known, extras = value.partition { |key, _entries| KIND_NAMES.include?(key.to_s) }
         known = known.to_h { |key, entries| [key.to_s, entries] }
@@ -62,6 +60,11 @@ module ApiKeys
           ips: coerce_list(known["ips"]),
           extras: extras.to_h
         )
+      rescue StandardError
+        # Stored policy is untrusted input. Preserve the core invariant even if
+        # an exotic object raises while being coerced: malformed never means
+        # unrestricted.
+        new(origins: [], ips: [], extras: {}, malformed: true)
       end
 
       # The shared empty instance: no origins, no IPs, no restrictions at all.
@@ -77,20 +80,26 @@ module ApiKeys
       #   normalize_origins("https://Shop.example/, *.app.example\n x")
       #   # => ["shop.example", "*.app.example", "x"]
       #
+      # Non-string entries are preserved so validation can report malformed
+      # programmatic input instead of silently erasing a requested policy.
       # @param value [String, Array, nil] Raw user input.
-      # @return [Array<String>] Normalized origin entries.
+      # @return [Array] Normalized origin entries.
       def normalize_origins(value)
-        tokenize(value).filter_map { |token| origin_host(token) }.uniq
+        tokenize(value).map do |token|
+          next token unless token.is_a?(String)
+
+          origin_host(token) || token.strip.downcase
+        end.uniq
       end
 
-      # Forgiving parser for IP/CIDR input. Entries that stdlib IPAddr cannot
-      # parse at all are dropped; everything else is kept verbatim (lowercased)
-      # so validation, not the parser, is what reports a malformed range.
+      # Forgiving parser for IP/CIDR input. String entries are kept verbatim
+      # (lowercased) so validation, not the parser, reports malformed ranges.
+      # Non-string entries are likewise preserved for validation.
       #
       # @param value [String, Array, nil] Raw user input.
       # @return [Array<String>] Normalized IP entries.
       def normalize_ips(value)
-        tokenize(value).map(&:downcase).uniq
+        tokenize(value).map { |entry| entry.is_a?(String) ? entry.downcase : entry }.uniq
       end
 
       # Extracts the host the browser claims the request came from: the Origin
@@ -103,12 +112,15 @@ module ApiKeys
         headers = request.headers if request.respond_to?(:headers)
         return nil unless headers.respond_to?(:[])
 
-        %w[Origin Referer].each do |header_name|
-          host = host_from_url(headers[header_name])
-          return host if host
+        origin = headers["Origin"]
+        unless origin.nil? || (origin.is_a?(String) && origin.strip.empty?)
+          # Origin has precedence over Referer. A present-but-invalid Origin
+          # (including the browser's opaque `null` origin) must not be rescued
+          # by a friendlier Referer value.
+          return host_from_url(origin)
         end
 
-        nil
+        host_from_url(headers["Referer"])
       rescue StandardError
         # A hostile or exotic request object must never take an endpoint down;
         # an unreadable origin is simply an origin that matches nothing.
@@ -126,7 +138,7 @@ module ApiKeys
                   end
 
         entries.filter_map do |entry|
-          next unless entry.is_a?(String)
+          next entry unless entry.is_a?(String)
 
           trimmed = entry.strip
           trimmed unless trimmed.empty?
@@ -144,6 +156,15 @@ module ApiKeys
         if candidate.include?("//")
           host = host_from_url(candidate)
           return host
+        end
+
+        if (address = parse_ip(candidate)) && !candidate.include?("/")
+          return address.to_s.downcase
+        end
+
+        if candidate.start_with?("[")
+          host = host_from_url("http://#{candidate}")
+          return host if host
         end
 
         host = candidate.split(%r{[/?#]}).first.to_s
@@ -186,13 +207,20 @@ module ApiKeys
 
           trimmed = entry.strip.downcase
           trimmed unless trimmed.empty?
+        rescue ArgumentError
+          entry
         end
       end
 
       # Whether a stored origin entry is shaped like a host or `*.host`.
       # @api private
       def valid_origin_entry?(entry)
-        entry.is_a?(String) && entry.match?(ORIGIN_ENTRY_PATTERN)
+        return false unless entry.is_a?(String)
+        return true if !entry.include?("/") && parse_ip(entry)
+
+        entry.bytesize <= 253 && entry.match?(ORIGIN_ENTRY_PATTERN)
+      rescue ArgumentError
+        false
       end
 
       # Whether a stored IP entry is a single address or a CIDR range.
@@ -213,7 +241,7 @@ module ApiKeys
 
         address = IPAddr.new(trimmed)
         address.ipv6? && address.ipv4_mapped? ? address.native : address
-      rescue IPAddr::Error, ArgumentError
+      rescue IPAddr::Error
         nil
       end
     end
@@ -221,21 +249,26 @@ module ApiKeys
     # @param origins [Array<String>] Already-coerced origin entries.
     # @param ips [Array<String>] Already-coerced IP entries.
     # @param extras [Hash] Unrecognized keys, preserved so validation sees them.
-    def initialize(origins: [], ips: [], extras: {})
-      @origins = origins.freeze
-      @ips = ips.freeze
-      @extras = extras.freeze
+    # @param malformed [Boolean] Whether coercion itself found an invalid shape.
+    def initialize(origins: [], ips: [], extras: {}, malformed: false)
+      @origins = deep_copy(origins, freeze_copy: true)
+      @ips = deep_copy(ips, freeze_copy: true)
+      @extras = deep_copy(extras, freeze_copy: true)
+      @malformed = malformed || @extras.any? ||
+                   @origins.any? { |entry| !self.class.valid_origin_entry?(entry) } ||
+                   @ips.any? { |entry| !self.class.valid_ip_entry?(entry) }
       freeze
     end
 
-    # Unrecognized keys found in the stored hash. Their presence is a
-    # validation error; they are kept so the error can name them.
-    # @return [Hash]
-    attr_reader :extras
+    # Malformed data can only arrive through validation-bypassing writes or a
+    # damaged database. Authentication always denies it.
+    def malformed?
+      @malformed
+    end
 
     # @return [Boolean] true when this key may be used from anywhere.
     def unrestricted?
-      origins.empty? && ips.empty?
+      !malformed? && origins.empty? && ips.empty?
     end
 
     # @return [Boolean] true when at least one list is locked.
@@ -253,9 +286,9 @@ module ApiKeys
     # @return [Hash]
     def to_h
       hash = {}
-      hash["origins"] = origins.dup if origins.any?
-      hash["ips"] = ips.dup if ips.any?
-      hash.merge(extras)
+      hash["origins"] = deep_copy(origins) if origins.any?
+      hash["ips"] = deep_copy(ips) if ips.any?
+      hash.merge(deep_copy(extras))
     end
 
     alias as_json to_h
@@ -266,17 +299,19 @@ module ApiKeys
     # @param ip [String, nil] Client IP address.
     # @return [Boolean]
     def allows?(origin_host: nil, ip: nil)
-      origin_allowed?(origin_host) && ip_allowed?(ip)
+      !malformed? && origin_allowed?(origin_host) && ip_allowed?(ip)
     end
 
     # @param host [String, nil] Bare host to check.
     # @return [Boolean] true when the origins list is empty or one entry matches.
     #   A locked list plus a nil/blank host refuses: fail closed.
     def origin_allowed?(host)
+      return false if malformed?
       return true if origins.empty?
 
       candidate = host.to_s.strip.downcase
       return false if candidate.empty?
+      candidate = self.class.parse_ip(candidate)&.to_s || candidate
 
       origins.any? { |entry| origin_entry_matches?(entry, candidate) }
     end
@@ -285,6 +320,7 @@ module ApiKeys
     # @return [Boolean] true when the IP list is empty or one entry contains it.
     #   A locked list plus an unparseable address refuses: fail closed.
     def ip_allowed?(ip)
+      return false if malformed?
       return true if ips.empty?
 
       address = self.class.parse_ip(ip.is_a?(String) ? ip : ip.to_s)
@@ -303,22 +339,31 @@ module ApiKeys
     end
 
     def inspect
-      "#<#{self.class.name} origins=#{origins.inspect} ips=#{ips.inspect}>"
+      "#<#{self.class.name} origins=#{origins.inspect} ips=#{ips.inspect} malformed=#{malformed?.inspect}>"
     end
 
     private
 
-    # ApiKeys::Logging memoizes its logger in an instance variable, and this
-    # value object is frozen. Resolve the logger fresh instead.
-    def logger
-      defined?(Rails) ? Rails.logger : nil
+    def deep_copy(value, freeze_copy: false)
+      copy = case value
+             when Hash
+               value.to_h do |key, entry|
+                 [deep_copy(key, freeze_copy: freeze_copy), deep_copy(entry, freeze_copy: freeze_copy)]
+               end
+             when Array
+               value.map { |entry| deep_copy(entry, freeze_copy: freeze_copy) }
+             when String
+               value.dup
+             else
+               value
+             end
+      copy.freeze if freeze_copy
+      copy
     end
 
     # `*.example.com` matches any subdomain at any depth, but never the apex —
     # Google's rule. List the apex separately when you want both.
     def origin_entry_matches?(entry, host)
-      return false unless entry.is_a?(String)
-
       if entry.start_with?("*.")
         suffix = entry.delete_prefix("*")
         host.end_with?(suffix) && host.length > suffix.length
@@ -327,16 +372,8 @@ module ApiKeys
       end
     end
 
-    # A stored entry that no longer parses matches nothing and says so once.
-    # Validation keeps these out; this covers rows written around validations.
     def ip_entry_matches?(entry, address)
-      range = self.class.parse_ip(entry)
-      unless range
-        log_warn "[ApiKeys Security] Ignored an unparseable stored IP restriction entry."
-        return false
-      end
-
-      range.include?(address)
+      self.class.parse_ip(entry).include?(address)
     end
   end
 end

@@ -37,13 +37,13 @@ module ApiKeys
         say "\n     Keys without restrictions keep working from anywhere; presence is the toggle."
         say "\n  3. Optionally cap which restriction kinds each key type may carry:"
         say "       config.key_types = {"
-        say "         publishable: { prefix: 'pk', permissions: %w[read], revocable: false,"
-        say "                        public: true, restrictions: [:origins] },"
+        say "         publishable: { prefix: 'pk', permissions: %w[read], public: true,"
+        say "                        restrictions: [:origins] },"
         say "         secret:      { prefix: 'sk', permissions: :all, restrictions: [:ips] }"
         say "       }"
         say "\n  4. Behind a CDN or proxy, make sure the client IP is truthful:"
         say "       config.action_dispatch.trusted_proxies = ..."
-        say "       # or: config.client_ip_resolver = ->(request) { request.headers['CF-Connecting-IP'] }"
+        say "       # Trust a vendor header only when ingress blocks requests that bypass that vendor."
         say "\nSee the api_keys README for detailed usage and examples.", :cyan
       end
 

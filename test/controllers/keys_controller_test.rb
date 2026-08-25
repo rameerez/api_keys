@@ -199,6 +199,50 @@ module ApiKeys
       assert_includes response.body, "api_key[allowed_ips]"
     end
 
+    test "the new key form derives dynamic fields from key type policy" do
+      ApiKeys.configure do |config|
+        config.key_types = {
+          browser: { prefix: "pk", permissions: %w[read], public: true, restrictions: [:origins] },
+          permanent_server: { prefix: "sk", permissions: :all, revocable: false, restrictions: [:ips] }
+        }
+        config.environments = { test: { prefix_segment: "test" } }
+        config.current_environment = :test
+      end
+
+      get :new
+
+      assert_response :success
+      assert_includes response.body, 'data-api-keys-restriction-kind="origins"'
+      assert_includes response.body, 'data-api-keys-restriction-kind="ips"'
+      assert_includes response.body, '"browser":{"restrictions":["origins"],"expirable":true}'
+      assert_includes response.body, '"permanent_server":{"restrictions":["ips"],"expirable":false}'
+      assert_match(/<script nonce="[^"]+">/, response.body)
+    end
+
+    test "failed creation preserves typed form values" do
+      ApiKeys.configure do |config|
+        config.key_types = {
+          browser: { prefix: "pk", permissions: %w[read], public: true, restrictions: [:origins] }
+        }
+        config.environments = { test: { prefix_segment: "test" } }
+        config.current_environment = :test
+      end
+
+      post :create, params: {
+        api_key: {
+          name: "Broken Browser Key",
+          key_type: "browser",
+          expires_at_preset: "30_days",
+          allowed_origins: "https://"
+        }
+      }
+
+      assert_response :unprocessable_entity
+      assert_select 'option[value="browser"][selected]'
+      assert_select 'option[value="30_days"][selected]'
+      assert_select 'input[name="api_key[allowed_origins]"][value="https://"]'
+    end
+
     test "the edit form shows a key's current restrictions" do
       key = @user.create_api_key!(name: "Widget", allowed_origins: "example.com, *.example.com")
 

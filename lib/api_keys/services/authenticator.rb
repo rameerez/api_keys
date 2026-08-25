@@ -103,10 +103,10 @@ module ApiKeys
                    end
                  elsif api_key&.revoked?
                    log_debug "[ApiKeys Auth] Verification failed: Key revoked. Key ID: #{api_key.id}"
-                   Result.failure(error_code: :revoked_key, message: "API key has been revoked")
+                   Result.failure(error_code: :revoked_key, message: "API key has been revoked", api_key: api_key)
                  elsif api_key&.expired?
                    log_debug "[ApiKeys Auth] Verification failed: Key expired. Key ID: #{api_key.id}"
-                   Result.failure(error_code: :expired_key, message: "API key has expired")
+                   Result.failure(error_code: :expired_key, message: "API key has expired", api_key: api_key)
                  else # Not found, mismatch, or inactive
                    log_debug "[ApiKeys Auth] Verification failed: Token invalid or key not found."
                    Result.failure(error_code: :invalid_token, message: "API token is invalid")
@@ -368,7 +368,7 @@ module ApiKeys
         return nil if configured
 
         log_warn "[ApiKeys Security] Rejected API key ID #{api_key.id} because its key type is not configured."
-        Result.failure(error_code: :unknown_key_type, message: "API key type is not configured")
+        Result.failure(error_code: :unknown_key_type, message: "API key type is not configured", api_key: api_key)
       end
 
       def self.check_environment_configuration(api_key, config)
@@ -382,7 +382,7 @@ module ApiKeys
         return nil if configured
 
         log_warn "[ApiKeys Security] Rejected API key ID #{api_key.id} because its environment is not configured."
-        Result.failure(error_code: :unknown_environment, message: "API key environment is not configured")
+        Result.failure(error_code: :unknown_environment, message: "API key environment is not configured", api_key: api_key)
       end
 
       # Check if the API key's environment matches the current environment
@@ -454,6 +454,15 @@ module ApiKeys
       def self.check_request_restrictions(api_key, request, config)
         restrictions = api_key.restrictions
         return nil if restrictions.unrestricted?
+
+        if restrictions.malformed?
+          log_warn "[ApiKeys Security] Rejected API key ID #{api_key.id} because its stored request restrictions are malformed."
+          return Result.failure(
+            error_code: :restriction_misconfigured,
+            message: "This API key's request restrictions could not be verified",
+            api_key: api_key
+          )
+        end
 
         if restrictions.origins.any?
           origin_host = ApiKeys::Restrictions.extract_origin_host(request)

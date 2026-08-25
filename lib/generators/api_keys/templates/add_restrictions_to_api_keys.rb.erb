@@ -9,8 +9,15 @@
 # didn't have request restrictions support. The column defaults to an empty
 # object, which means "unrestricted", so existing keys are unaffected.
 class AddRestrictionsToApiKeys < ActiveRecord::Migration<%= migration_version %>
-  def change
+  CONSTRAINT_NAME = "api_keys_restrictions_is_object"
+
+  def up
     add_column :api_keys, :restrictions, json_column_type, default: {}, null: false
+    add_restrictions_object_constraint
+  end
+
+  def down
+    remove_column :api_keys, :restrictions
   end
 
   private
@@ -27,5 +34,21 @@ class AddRestrictionsToApiKeys < ActiveRecord::Migration<%= migration_version %>
   rescue ActiveRecord::ConnectionNotEstablished
     # Fallback during initial setup or if connection isn't available
     :text
+  end
+
+  # JSON columns can also hold arrays and scalars. The application requires an
+  # object so damaged or validation-bypassing writes cannot erase a policy.
+  def add_restrictions_object_constraint
+    return unless connection.supports_check_constraints?
+
+    expression = case connection.adapter_name.downcase
+                 when /postgres/
+                   "jsonb_typeof(restrictions) = 'object'"
+                 when /sqlite/
+                   "json_valid(restrictions) AND json_type(restrictions) = 'object'"
+                 when /mysql|trilogy/
+                   "JSON_TYPE(restrictions) = 'OBJECT'"
+                 end
+    add_check_constraint :api_keys, expression, name: CONSTRAINT_NAME if expression
   end
 end

@@ -48,10 +48,11 @@ module ApiKeys
     #   @return [#call] Callable receiving the request and returning the client
     #     IP address used to evaluate a key's `allowed_ips` list. The default
     #     honors Rails' trusted-proxy handling via `request.remote_ip`; behind a
-    #     CDN, configure `config.action_dispatch.trusted_proxies` or supply your
-    #     own resolver.
+    #     CDN, configure `config.action_dispatch.trusted_proxies` whenever
+    #     possible. A resolver that trusts a vendor header is safe only when
+    #     network ingress rejects requests that bypass that vendor.
     #   @example
-    #     config.client_ip_resolver = ->(request) { request.headers["CF-Connecting-IP"].presence || request.remote_ip }
+    #     config.client_ip_resolver = ->(request) { request.headers.fetch("CF-Connecting-IP") }
     attr_reader :client_ip_resolver
 
     # Tenant Resolution
@@ -94,15 +95,16 @@ module ApiKeys
     #     - :permissions [Array<String>, :all] Scope ceiling for this type
     #     - :revocable [Boolean] Whether keys can be revoked (default: true)
     #     - :limit [Integer, nil] Max keys per owner per environment (nil = unlimited)
-    #     - :public [Boolean] If true AND revocable: false, store plaintext token in
-    #       metadata so it can be viewed again in dashboard. Use ONLY for publishable
-    #       keys that are designed to be embedded in distributed apps. (default: false)
+    #     - :public [Boolean] If true, store the plaintext token in metadata so it
+    #       can be viewed again in the dashboard. Use ONLY for publishable keys
+    #       designed to be embedded in distributed apps. Public types must have a
+    #       finite, non-empty permissions list. (default: false)
     #     - :restrictions [Array<Symbol>] Which request-restriction kinds keys of this
     #       type may carry: any subset of [:origins, :ips]. Omitted means both are
     #       allowed; `[]` forbids restrictions entirely for this type.
     #   @example
     #     config.key_types = {
-    #       publishable: { prefix: "pk", permissions: %w[read], revocable: false, public: true, limit: 1,
+    #       publishable: { prefix: "pk", permissions: %w[read], public: true, limit: 1,
     #                      restrictions: [:origins] },
     #       secret: { prefix: "sk", permissions: :all, restrictions: [:ips] }
     #     }
@@ -430,9 +432,6 @@ module ApiKeys
 
         next unless type_config[:public] == true
 
-        unless type_config[:revocable] == false
-          raise ArgumentError, "Public key type '#{name}' must explicitly set revocable: false"
-        end
         unless permissions.is_a?(Array) && permissions.any?
           raise ArgumentError, "Public key type '#{name}' must have a finite, non-empty permissions list"
         end

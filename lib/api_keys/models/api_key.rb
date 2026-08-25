@@ -15,8 +15,8 @@ module ApiKeys
     MAX_RESTRICTION_ENTRIES = 100
     MAX_RESTRICTION_ENTRY_BYTESIZE = 255
     RESTRICTIONS_COLUMN = "restrictions"
-    # Deliberately excludes `restrictions`: tightening the origins of a leaked
-    # publishable key is the one control the owner of a non-revocable key has.
+    # Deliberately excludes `restrictions`: owners must be able to tighten a
+    # request policy even when the key itself is non-revocable.
     IMMUTABLE_IDENTITY_ATTRIBUTES = %w[
       token_digest digest_algorithm prefix last4 owner_type owner_id key_type environment
     ].freeze
@@ -32,6 +32,7 @@ module ApiKeys
     # == Attributes & Serialization ==
     # Expose the plaintext token only immediately after creation
     attr_reader :token
+    attr_accessor :expires_at_preset
 
     # JSON attributes (:scopes, :metadata) are defined in the engine initializer
     # using ActiveSupport.on_load(:active_record) to ensure DB connection is ready.
@@ -68,8 +69,13 @@ module ApiKeys
     def restrictions=(value)
       ensure_restrictions_column!
 
-      normalized = if value.nil? || value.is_a?(Hash) || value.is_a?(ApiKeys::Restrictions)
-                     ApiKeys::Restrictions.wrap(value).to_h
+      normalized = if value.nil?
+                     {}
+                   elsif value.is_a?(Hash)
+                     wrapped = ApiKeys::Restrictions.wrap(value)
+                     wrapped.malformed? ? value : wrapped.to_h
+                   elsif value.is_a?(ApiKeys::Restrictions)
+                     value.malformed? ? { "__malformed__" => true } : value.to_h
                    else
                      value
                    end
@@ -160,11 +166,15 @@ module ApiKeys
     # .publishable returns only keys with key_type: "publishable"
     # .secret returns keys that are NOT publishable (includes legacy keys with nil/blank key_type)
     scope :publishable, -> { where(key_type: "publishable") }
-    scope :secret, -> { where.not(key_type: "publishable") }
+    # SQL `!=` excludes NULL, so include pre-key-types rows explicitly. Those
+    # legacy credentials have always had secret-key capabilities.
+    scope :secret, -> {
+      where(key_type: nil).or(where.not(key_type: "publishable"))
+    }
 
     # Keys that carry request restrictions, and keys usable from anywhere.
-    scope :restricted, -> { where.not(restrictions: {}) }
-    scope :unrestricted, -> { where(restrictions: {}) }
+    scope :restricted, -> { where.not(restrictions: [nil, {}]) }
+    scope :unrestricted, -> { where(restrictions: [nil, {}]) }
 
     # === Usage Analytics Scopes ===
     # These scopes help admin dashboards analyze API key usage patterns.
@@ -264,9 +274,12 @@ module ApiKeys
     # Keys with a key_type check the configuration
     def revocable?
       return true if key_type.blank?
-      config = key_type_config
-      return false if config.nil?
-      config.fetch(:revocable, true)
+      self.class.revocable_for(key_type_config)
+    end
+
+    # Non-revocable keys are permanent by design; other key types may expire.
+    def expirable?
+      revocable?
     end
 
     # Returns the configuration hash for this key's type
@@ -283,17 +296,17 @@ module ApiKeys
       configured_pair&.last
     end
 
-    # Returns true if this key type is configured as public AND non-revocable.
-    # Only these keys have their plaintext token stored in metadata for later viewing.
+    # Returns true if this key type is explicitly configured as public.
+    # Only these keys have their plaintext token stored for later viewing.
     # This is used for publishable keys that are designed to be embedded in distributed apps.
     def public_key_type?
       return false if key_type.blank?
       config = key_type_config
       return false if config.nil?
-      config[:public] == true && config[:revocable] == false
+      config[:public] == true
     end
 
-    # Returns the stored plaintext token for public, non-revocable keys.
+    # Returns the stored plaintext token for public keys.
     # Returns nil for all other key types (the token is only available at creation time).
     # @return [String, nil] The full plaintext token, or nil if not stored
     def viewable_token
@@ -376,6 +389,24 @@ module ApiKeys
       column_names.include?(RESTRICTIONS_COLUMN)
     rescue StandardError
       false
+    end
+
+    # Single source of truth for a key type's request-restriction ceiling.
+    # Omitting the setting allows every supported restriction kind.
+    def self.restriction_kinds_for(type_config)
+      return ApiKeys::Restrictions::KINDS.dup unless type_config.is_a?(Hash) && type_config.key?(:restrictions)
+
+      Array(type_config[:restrictions]).map(&:to_sym)
+    end
+
+    # Single source of truth for lifecycle policy in model and dashboard code.
+    def self.revocable_for(type_config)
+      type_config.is_a?(Hash) && type_config.fetch(:revocable, true)
+    end
+
+    # @return [Array<Symbol>] Restriction kinds this key's type permits.
+    def allowed_restriction_kinds
+      self.class.restriction_kinds_for(key_type_config)
     end
 
     private
@@ -468,10 +499,11 @@ module ApiKeys
         self.expires_at = ApiKeys.configuration.expire_after.from_now
       end
 
-      # Store plaintext token in metadata for public, non-revocable keys.
+      # Store plaintext token in metadata for explicitly public keys.
       # This allows users to view the token again in the dashboard.
       # SECURITY: Only do this for keys explicitly configured as public: true
-      # AND revocable: false (e.g., publishable keys for distributed apps).
+      # Public key types must have a finite permission ceiling, but may be
+      # revocable and expirable like any other credential.
       if public_key_type?
         self.metadata = (self.metadata || {}).merge("token" => @token)
       end
@@ -558,6 +590,8 @@ module ApiKeys
         return
       end
 
+      errors.add(:restrictions, "must contain valid restriction data") if restrictions.malformed? && raw.keys.empty?
+
       unknown_kinds = raw.keys.map(&:to_s) - ApiKeys::Restrictions::KIND_NAMES
       if unknown_kinds.any?
         errors.add(:restrictions, "contains unknown restriction kinds: #{unknown_kinds.sort.join(', ')}")
@@ -601,19 +635,10 @@ module ApiKeys
     # Key types may declare a ceiling on the restriction kinds their keys carry,
     # mirroring the way `permissions:` caps scopes.
     def restrictions_respect_key_type
-      exceeded = restrictions.kinds - restriction_ceiling
+      exceeded = restrictions.kinds - allowed_restriction_kinds
       return if exceeded.empty?
 
       errors.add(:restrictions, "#{exceeded.sort.join(', ')} are not allowed for #{key_type} keys")
-    end
-
-    # @return [Array<Symbol>] Restriction kinds this key's type permits.
-    #   An omitted `restrictions:` setting permits every kind.
-    def restriction_ceiling
-      config = key_type_config
-      return ApiKeys::Restrictions::KINDS.dup unless config&.key?(:restrictions)
-
-      Array(config[:restrictions]).map(&:to_sym)
     end
 
     def authentication_identity_is_immutable

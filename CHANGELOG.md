@@ -7,14 +7,18 @@
 - Per-key-type restriction ceilings via `key_types[...][:restrictions]`, mirroring the way `permissions:` caps scopes. Omitted allows both kinds; `[]` forbids restrictions for that type.
 - `config.client_ip_resolver` (defaults to `request.remote_ip`, which honors Rails' trusted proxies).
 - `rails generate api_keys:add_restrictions` for existing installations; new installs create the column from the start.
-- Dashboard: origin and IP fields on the key form (shown per the key type's ceiling) and a "Restricted" badge. Restriction edits stay available on non-revocable keys, which is the one control the owner of an unrevocable public key has.
+- Dashboard: origin and IP fields on the key form (shown dynamically per the selected key type's ceiling), expiration only for expirable key types, preserved form values after errors, and a "Restricted" badge.
 - Model surface: `restrictions`, `restricted?`, `allowed_origins`/`allowed_ips` readers and raw-string writers, `restricted`/`unrestricted` scopes, and `create_api_key!(restrictions:, allowed_origins:, allowed_ips:)`.
-- Refusal attribution: when an identified key is refused by policy (environment isolation, origin or IP restrictions), the `after_authentication` callback context now carries its `api_key_id`, as scope refusals always did. A key under a misconfigured lock no longer looks identical to a key nobody ever tried.
+- Refusal attribution: every failure after a key has been identified (revoked, expired, type/environment configuration, isolation, and request restrictions) carries its `api_key_id`; lookup failures do not.
+
+### Changed
+
+- `public: true` is now independent of `revocable:`. Public key types remain subject to a finite non-empty permission ceiling, but can use the normal rotation, revocation, deletion, and expiration lifecycle.
 
 ### Security
 
 - Restriction failures never echo the configured allowlist back to the caller.
-- Every restriction failure mode fails closed: a locked list plus an unreadable origin, an unresolvable client IP, or an unparseable stored entry refuses the request.
+- Every restriction failure mode fails closed: a locked list plus an unreadable origin, an unresolvable client IP, an unknown kind, a scalar policy, or an unparseable stored entry refuses the request. Generated migrations add a database check that the policy is a JSON object where the adapter supports it.
 
 ## [0.4.3] - 2026-08-24
 

@@ -9,10 +9,10 @@ SimpleCov.configure do
   formatter SimpleCov::Formatter::SimpleFormatter
 
   # Track coverage for the lib directory (gem source code)
-  skip "/test/"
+  add_filter "/test/"
 
   # Track the lib and app directories
-  cover "{lib,app}/**/*.rb"
+  track_files "{lib,app}/**/*.rb"
 
   # Enable branch coverage for more detailed metrics
   enable_coverage :branch

@@ -112,6 +112,18 @@ class RequestRestrictionsTest < ApiKeys::Test
     assert result.success?
   end
 
+  test "a present invalid Origin never falls back to Referer" do
+    _key, token = create_key(allowed_origins: "example.com")
+
+    ["null", "%%%", "http://[not a uri]"].each do |origin|
+      result = authenticate(token: token, origin: origin, referer: "https://example.com/safe")
+
+      assert_equal :origin_not_allowed, result.error_code, "Origin #{origin.inspect} must take precedence"
+    end
+
+    assert authenticate(token: token, origin: "", referer: "https://example.com/safe").success?
+  end
+
   test "an origins-locked key refuses a request from another origin" do
     _key, token = create_key(allowed_origins: "example.com")
 
@@ -146,6 +158,14 @@ class RequestRestrictionsTest < ApiKeys::Test
 
     assert authenticate(token: token, origin: "https://a.b.example.com").success?
     assert_equal :origin_not_allowed, authenticate(token: token, origin: "https://example.com").error_code
+  end
+
+  test "an IPv6 literal is a valid browser origin" do
+    _key, token = create_key(allowed_origins: "2001:db8::1")
+
+    assert authenticate(token: token, origin: "https://[2001:db8::1]:8443").success?
+    assert_equal :origin_not_allowed,
+                 authenticate(token: token, origin: "https://[2001:db8::2]").error_code
   end
 
   # =============================================================================
@@ -343,7 +363,8 @@ class RequestRestrictionsTest < ApiKeys::Test
   end
 
   test "forbidden error codes are exactly the request-context refusals" do
-    assert_equal %i[origin_not_allowed ip_not_allowed], ApiKeys::Authentication::FORBIDDEN_ERROR_CODES
+    assert_equal %i[origin_not_allowed ip_not_allowed restriction_misconfigured],
+                 ApiKeys::Authentication::FORBIDDEN_ERROR_CODES
   end
 
   # =============================================================================
@@ -395,6 +416,41 @@ class RequestRestrictionsTest < ApiKeys::Test
     assert_equal({ "ips" => ["10.0.0.0/8"] }, key.reload.restrictions.to_h)
   end
 
+  test "the restrictions value object is deeply immutable and has a stable hash" do
+    raw = {
+      "origins" => ["example.com".dup],
+      "future" => { "nested" => ["unchanged".dup] }
+    }
+    restrictions = ApiKeys::Restrictions.wrap(raw)
+    original_hash = restrictions.hash
+
+    raw["origins"].first.replace("attacker.example")
+    raw["future"]["nested"] << "changed"
+
+    assert_equal ["example.com"], restrictions.origins
+    assert_equal ["unchanged"], restrictions.extras["future"]["nested"]
+    assert_equal original_hash, restrictions.hash
+    assert restrictions.origins.frozen?
+    assert restrictions.origins.first.frozen?
+    assert restrictions.extras["future"]["nested"].frozen?
+    assert restrictions.extras["future"]["nested"].first.frozen?
+
+    mutable_copy = restrictions.to_h
+    mutable_copy["origins"].first.replace("copy.example")
+    assert_equal ["example.com"], restrictions.origins
+  end
+
+  test "malformed policies are never considered unrestricted" do
+    ["example.com", { "countries" => ["ES"] }, { "origins" => ["*"] }].each do |raw|
+      restrictions = ApiKeys::Restrictions.wrap(raw)
+
+      assert restrictions.malformed?, raw.inspect
+      assert restrictions.restricted?, raw.inspect
+      refute restrictions.unrestricted?, raw.inspect
+      refute restrictions.allows?(origin_host: "example.com", ip: "203.0.113.7"), raw.inspect
+    end
+  end
+
   test "restricted and unrestricted scopes partition the table" do
     restricted, _token = create_key(allowed_origins: "example.com")
     unrestricted = ApiKeys::ApiKey.create!(owner: @user, name: "Open Key")
@@ -415,6 +471,14 @@ class RequestRestrictionsTest < ApiKeys::Test
     key = @user.create_api_key!(name: "Widget Key", restrictions: { origins: ["example.com"] })
 
     assert_equal ["example.com"], key.allowed_origins
+  end
+
+  test "create_api_key! rejects a scalar restrictions option" do
+    error = assert_raises(ArgumentError) do
+      @user.create_api_key!(name: "Bad Key", restrictions: "example.com")
+    end
+
+    assert_includes error.message, "must be a Hash"
   end
 
   test "create_api_key! leaves keys unrestricted when nothing is asked for" do
@@ -487,6 +551,46 @@ class RequestRestrictionsTest < ApiKeys::Test
       refute key.valid?, "expected #{entry.inspect} to be rejected"
       assert_includes key.errors.full_messages.join(" "), "must be bare hosts"
     end
+  end
+
+  test "raw origin input cannot normalize entirely into an unrestricted key" do
+    error = assert_raises(ActiveRecord::RecordInvalid) do
+      @user.create_api_key!(name: "Bad Key", allowed_origins: "https://%%% http://[")
+    end
+
+    assert_includes error.record.errors.full_messages.join(" "), "must be bare hosts"
+  end
+
+  test "DNS origin labels follow hostname syntax" do
+    ["_service.example.com", "-start.example.com", "end-.example.com", "#{'a' * 64}.example.com"].each do |entry|
+      key = ApiKeys::ApiKey.new(owner: @user, name: "Bad Key", restrictions: { "origins" => [entry] })
+
+      refute key.valid?, "expected #{entry.inspect} to be rejected"
+    end
+  end
+
+  test "validation-bypassing malformed stored policies fail closed" do
+    key, token = create_key
+
+    ["example.com", { "countries" => ["ES"] }, { "origins" => ["example.com", "*"] }].each do |stored|
+      key.update_column(:restrictions, stored)
+
+      result = authenticate(token: token, origin: "https://example.com")
+      assert_equal :restriction_misconfigured, result.error_code, stored.inspect
+      assert_equal key.id, result.api_key&.id
+      refute result.success?
+    end
+  end
+
+  test "a malformed stored policy answers a generic 403" do
+    key, token = create_key
+    key.update_column(:restrictions, { "origins" => ["*"] })
+
+    controller = render_authentication(token: token, origin: "https://example.com")
+
+    assert_equal :forbidden, controller.rendered[:status]
+    assert_equal :restriction_misconfigured, controller.rendered[:json][:error]
+    refute_includes controller.rendered[:json][:message], "*"
   end
 
   test "malformed IP entries are rejected" do
