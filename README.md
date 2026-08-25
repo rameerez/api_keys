@@ -41,6 +41,15 @@ rails db:migrate
 
 The generated migration is idempotent and uses a concurrent PostgreSQL index where supported.
 
+To lock keys to specific web origins or IP addresses (see [Restrict where a key can be used](#restrict-where-a-key-can-be-used-origins-and-ips)), add the restrictions column:
+
+```bash
+rails generate api_keys:add_restrictions
+rails db:migrate
+```
+
+New installations get this column from the start, so this is only for upgrades.
+
 ## Quick Start
 
 Just add `has_api_keys` to your desired model. For example, if you want your `User` records to have API keys, you'd have:
@@ -152,6 +161,7 @@ Once configured, your users can:
 - set expiration dates
 - attach scopes / permissions to individual keys
 - add and edit the key names
+- lock a key to specific web origins or IP addresses
 - revoke instantly
 - see the status of all their keys
 
@@ -354,6 +364,10 @@ Filter keys by type and status:
 @org.api_keys.expired              # Past expiration date
 @org.api_keys.revoked              # Manually revoked
 
+# By request restrictions
+@org.api_keys.restricted           # Locked to specific origins and/or IPs
+@org.api_keys.unrestricted         # Usable from anywhere
+
 # Chain them
 @org.api_keys.publishable.active
 @org.api_keys.secret.inactive.order(created_at: :desc)
@@ -382,7 +396,9 @@ current_org.can_create_api_key?(key_type: :publishable)
   expires_at: 30.days.from_now,         # Explicit date
   expires_at_preset: "30_days",         # OR use preset (takes precedence)
   environment: :live,                   # Defaults to current_environment
-  metadata: { team: "backend" }         # Optional JSON metadata
+  metadata: { team: "backend" },        # Optional JSON metadata
+  allowed_origins: "example.com",       # Optional: lock to web origins
+  allowed_ips: "10.0.0.0/8"             # Optional: lock to IP addresses
 )
 ```
 
@@ -417,6 +433,12 @@ Methods available on `ApiKeys::ApiKey` instances:
 # Scopes
 @api_key.scopes                   # => ["read", "write"]
 @api_key.allows_scope?("read")    # => true
+
+# Request restrictions (where the key may be used from)
+@api_key.allowed_origins          # => ["example.com", "*.example.com"]
+@api_key.allowed_ips              # => ["203.0.113.7", "10.0.0.0/8"]
+@api_key.restricted?              # => true if either list has entries
+@api_key.restrictions             # => ApiKeys::Restrictions value object
 
 # Metadata
 @api_key.name                     # => "Production Server"
@@ -1075,6 +1097,8 @@ When you distribute software with an embedded API key, that key can potentially 
 
 - **Secret keys** (`sk_test_...`, `sk_live_...`): Sensitive server-side credentials whose exact access depends on their scopes. They can be revoked anytime.
 
+Publishable keys pair naturally with [request restrictions](#restrict-where-a-key-can-be-used-origins-and-ips): lock them to your customers' domains so a lifted key is useless on anyone else's site.
+
 ### Configuration
 
 Enable key types in your initializer:
@@ -1087,12 +1111,15 @@ ApiKeys.configure do |config|
       prefix: "pk",                    # Token prefix → pk_test_, pk_live_
       permissions: %w[read validate],  # Scope ceiling (max permissions allowed)
       revocable: false,                # Cannot be revoked or deleted
-      limit: 1                         # Max 1 per owner per environment
+      limit: 1,                        # Max 1 per owner per environment
+      restrictions: [:origins]         # May be locked to domains, not to IPs
     },
     secret: {
       prefix: "sk",
-      permissions: :all                # No scope restrictions
+      permissions: :all,               # No scope restrictions
+      restrictions: [:ips]             # May be locked to IPs, not to domains
       # revocable defaults to true, limit defaults to nil (unlimited)
+      # restrictions defaults to both kinds allowed
     }
   }
 
@@ -1278,6 +1305,101 @@ rails db:migrate
 ```
 
 Existing keys without `key_type`/`environment` continue to work normally (backwards compatible).
+
+## Restrict where a key can be used (origins and IPs)
+
+A publishable key lives in your customer's page source, in plain sight. Without any control over *where* it can be used, anyone can lift it and use it from their own website. Lock the key to your customers' domains and a stolen key is useless anywhere else. The same applies to secret keys on the server side: lock them to the addresses your customer's servers actually call from.
+
+Any key can carry two lists:
+
+- **Allowed web origins**: bare hosts, matched against the browser's `Origin` header (falling back to `Referer`). Supports `*.` subdomain wildcards.
+- **Allowed IP addresses**: single IPv4/IPv6 addresses or CIDR ranges.
+
+Both are enforced inside the gem, on every authenticated request, for every key. There is no controller to opt in and no endpoint that can forget.
+
+### Upgrading an existing installation
+
+New installations already have the column. To add it to an existing app:
+
+```bash
+rails generate api_keys:add_restrictions
+rails db:migrate
+```
+
+### Usage
+
+```ruby
+# At creation time
+key = user.create_api_key!(
+  name: "Widget key",
+  key_type: :publishable,
+  allowed_origins: "example.com, *.example.com"
+)
+
+# Or any time after: raw strings are parsed and normalized for you
+key.allowed_ips = "203.0.113.7, 10.0.0.0/8"
+key.save!
+
+key.allowed_origins   # => ["example.com", "*.example.com"]
+key.allowed_ips       # => ["203.0.113.7", "10.0.0.0/8"]
+key.restricted?       # => true
+```
+
+Origin input is deliberately forgiving: full URLs, trailing slashes, ports, commas, and newlines are all accepted and reduced to bare lowercase hosts. `https://Shop.example/` becomes `shop.example`. Your dashboard never needs its own parser.
+
+### Semantics
+
+| Rule | Behavior |
+|---|---|
+| Within one list | **OR** — any entry that matches admits the request |
+| Across both lists | **AND** — every list that has entries must pass |
+| Empty (or absent) lists | **Unrestricted** — presence is the toggle, so existing keys are unaffected |
+| `example.com` | Matches that exact host. Case-insensitive, port-blind, scheme-blind |
+| `*.example.com` | Matches `a.example.com` and `a.b.example.com`, but **not** the apex `example.com`. List both to cover both |
+| `*` alone | Invalid. An empty list already means "anywhere" |
+| IP entries | `203.0.113.7` matches exactly; `10.0.0.0/8` and `2001:db8::/32` match their whole range |
+| No readable origin on an origins-locked key | **Refused.** Every failure mode fails closed |
+| Refusal response | `403 Forbidden` with `origin_not_allowed` or `ip_not_allowed` |
+
+An origins-locked key is therefore unusable from origin-less server code, which is exactly the point of locking a browser key.
+
+### Per-key-type restriction ceilings
+
+Key types can cap which kinds of restrictions their keys may carry, the same way `permissions:` caps scopes:
+
+```ruby
+config.key_types = {
+  publishable: { prefix: "pk", permissions: %w[read], revocable: false, public: true,
+                 restrictions: [:origins] },   # Browser keys lock to domains
+  secret:      { prefix: "sk", permissions: :all,
+                 restrictions: [:ips] }        # Server keys lock to addresses
+}
+```
+
+Omitting `restrictions:` allows both kinds. `restrictions: []` forbids restrictions for that type. A key carrying a kind its type forbids fails validation.
+
+### Resolving the client IP
+
+IP checks use `request.remote_ip`, which honors Rails' `config.action_dispatch.trusted_proxies`. If you sit behind a CDN, either configure trusted proxies or tell the gem how to find the real address:
+
+```ruby
+# config/initializers/api_keys.rb
+config.client_ip_resolver = ->(request) do
+  request.headers["CF-Connecting-IP"].presence || request.remote_ip
+end
+```
+
+### Dashboard
+
+The mounted dashboard renders an "Allowed web origins" and an "Allowed IP addresses" field on the key form (only for the kinds the key's type permits), and a **Restricted** badge next to keys that carry either. Restriction edits stay available on non-revocable keys on purpose: tightening the allowlist is the one control the owner of an unrevocable public key still has.
+
+### Security notes
+
+- `Origin` and `Referer` are **browser-enforced** headers. They are trustworthy coming from a real browser and trivially forged by `curl`. Origin restrictions are a browser-context control: they stop a lifted public key from working on someone else's *website*. They are not secrecy. Pair them with keys that cannot spend anything dangerous.
+- IP restrictions inherit the truthfulness of `request.remote_ip`. Behind a proxy or CDN, configure `trusted_proxies` or `client_ip_resolver`, or the address you match against is your proxy's.
+- Everything fails closed: a locked list plus an unreadable request context is a refusal, never a pass.
+- Refusals never echo the configured allowlist back to the caller. Reflecting your domains to an unauthenticated attacker would be a reconnaissance gift. If you want a more explicit message, override it through i18n (`api_keys.errors.origin_not_allowed`).
+- Restriction checks read the current database row on every request, cache or no cache. Tightening the origins of a leaked publishable key takes effect on the very next call.
 
 ## Enterprise-ready by design
 The `api_keys` gem ships with:

@@ -1,3 +1,20 @@
+## [0.5.0] - 2026-08-25
+
+### Added
+
+- Request restrictions: per-key `allowed_origins` (exact hosts and `*.subdomain` wildcards, matched against the browser's Origin with Referer fallback) and `allowed_ips` (IPv4/IPv6, exact or CIDR). Enforced inside `Authenticator.call` for every key on every request, including token-cache hits, so no controller can forget to check and a tightened allowlist takes effect on the next call. Failures answer 403 with `origin_not_allowed` / `ip_not_allowed`. Empty restrictions mean unrestricted, so existing keys are unaffected.
+- `ApiKeys::Restrictions` value object: normalization, matching, and the forgiving parsers dashboards want (`.normalize_origins`, `.normalize_ips`, `.extract_origin_host`). Host applications can delete their own origin parsers.
+- Per-key-type restriction ceilings via `key_types[...][:restrictions]`, mirroring the way `permissions:` caps scopes. Omitted allows both kinds; `[]` forbids restrictions for that type.
+- `config.client_ip_resolver` (defaults to `request.remote_ip`, which honors Rails' trusted proxies).
+- `rails generate api_keys:add_restrictions` for existing installations; new installs create the column from the start.
+- Dashboard: origin and IP fields on the key form (shown per the key type's ceiling) and a "Restricted" badge. Restriction edits stay available on non-revocable keys, which is the one control the owner of an unrevocable public key has.
+- Model surface: `restrictions`, `restricted?`, `allowed_origins`/`allowed_ips` readers and raw-string writers, `restricted`/`unrestricted` scopes, and `create_api_key!(restrictions:, allowed_origins:, allowed_ips:)`.
+
+### Security
+
+- Restriction failures never echo the configured allowlist back to the caller.
+- Every restriction failure mode fails closed: a locked list plus an unreadable origin, an unresolvable client IP, or an unparseable stored entry refuses the request.
+
 ## [0.4.3] - 2026-08-24
 
 - Republish of 0.4.2 with a clean package: the 0.4.2 gem shipped carrying a stray 200 KB `api_keys-0.4.1.gem` blob at its root (committed by accident during the release, harmless but dead weight). No code changes. Prefer this over 0.4.2.
