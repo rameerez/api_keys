@@ -322,6 +322,22 @@ class RestrictionsTest < ApiKeys::Test
     refute wrapped.origin_allowed?("42"), "a non-string entry can never match a host"
   end
 
+  test "wrap coerces a scalar list value into a single entry" do
+    assert_equal [42], ApiKeys::Restrictions.wrap("origins" => 42).origins
+    assert_empty ApiKeys::Restrictions.normalize_origins(42), "a scalar is not host-like, so nothing survives"
+    assert_empty ApiKeys::Restrictions.normalize_ips(42)
+  end
+
+  test "equal restrictions hash alike, so they work as hash keys" do
+    counts = Hash.new(0)
+    counts[restrictions(origins: ["a.com"])] += 1
+    counts[restrictions(origins: ["a.com"])] += 1
+    counts[restrictions(origins: ["b.com"])] += 1
+
+    assert_equal 2, counts.size
+    assert_equal 2, counts[restrictions(origins: ["a.com"])]
+  end
+
   test "equality and inspect never leak beyond the two lists" do
     assert_equal restrictions(origins: ["a.com"]), restrictions(origins: ["a.com"])
     refute_equal restrictions(origins: ["a.com"]), restrictions(origins: ["b.com"])
@@ -367,5 +383,14 @@ class RestrictionsTest < ApiKeys::Test
   test "extract_origin_host survives a request object that cannot answer headers" do
     assert_nil ApiKeys::Restrictions.extract_origin_host(Object.new)
     assert_nil ApiKeys::Restrictions.extract_origin_host(FakeRequest.new(Object.new))
+  end
+
+  test "extract_origin_host survives headers that raise when read" do
+    exploding_headers = Object.new
+    def exploding_headers.[](_name)
+      raise IOError, "headers unavailable"
+    end
+
+    assert_nil ApiKeys::Restrictions.extract_origin_host(FakeRequest.new(exploding_headers))
   end
 end
