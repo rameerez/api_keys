@@ -3,6 +3,7 @@
 require "active_support/core_ext/numeric/time"
 require "active_support/core_ext/string/inflections"
 require "active_support/security_utils"
+require_relative "restrictions"
 
 module ApiKeys
   # Defines the configuration options for the ApiKeys gem.
@@ -40,6 +41,19 @@ module ApiKeys
 
     # Security
     attr_reader :https_only_production, :https_strict_mode
+
+    # Request Restrictions
+    #
+    # @!attribute [rw] client_ip_resolver
+    #   @return [#call] Callable receiving the request and returning the client
+    #     IP address used to evaluate a key's `allowed_ips` list. The default
+    #     honors Rails' trusted-proxy handling via `request.remote_ip`; behind a
+    #     CDN, configure `config.action_dispatch.trusted_proxies` whenever
+    #     possible. A resolver that trusts a vendor header is safe only when
+    #     network ingress rejects requests that bypass that vendor.
+    #   @example
+    #     config.client_ip_resolver = ->(request) { request.headers.fetch("CF-Connecting-IP") }
+    attr_reader :client_ip_resolver
 
     # Tenant Resolution
     attr_reader :tenant_resolver
@@ -81,13 +95,18 @@ module ApiKeys
     #     - :permissions [Array<String>, :all] Scope ceiling for this type
     #     - :revocable [Boolean] Whether keys can be revoked (default: true)
     #     - :limit [Integer, nil] Max keys per owner per environment (nil = unlimited)
-    #     - :public [Boolean] If true AND revocable: false, store plaintext token in
-    #       metadata so it can be viewed again in dashboard. Use ONLY for publishable
-    #       keys that are designed to be embedded in distributed apps. (default: false)
+    #     - :public [Boolean] If true, store the plaintext token in metadata so it
+    #       can be viewed again in the dashboard. Use ONLY for publishable keys
+    #       designed to be embedded in distributed apps. Public types must have a
+    #       finite, non-empty permissions list. (default: false)
+    #     - :restrictions [Array<Symbol>] Which request-restriction kinds keys of this
+    #       type may carry: any subset of [:origins, :ips]. Omitted means both are
+    #       allowed; `[]` forbids restrictions entirely for this type.
     #   @example
     #     config.key_types = {
-    #       publishable: { prefix: "pk", permissions: %w[read], revocable: false, public: true, limit: 1 },
-    #       secret: { prefix: "sk", permissions: :all }
+    #       publishable: { prefix: "pk", permissions: %w[read], public: true, limit: 1,
+    #                      restrictions: [:origins] },
+    #       secret: { prefix: "sk", permissions: :all, restrictions: [:ips] }
     #     }
     #
     # @!attribute [rw] environments
@@ -238,6 +257,12 @@ module ApiKeys
       raise ArgumentError, "tenant_resolver must be callable" unless value.respond_to?(:call)
 
       @tenant_resolver = value
+    end
+
+    def client_ip_resolver=(value)
+      raise ArgumentError, "client_ip_resolver must be callable" unless value.respond_to?(:call)
+
+      @client_ip_resolver = value
     end
 
     def secure_compare_proc=(value)
@@ -403,17 +428,28 @@ module ApiKeys
           raise ArgumentError, "Key type '#{name}' limit must be a positive Integer or nil"
         end
 
+        validate_restriction_kinds!(name, type_config[:restrictions]) if type_config.key?(:restrictions)
+
         next unless type_config[:public] == true
 
-        unless type_config[:revocable] == false
-          raise ArgumentError, "Public key type '#{name}' must explicitly set revocable: false"
-        end
         unless permissions.is_a?(Array) && permissions.any?
           raise ArgumentError, "Public key type '#{name}' must have a finite, non-empty permissions list"
         end
       end
 
       validate_key_type_prefixes!(key_types_hash)
+    end
+
+    # A key type may declare which request-restriction kinds its keys can carry.
+    # Omitting the setting allows every kind; `[]` forbids all of them.
+    def validate_restriction_kinds!(name, kinds)
+      valid = kinds.is_a?(Array) && kinds.all? do |kind|
+        (kind.is_a?(Symbol) || kind.is_a?(String)) && ApiKeys::Restrictions::KIND_NAMES.include?(kind.to_s)
+      end
+      return if valid
+
+      raise ArgumentError,
+            "Key type '#{name}' restrictions must be an Array containing any of: #{ApiKeys::Restrictions::KIND_NAMES.join(', ')}"
     end
 
     def validate_config_name!(value, label)
@@ -554,6 +590,11 @@ module ApiKeys
       # Security
       @https_only_production = true # Warn if used over HTTP in production
       @https_strict_mode = true # Fail closed if a production request is not HTTPS
+
+      # Request Restrictions
+      # Rails' remote_ip already honors config.action_dispatch.trusted_proxies,
+      # so the sensible default is simply to trust what Rails resolved.
+      @client_ip_resolver = ->(request) { request.remote_ip }
 
       # Background Job Queues
       @stats_job_queue = :default

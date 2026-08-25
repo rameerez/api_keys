@@ -219,10 +219,17 @@ module ApiKeys
         #   Must be defined in ApiKeys.configuration.key_types if provided.
         # @param environment [Symbol, nil] The environment (e.g., :test, :live).
         #   Defaults to current_environment if key_types feature is enabled.
+        # @param restrictions [Hash, ApiKeys::Restrictions, nil] Request restrictions in
+        #   storage shape, e.g. { origins: ["example.com"], ips: ["10.0.0.0/8"] }.
+        # @param allowed_origins [String, Array, nil] Convenience form of the origins list.
+        #   Accepts the raw string a form field submits ("example.com, *.example.com").
+        # @param allowed_ips [String, Array, nil] Convenience form of the IP list
+        #   ("203.0.113.7, 10.0.0.0/8").
         # @return [ApiKeys::ApiKey] The newly created ApiKey instance. The plaintext token
         #                           is available via the `#token` attribute on this instance
         #                           *only until it's reloaded*.
-        def create_api_key!(name: nil, scopes: nil, expires_at: nil, expires_at_preset: nil, metadata: nil, key_type: nil, environment: nil)
+        def create_api_key!(name: nil, scopes: nil, expires_at: nil, expires_at_preset: nil, metadata: nil,
+                            key_type: nil, environment: nil, restrictions: nil, allowed_origins: nil, allowed_ips: nil)
           config = ApiKeys.configuration
 
           # Parse expires_at_preset if provided (takes precedence over expires_at)
@@ -238,6 +245,13 @@ module ApiKeys
           # Check for missing columns if key_types feature is enabled
           if key_types_feature_enabled?(config)
             check_required_columns!
+          end
+
+          # Requesting restrictions (directly, or through a key type that
+          # declares a ceiling) requires the column that stores them.
+          requested_restrictions = build_restrictions(restrictions, allowed_origins, allowed_ips)
+          if requested_restrictions || restriction_ceilings_configured?(config)
+            check_restrictions_column!
           end
 
           # Use default_key_type if not specified and key_types feature is enabled
@@ -278,16 +292,19 @@ module ApiKeys
           # ApiKey's creation callback locks the owner row before quota validation.
           # Keep an explicit transaction here so the helper's creation workflow is
           # a single atomic unit; direct ApiKey.create! calls are protected too.
+          attributes = {
+            name: name,
+            scopes: key_scopes,
+            expires_at: expires_at,
+            metadata: metadata || {}, # Ensure metadata is at least an empty hash
+            key_type: resolved_key_type&.to_s,
+            environment: resolved_environment&.to_s
+            # prefix, token_digest, digest_algorithm are set by ApiKey callbacks
+          }
+          attributes[:restrictions] = requested_restrictions if requested_restrictions
+
           api_key = self.class.transaction do
-            self.api_keys.create!(
-              name: name,
-              scopes: key_scopes,
-              expires_at: expires_at,
-              metadata: metadata || {}, # Ensure metadata is at least an empty hash
-              key_type: resolved_key_type&.to_s,
-              environment: resolved_environment&.to_s
-              # prefix, token_digest, digest_algorithm are set by ApiKey callbacks
-            )
+            self.api_keys.create!(**attributes)
           end
 
           # Return the ApiKey instance itself.
@@ -357,6 +374,30 @@ module ApiKeys
           scopes.select { |scope| permissions.include?(scope.to_s) }
         end
 
+        # Merges the three ways a caller can express restrictions into one
+        # storage hash. Returns nil when the caller asked for none of them, so
+        # the column keeps its default and legacy installs stay untouched.
+        #
+        # @return [Hash, nil]
+        def build_restrictions(restrictions, allowed_origins, allowed_ips)
+          return nil if restrictions.nil? && allowed_origins.nil? && allowed_ips.nil?
+
+          unless restrictions.nil? || restrictions.is_a?(Hash) || restrictions.is_a?(ApiKeys::Restrictions)
+            raise ArgumentError, "restrictions must be a Hash or ApiKeys::Restrictions"
+          end
+
+          attributes = ApiKeys::Restrictions.wrap(restrictions).to_h
+          attributes["origins"] = ApiKeys::Restrictions.normalize_origins(allowed_origins) unless allowed_origins.nil?
+          attributes["ips"] = ApiKeys::Restrictions.normalize_ips(allowed_ips) unless allowed_ips.nil?
+          ApiKeys::Restrictions.wrap(attributes).to_h
+        end
+
+        # True when any configured key type declares a restriction ceiling.
+        def restriction_ceilings_configured?(config)
+          config.key_types.present? &&
+            config.key_types.any? { |_type, settings| settings.is_a?(Hash) && settings.key?(:restrictions) }
+        end
+
         # Check that required columns exist for key_types feature
         # Raises MigrationRequiredError if columns are missing
         def check_required_columns!
@@ -368,6 +409,14 @@ module ApiKeys
           if missing_columns.any?
             raise ApiKeys::Errors::MigrationRequiredError.new(missing_columns: missing_columns)
           end
+        end
+
+        # Check that the restrictions column exists before writing to it.
+        # Raises RestrictionsMigrationRequiredError naming the generator.
+        def check_restrictions_column!
+          return if ApiKeys::ApiKey.restrictions_column?
+
+          raise ApiKeys::Errors::RestrictionsMigrationRequiredError
         end
 
         # Example: Check if the owner has reached their API key limit.

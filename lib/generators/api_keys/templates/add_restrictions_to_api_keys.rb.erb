@@ -1,0 +1,54 @@
+# frozen_string_literal: true
+
+# Migration to add the `restrictions` column to the api_keys table.
+# This enables request restrictions: locking a key to specific web origins
+# (with `*.` subdomain wildcards) and/or to specific IP addresses and CIDR
+# ranges.
+#
+# Run this migration if you're upgrading from a version of api_keys that
+# didn't have request restrictions support. The column defaults to an empty
+# object, which means "unrestricted", so existing keys are unaffected.
+class AddRestrictionsToApiKeys < ActiveRecord::Migration<%= migration_version %>
+  CONSTRAINT_NAME = "api_keys_restrictions_is_object"
+
+  def up
+    add_column :api_keys, :restrictions, json_column_type, default: {}, null: false
+    add_restrictions_object_constraint
+  end
+
+  def down
+    remove_column :api_keys, :restrictions
+  end
+
+  private
+
+  # Helper method to determine the appropriate JSON column type based on the database adapter.
+  # Uses :jsonb for PostgreSQL for better performance and indexing, :json otherwise.
+  def json_column_type
+    # Check connection availability for adapter name inspection
+    if ActiveRecord::Base.connection.adapter_name.downcase.include?('postgresql')
+      :jsonb
+    else
+      :json
+    end
+  rescue ActiveRecord::ConnectionNotEstablished
+    # Fallback during initial setup or if connection isn't available
+    :text
+  end
+
+  # JSON columns can also hold arrays and scalars. The application requires an
+  # object so damaged or validation-bypassing writes cannot erase a policy.
+  def add_restrictions_object_constraint
+    return unless connection.supports_check_constraints?
+
+    expression = case connection.adapter_name.downcase
+                 when /postgres/
+                   "jsonb_typeof(restrictions) = 'object'"
+                 when /sqlite/
+                   "json_valid(restrictions) AND json_type(restrictions) = 'object'"
+                 when /mysql|trilogy/
+                   "JSON_TYPE(restrictions) = 'OBJECT'"
+                 end
+    add_check_constraint :api_keys, expression, name: CONSTRAINT_NAME if expression
+  end
+end

@@ -39,6 +39,12 @@ module ApiKeys
           ApiKeys::ApiKey.attribute :scopes, json_col_type, default: []
           ApiKeys::ApiKey.attribute :metadata, json_col_type, default: {}
 
+          # Request restrictions arrived in 0.5.0. Installations that have not
+          # run `rails generate api_keys:add_restrictions` yet must not gain a
+          # virtual attribute that silently accepts writes it cannot persist.
+          if ApiKeys::ApiKey.restrictions_column?
+            ApiKeys::ApiKey.attribute :restrictions, json_col_type, default: {}
+          end
         end
       end
     end

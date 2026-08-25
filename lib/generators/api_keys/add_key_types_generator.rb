@@ -35,7 +35,7 @@ module ApiKeys
         say "           publishable: {"
         say "             prefix: 'pk',"
         say "             permissions: %w[read validate],"
-        say "             revocable: false,"
+        say "             public: true,"
         say "             limit: 1"
         say "           },"
         say "           secret: {"

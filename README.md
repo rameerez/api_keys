@@ -5,7 +5,7 @@
 > [!TIP]
 > **🚀 Ship your next Rails app 10x faster!** I've built **[RailsFast](https://railsfast.com/?ref=api_keys)**, a production-ready Rails boilerplate template that comes with everything you need to launch a software business in days, not weeks. Go [check it out](https://railsfast.com/?ref=api_keys)!
 
-`api_keys` makes it simple to add secure, production-ready API key authentication to any Rails app. Generate keys, restrict scopes, auto-expire tokens, revoke tokens, and gate endpoints. It also provides a self-serve dashboard for users to issue and manage their own API keys. Secret tokens are hashed and shown only once. Plaintext is stored only for a key type that you explicitly mark as public, non-revocable, and limited to a finite permission set.
+`api_keys` makes it simple to add secure, production-ready API key authentication to any Rails app. Generate keys, restrict scopes, auto-expire tokens, revoke tokens, and gate endpoints. It also provides a self-serve dashboard for users to issue and manage their own API keys. Secret tokens are hashed and shown only once. Plaintext is stored only for a key type that you explicitly mark as public and limit to a finite permission set.
 
 [ 🟢 [Live interactive demo website](https://apikeys.rameerez.com) ]
 
@@ -40,6 +40,15 @@ rails db:migrate
 ```
 
 The generated migration is idempotent and uses a concurrent PostgreSQL index where supported.
+
+To lock keys to specific web origins or IP addresses (see [Restrict where a key can be used](#restrict-where-a-key-can-be-used-origins-and-ips)), add the restrictions column:
+
+```bash
+rails generate api_keys:add_restrictions
+rails db:migrate
+```
+
+New installations get this column from the start, so this is only for upgrades.
 
 ## Quick Start
 
@@ -152,6 +161,7 @@ Once configured, your users can:
 - set expiration dates
 - attach scopes / permissions to individual keys
 - add and edit the key names
+- lock a key to specific web origins or IP addresses
 - revoke instantly
 - see the status of all their keys
 
@@ -354,6 +364,10 @@ Filter keys by type and status:
 @org.api_keys.expired              # Past expiration date
 @org.api_keys.revoked              # Manually revoked
 
+# By request restrictions
+@org.api_keys.restricted           # Locked to specific origins and/or IPs
+@org.api_keys.unrestricted         # Usable from anywhere
+
 # Chain them
 @org.api_keys.publishable.active
 @org.api_keys.secret.inactive.order(created_at: :desc)
@@ -382,7 +396,9 @@ current_org.can_create_api_key?(key_type: :publishable)
   expires_at: 30.days.from_now,         # Explicit date
   expires_at_preset: "30_days",         # OR use preset (takes precedence)
   environment: :live,                   # Defaults to current_environment
-  metadata: { team: "backend" }         # Optional JSON metadata
+  metadata: { team: "backend" },        # Optional JSON metadata
+  allowed_origins: "example.com",       # Optional: lock to web origins
+  allowed_ips: "10.0.0.0/8"             # Optional: lock to IP addresses
 )
 ```
 
@@ -417,6 +433,12 @@ Methods available on `ApiKeys::ApiKey` instances:
 # Scopes
 @api_key.scopes                   # => ["read", "write"]
 @api_key.allows_scope?("read")    # => true
+
+# Request restrictions (where the key may be used from)
+@api_key.allowed_origins          # => ["example.com", "*.example.com"]
+@api_key.allowed_ips              # => ["203.0.113.7", "10.0.0.0/8"]
+@api_key.restricted?              # => true if either list has entries
+@api_key.restrictions             # => ApiKeys::Restrictions value object
 
 # Metadata
 @api_key.name                     # => "Production Server"
@@ -1042,7 +1064,7 @@ end
 
 This is especially useful if you want to build custom monitoring, usage tracking or auditing systems on top of the `api_keys` gem.
 
-The `before_authentication` context contains `request_uuid`. The `after_authentication` context contains `success`, `error_code`, `api_key_id`, and, when scopes were requested, `required_scope_check`. Jobs are asynchronous, so “before” means it is enqueued before verification; queue execution order is not guaranteed. Configure a persistent Active Job backend and the callback queue appropriate for your application.
+The `before_authentication` context contains `request_uuid`. The `after_authentication` context contains `success`, `error_code`, `api_key_id`, and, when scopes were requested, `required_scope_check`. `api_key_id` is present on success and on every refusal where the key was identified but a policy said no (missing scope, environment isolation, origin or IP restrictions), so refused traffic stays attributable to the key that sent it; only lookup failures leave it `nil`. Jobs are asynchronous, so “before” means it is enqueued before verification; queue execution order is not guaranteed. Configure a persistent Active Job backend and the callback queue appropriate for your application.
 
 The downside of this, of course, is that callbacks will only work if you have a valid, well-configured Active Job backend for your Rails app, like Sidekiq or [`solid_queue`](https://github.com/rails/solid_queue/), which comes by default in Rails 8. If Active Job is not well configured, well, your callbacks just won't get executed.
 
@@ -1071,9 +1093,11 @@ For applications that distribute software with embedded API keys (desktop apps, 
 
 When you distribute software with an embedded API key, that key can potentially be extracted by malicious users. Key types solve this by letting you create:
 
-- **Publishable keys** (`pk_test_...`, `pk_live_...`): Intentionally exposed identifiers. Embed them only when every configured permission is safe for an untrusted public client; assume anyone can extract and abuse them. They cannot be revoked individually.
+- **Publishable keys** (`pk_test_...`, `pk_live_...`): Intentionally exposed identifiers. Embed them only when every configured permission is safe for an untrusted public client; assume anyone can extract and abuse them. They may be revoked, rotated, and expired unless you explicitly configure `revocable: false`.
 
 - **Secret keys** (`sk_test_...`, `sk_live_...`): Sensitive server-side credentials whose exact access depends on their scopes. They can be revoked anytime.
+
+Publishable keys pair naturally with [request restrictions](#restrict-where-a-key-can-be-used-origins-and-ips): lock them to your customers' domains so a lifted key is useless on anyone else's site.
 
 ### Configuration
 
@@ -1086,13 +1110,16 @@ ApiKeys.configure do |config|
     publishable: {
       prefix: "pk",                    # Token prefix → pk_test_, pk_live_
       permissions: %w[read validate],  # Scope ceiling (max permissions allowed)
-      revocable: false,                # Cannot be revoked or deleted
-      limit: 1                         # Max 1 per owner per environment
+      public: true,                    # Store token so it remains viewable
+      limit: 1,                        # Max 1 per owner per environment
+      restrictions: [:origins]         # May be locked to domains, not to IPs
     },
     secret: {
       prefix: "sk",
-      permissions: :all                # No scope restrictions
+      permissions: :all,               # No scope restrictions
+      restrictions: [:ips]             # May be locked to IPs, not to domains
       # revocable defaults to true, limit defaults to nil (unlimited)
+      # restrictions defaults to both kinds allowed
     }
   }
 
@@ -1116,7 +1143,7 @@ end
 ### Creating Typed Keys
 
 ```ruby
-# Create a publishable key (limited permissions, cannot be revoked)
+# Create a publishable key (limited permissions, viewable and revocable)
 pk = user.create_api_key!(
   name: "Production App",
   key_type: :publishable,
@@ -1154,14 +1181,25 @@ sk.scopes  # => ["read", "validate", "issue_license", "admin"]
 
 ### Non-Revocable Keys
 
-Keys with `revocable: false` protect against accidental deletion:
+Keys with `revocable: false` protect against accidental deletion. Configure
+that lifecycle explicitly on the key type that needs it:
 
 ```ruby
-pk = user.create_api_key!(key_type: :publishable)
+ApiKeys.configure do |config|
+  config.key_types = {
+    permanent_server: {
+      prefix: "skp",
+      permissions: :all,
+      revocable: false
+    }
+  }
+end
 
-pk.revocable?  # => false
-pk.revoke!     # Raises ApiKeys::Errors::KeyNotRevocableError
-pk.destroy!    # Raises ApiKeys::Errors::KeyNotRevocableError
+key = user.create_api_key!(key_type: :permanent_server)
+
+key.revocable?  # => false
+key.revoke!     # Raises ApiKeys::Errors::KeyNotRevocableError
+key.destroy!    # Raises ApiKeys::Errors::KeyNotRevocableError
 ```
 
 The dashboard UI automatically hides the revoke button for non-revocable keys.
@@ -1169,11 +1207,11 @@ Deleting the owning record still cascades deletion to all of its API keys, inclu
 
 ### Public Keys (Viewable Tokens)
 
-#### The Problem: Non-Revocable Key Lockout
+#### Why Public Tokens Are Viewable
 
-Non-revocable keys create a potential UX nightmare: if a user creates a publishable key, doesn't copy it immediately, and closes the page—they're locked out. The token is gone forever (we only store the hash), and they can't delete the key to create a new one (it's non-revocable). They're stuck with a useless key slot they can never use or remove.
+Ordinary secret keys cannot be recovered after their one-time display. That is the right default for confidential credentials, but it provides no secrecy benefit for a token deliberately embedded in public client code. It can also lock an owner out when a non-revocable public key is combined with `limit: 1`.
 
-This is especially problematic when combined with `limit: 1`, which restricts users to a single publishable key per environment. A user who loses their token would be permanently locked out of creating publishable keys.
+Public keys solve that display problem independently of lifecycle policy: they can be revocable (the default) or explicitly non-revocable.
 
 #### The Solution: Storing Public Keys
 
@@ -1186,7 +1224,6 @@ config.key_types = {
   publishable: {
     prefix: "pk",
     permissions: %w[read validate],
-    revocable: false,
     public: true,   # Store token for later viewing
     limit: 1
   },
@@ -1201,16 +1238,15 @@ config.key_types = {
 #### Security constraints
 
 > [!IMPORTANT]
-> The `public` option only works when all of these conditions are met:
+> The `public` option only works when both of these conditions are met:
 >  - `public: true` is set in the key type configuration
->  - `revocable: false` is set (non-revocable keys only)
 >  - `permissions` is a finite, non-empty array (never `:all`)
 
 These checks are deliberate safety measures:
 
-1. **Configuration is validated early** — Public types must explicitly be non-revocable and have a finite, non-empty permission ceiling.
+1. **Configuration is validated early** — Public types must have a finite, non-empty permission ceiling.
 
-2. **Revocable keys are NEVER stored** — If a key can be revoked, users can always delete it and create a new one. There's no lockout risk, so no need to store the token.
+2. **Revocability is independent** — Public keys may remain viewable while also being revocable and expirable. `revocable: false` is available only when a permanently deployed identifier is truly required.
 
 3. **Your application defines what is public** — The gem cannot infer the business impact of a permission name. Only mark a type public when every permission in its ceiling is safe for an unauthenticated client to possess.
 
@@ -1278,6 +1314,103 @@ rails db:migrate
 ```
 
 Existing keys without `key_type`/`environment` continue to work normally (backwards compatible).
+
+## Restrict where a key can be used (origins and IPs)
+
+A publishable key lives in your customer's page source, in plain sight. Without any control over *where* it can be used, anyone can lift it and use it from their own website. Lock the key to your customers' domains and a stolen key is useless anywhere else. The same applies to secret keys on the server side: lock them to the addresses your customer's servers actually call from.
+
+Any key can carry two lists:
+
+- **Allowed web origins**: bare hosts, matched against the browser's `Origin` header (falling back to `Referer`). Supports `*.` subdomain wildcards.
+- **Allowed IP addresses**: single IPv4/IPv6 addresses or CIDR ranges.
+
+Both are enforced inside the gem, on every authenticated request, for every key. There is no controller to opt in and no endpoint that can forget.
+
+### Upgrading an existing installation
+
+New installations already have the column. To add it to an existing app:
+
+```bash
+rails generate api_keys:add_restrictions
+rails db:migrate
+```
+
+### Usage
+
+```ruby
+# At creation time
+key = user.create_api_key!(
+  name: "Widget key",
+  key_type: :publishable,
+  allowed_origins: "example.com, *.example.com"
+)
+
+# Or any time after: raw strings are parsed and normalized for you
+key.allowed_ips = "203.0.113.7, 10.0.0.0/8"
+key.save!
+
+key.allowed_origins   # => ["example.com", "*.example.com"]
+key.allowed_ips       # => ["203.0.113.7", "10.0.0.0/8"]
+key.restricted?       # => true
+```
+
+Origin input is deliberately forgiving: full URLs, trailing slashes, ports, commas, and newlines are all accepted and reduced to bare lowercase hosts. `https://Shop.example/` becomes `shop.example`. Your dashboard never needs its own parser.
+
+### Semantics
+
+| Rule | Behavior |
+|---|---|
+| Within one list | **OR** — any entry that matches admits the request |
+| Across both lists | **AND** — every list that has entries must pass |
+| Empty (or absent) lists | **Unrestricted** — presence is the toggle, so existing keys are unaffected |
+| `example.com` | Matches that exact host. Case-insensitive, port-blind, scheme-blind |
+| `*.example.com` | Matches `a.example.com` and `a.b.example.com`, but **not** the apex `example.com`. List both to cover both |
+| `*` alone | Invalid. An empty list already means "anywhere" |
+| IP entries | `203.0.113.7` matches exactly; `10.0.0.0/8` and `2001:db8::/32` match their whole range |
+| No readable origin on an origins-locked key | **Refused.** Every failure mode fails closed |
+| Refusal response | `403 Forbidden` with `origin_not_allowed`, `ip_not_allowed`, or `restriction_misconfigured` for damaged policy data |
+
+An origins-locked key is therefore unusable from origin-less server code, which is exactly the point of locking a browser key.
+
+### Per-key-type restriction ceilings
+
+Key types can cap which kinds of restrictions their keys may carry, the same way `permissions:` caps scopes:
+
+```ruby
+config.key_types = {
+  publishable: { prefix: "pk", permissions: %w[read], public: true,
+                 restrictions: [:origins] },   # Browser keys lock to domains
+  secret:      { prefix: "sk", permissions: :all,
+                 restrictions: [:ips] }        # Server keys lock to addresses
+}
+```
+
+Omitting `restrictions:` allows both kinds. `restrictions: []` forbids restrictions for that type. A key carrying a kind its type forbids fails validation.
+
+### Resolving the client IP
+
+IP checks use `request.remote_ip`, which honors Rails' `config.action_dispatch.trusted_proxies`. Configure that Rails setting for your reverse proxy or CDN and keep the default resolver whenever possible.
+
+Only read a vendor header directly when your network ingress rejects requests that did not come through that vendor. Otherwise a client can send the same header and choose the address your allowlist sees:
+
+```ruby
+# config/initializers/api_keys.rb
+config.client_ip_resolver = ->(request) do
+  request.headers.fetch("CF-Connecting-IP")
+end
+```
+
+### Dashboard
+
+The mounted dashboard renders only the expiration and request-restriction fields supported by the selected key type, and a **Restricted** badge next to keys carrying a policy. Restriction edits remain available on non-revocable keys so an owner can still tighten an allowlist.
+
+### Security notes
+
+- `Origin` and `Referer` are **browser-enforced** headers. They are trustworthy coming from a real browser and trivially forged by `curl`. Origin restrictions are a browser-context control: they stop a lifted public key from working on someone else's *website*. They are not secrecy. Pair them with keys that cannot spend anything dangerous.
+- IP restrictions inherit the truthfulness of their resolver. Configure Rails' `trusted_proxies`; only trust a CDN-supplied header when direct access to the origin is blocked, or callers can spoof the address being checked.
+- Everything fails closed: a locked list plus an unreadable request context, an unknown policy kind, or malformed stored policy data is a refusal, never a pass.
+- Refusals never echo the configured allowlist back to the caller. Reflecting your domains to an unauthenticated attacker would be a reconnaissance gift. If you want a more explicit message, override it through i18n (`api_keys.errors.origin_not_allowed`).
+- Restriction checks read the current database row on every request, cache or no cache. Tightening the origins of a leaked publishable key takes effect on the very next call.
 
 ## Enterprise-ready by design
 The `api_keys` gem ships with:

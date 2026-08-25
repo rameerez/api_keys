@@ -13,6 +13,11 @@ module ApiKeys
     extend ActiveSupport::Concern
     include ApiKeys::Logging
 
+    # Failures where the credential is valid but the request context is refused.
+    # The key itself is fine, so these answer 403 rather than 401 — the same
+    # distinction `:missing_scope` already makes.
+    FORBIDDEN_ERROR_CODES = %i[origin_not_allowed ip_not_allowed restriction_misconfigured].freeze
+
     included do
       # Helper methods to access the authenticated key and its owner
       helper_method :current_api_key, :current_api_owner, :current_api_user
@@ -88,7 +93,8 @@ module ApiKeys
       else
         # Authentication failed
         log_debug "[ApiKeys Auth] Authentication failed. Error: #{result.error_code}, Message: #{result.message}"
-        render_unauthorized(error_code: result.error_code, message: result.message)
+        status = FORBIDDEN_ERROR_CODES.include?(result.error_code) ? :forbidden : :unauthorized
+        render_unauthorized(error_code: result.error_code, message: result.message, status: status)
       end
 
       # Enqueue after_authentication callback asynchronously regardless of success/failure

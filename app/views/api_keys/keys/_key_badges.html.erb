@@ -9,6 +9,13 @@
   </span>
 <% end %>
 
+<% if key.restricted? %>
+  <span class="api-keys-badge api-keys-badge-restricted"
+        title="Usable only from specific <%= key.restrictions.kinds.map { |kind| kind == :ips ? 'IP addresses' : 'web origins' }.to_sentence %>">
+    Restricted
+  </span>
+<% end %>
+
 <% if key.environment.present? %>
   <% is_live = key.environment == 'live' %>
   <span class="api-keys-badge api-keys-badge-env <%= is_live ? 'api-keys-badge-live' : 'api-keys-badge-test' %>">

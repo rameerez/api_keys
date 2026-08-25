@@ -69,5 +69,16 @@ module ApiKeys
         )
       end
     end
+
+    # Raised when request restrictions are used but the `restrictions` column is missing
+    class RestrictionsMigrationRequiredError < BaseError
+      def initialize(message = nil)
+        super(
+          message ||
+            "Request restrictions are configured but the `restrictions` database column is missing. " \
+            "Run: rails generate api_keys:add_restrictions && rails db:migrate"
+        )
+      end
+    end
   end
 end

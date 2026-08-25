@@ -498,6 +498,19 @@ class KeyTypesTest < ApiKeys::Test
     assert_equal 2, ApiKeys::ApiKey.where(key_type: "secret").count
   end
 
+  test "secret scope includes legacy keys without a key type" do
+    user = User.create!(name: "Legacy Scope User")
+    legacy = user.create_api_key!(name: "Legacy")
+
+    configure_key_types_and_environments!
+    secret = user.create_api_key!(name: "Secret", key_type: :secret, environment: :test)
+    publishable = user.create_api_key!(name: "Publishable", key_type: :publishable, environment: :test)
+
+    assert_includes ApiKeys::ApiKey.secret, legacy
+    assert_includes ApiKeys::ApiKey.secret, secret
+    refute_includes ApiKeys::ApiKey.secret, publishable
+  end
+
   test "api_key scopes by environment" do
     configure_key_types_and_environments!
 
@@ -768,7 +781,7 @@ class KeyTypesTest < ApiKeys::Test
   # Public Key Token Storage Tests
   # =============================================================================
 
-  test "public_key_type? returns true for public non-revocable keys" do
+  test "public_key_type? returns true for explicitly public keys" do
     configure_key_types_with_public!
 
     user = User.create!(name: "Public Key User")
@@ -794,19 +807,31 @@ class KeyTypesTest < ApiKeys::Test
     refute key.public_key_type?
   end
 
-  test "configuration rejects public key types that are revocable" do
-    assert_raises(ArgumentError) do
-      ApiKeys.configure do |config|
-        config.key_types = {
-          weird: {
-            prefix: "wk",
-            permissions: %w[read],
-            revocable: true,
-            public: true
-          }
+  test "public key types may be revocable and expirable" do
+    ApiKeys.configure do |config|
+      config.key_types = {
+        publishable: {
+          prefix: "pk",
+          permissions: %w[read],
+          revocable: true,
+          public: true
         }
-      end
+      }
+      config.environments = { test: { prefix_segment: "test" } }
+      config.current_environment = -> { :test }
     end
+
+    user = User.create!(name: "Rotatable Public Key User")
+    key = user.create_api_key!(name: "Publishable Key", key_type: :publishable,
+                               environment: :test, expires_at: 30.days.from_now)
+    token = key.token
+
+    assert key.public_key_type?
+    assert key.revocable?
+    assert key.expirable?
+    assert_equal token, key.reload.viewable_token
+    key.revoke!
+    assert key.revoked?
   end
 
   test "viewable_token returns stored token for public keys" do
@@ -930,7 +955,7 @@ class KeyTypesTest < ApiKeys::Test
     assert_nil key.viewable_token, "SECRET KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
   end
 
-  test "SECURITY: revocable keys with public:true are rejected at configuration time" do
+  test "SECURITY: public keys still require finite permissions when revocable" do
     assert_raises(ArgumentError) do
       ApiKeys.configure do |config|
         config.key_types = {
@@ -1022,7 +1047,7 @@ class KeyTypesTest < ApiKeys::Test
     end
   end
 
-  test "SECURITY: only publishable keys with public:true AND revocable:false store token" do
+  test "SECURITY: only key types with public:true store token" do
     configure_key_types_with_public!
 
     user = User.create!(name: "Only Public User")
@@ -1045,11 +1070,11 @@ class KeyTypesTest < ApiKeys::Test
     assert_nil secret.viewable_token, "SECRET KEY TOKEN WAS REVEALED - SECURITY VIOLATION!"
   end
 
-  test "SECURITY: public_key_type? requires BOTH public:true AND revocable:false" do
+  test "SECURITY: public_key_type? requires public:true independently of revocability" do
     # Test all combinations
     test_cases = [
       { public: true, revocable: false, expected: true, desc: "public:true, revocable:false" },
-      { public: true, revocable: true, expected: false, desc: "public:true, revocable:true" },
+      { public: true, revocable: true, expected: true, desc: "public:true, revocable:true" },
       { public: false, revocable: false, expected: false, desc: "public:false, revocable:false" },
       { public: false, revocable: true, expected: false, desc: "public:false, revocable:true" },
       { public: nil, revocable: false, expected: false, desc: "public:nil, revocable:false" },
@@ -1070,11 +1095,6 @@ class KeyTypesTest < ApiKeys::Test
           config.environments = { test: { prefix_segment: "test" } }
           config.current_environment = -> { :test }
         end
-      end
-
-      if tc[:public] == true && tc[:revocable] != false
-        assert_raises(ArgumentError, "Expected invalid public key config to fail for #{tc[:desc]}", &configure)
-        next
       end
 
       configure.call

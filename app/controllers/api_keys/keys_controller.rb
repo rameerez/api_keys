@@ -4,7 +4,7 @@ module ApiKeys
   # Controller for managing API keys belonging to the current owner.
   class KeysController < ApplicationController
     before_action :set_api_key, only: [:show, :edit, :update, :revoke]
-    helper_method :key_types_feature_enabled?
+    helper_method :key_types_feature_enabled?, :api_keys_allowed_restriction_kinds
 
     # GET /keys
     def index
@@ -48,7 +48,7 @@ module ApiKeys
 
     # GET /keys/new
     def new
-      @api_key = current_api_keys_owner.api_keys.build
+      @api_key = current_api_keys_owner.api_keys.build(key_type: ApiKeys.configuration.default_key_type)
     end
 
     # POST /keys
@@ -62,7 +62,10 @@ module ApiKeys
           name: submitted_params[:name],
           scopes: submitted_params[:scopes],
           expires_at: parse_expiration(submitted_params[:expires_at_preset]),
-          key_type: submitted_params[:key_type].presence
+          key_type: submitted_params[:key_type].presence,
+          # The model normalizes these raw strings; no parser needed here.
+          allowed_origins: submitted_params[:allowed_origins],
+          allowed_ips: submitted_params[:allowed_ips]
           # Metadata could be added here if needed
         )
 
@@ -73,6 +76,7 @@ module ApiKeys
       rescue ActiveRecord::RecordInvalid => e
         # If create! fails due to validation (e.g., quota exceeded)
         @api_key = e.record # Get the invalid ApiKey instance
+        @api_key.expires_at_preset = submitted_params[:expires_at_preset]
         flash.now[:alert] = "Failed to create API key: #{e.record.errors.full_messages.join(', ')}"
         render :new, status: :unprocessable_entity
       rescue ArgumentError
@@ -133,18 +137,23 @@ module ApiKeys
       submitted = params.require(:api_key)
       raise ActionController::ParameterMissing, :api_key unless submitted.respond_to?(:permit)
 
-      permitted_params = submitted.permit(:name, :expires_at_preset, :key_type, scopes: [])
+      permitted_params = submitted.permit(:name, :expires_at_preset, :key_type,
+                                          :allowed_origins, :allowed_ips, scopes: [])
       permitted_params[:scopes]&.reject!(&:blank?) # Filter out blank strings
       permitted_params
     end
 
-    # Only allow updating name and scopes.
+    # Only allow updating name, scopes, and request restrictions.
+    # Restriction edits stay available on non-revocable keys so an owner can
+    # still tighten the policy even when lifecycle operations are disabled.
     def api_key_update_params
       submitted = params.require(:api_key)
       raise ActionController::ParameterMissing, :api_key unless submitted.respond_to?(:permit)
 
-      permitted_params = submitted.permit(:name, scopes: [])
+      permitted_params = submitted.permit(:name, :allowed_origins, :allowed_ips, scopes: [])
       permitted_params[:scopes]&.reject!(&:blank?) # Filter out blank strings
+      permitted_params.delete(:allowed_origins) unless ApiKeys::ApiKey.restrictions_column?
+      permitted_params.delete(:allowed_ips) unless ApiKeys::ApiKey.restrictions_column?
       permitted_params
     end
 
@@ -163,10 +172,32 @@ module ApiKeys
     end
 
     def rebuild_api_key_for_form(submitted_params)
-      current_api_keys_owner.api_keys.build(
+      api_key = current_api_keys_owner.api_keys.build(
         name: submitted_params[:name],
-        scopes: submitted_params[:scopes]
+        scopes: submitted_params[:scopes],
+        key_type: submitted_params[:key_type]
       )
+      api_key.expires_at_preset = submitted_params[:expires_at_preset]
+      if ApiKeys::ApiKey.restrictions_column?
+        api_key.allowed_origins = submitted_params[:allowed_origins] unless submitted_params[:allowed_origins].nil?
+        api_key.allowed_ips = submitted_params[:allowed_ips] unless submitted_params[:allowed_ips].nil?
+      end
+      api_key
+    end
+
+    # Which restriction kinds the form may offer for a given key.
+    # A typed key answers with its own ceiling; an unsaved key that has not
+    # picked a type yet offers everything any configured type allows.
+    #
+    # @param api_key [ApiKeys::ApiKey]
+    # @return [Array<Symbol>]
+    def api_keys_allowed_restriction_kinds(api_key)
+      return api_key.allowed_restriction_kinds if api_key.persisted?
+      return ApiKeys::Restrictions::KINDS.dup unless key_types_feature_enabled?
+
+      ApiKeys.configuration.key_types.flat_map do |_type, settings|
+        ApiKeys::ApiKey.restriction_kinds_for(settings)
+      end.uniq
     end
 
     # Check if key types feature is enabled

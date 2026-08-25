@@ -54,6 +54,7 @@ end
 require "api_keys/version"
 require "api_keys/configuration" # Defines the ApiKeys::Configuration class
 require "api_keys/errors" # Error classes for key types feature
+require "api_keys/restrictions" # Origin/IP request restrictions value object
 
 # Files that might depend on ApiKeys.configuration being available
 require "api_keys/controller" # This can lead to loading jobs, etc.

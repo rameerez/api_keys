@@ -36,6 +36,8 @@
       --api-keys-badge-live-color: #155724;
       --api-keys-badge-test-bg: #f8d7da;
       --api-keys-badge-test-color: #721c24;
+      --api-keys-badge-restricted-bg: #e2e3e5;
+      --api-keys-badge-restricted-color: #383d41;
 
       /* Status colors */
       --api-keys-status-active-color: green;
@@ -152,6 +154,8 @@
         --api-keys-badge-live-color: #9ae6b4;
         --api-keys-badge-test-bg: #742a2a;
         --api-keys-badge-test-color: #feb2b2;
+        --api-keys-badge-restricted-bg: #2d3748;
+        --api-keys-badge-restricted-color: #cbd5e0;
       }
 
       body {
@@ -212,7 +216,7 @@
     .api-keys-status-active { color: var(--api-keys-status-active-color); }
     .api-keys-status-revoked { color: var(--api-keys-status-revoked-color); }
     .api-keys-status-expired { color: var(--api-keys-status-expired-color); }
-    .api-keys-badge-type, .api-keys-badge-env {
+    .api-keys-badge-type, .api-keys-badge-env, .api-keys-badge-restricted {
       margin-left: 0.25rem;
       padding: 0.15rem 0.4rem;
       border-radius: 3px;
@@ -233,6 +237,10 @@
     .api-keys-badge-test {
       color: var(--api-keys-badge-test-color);
       background-color: var(--api-keys-badge-test-bg);
+    }
+    .api-keys-badge-restricted {
+      color: var(--api-keys-badge-restricted-color);
+      background-color: var(--api-keys-badge-restricted-bg);
     }
 
     .api-keys-button-text {

@@ -1,5 +1,6 @@
 <%# Shared form for creating and editing API Keys %>
-<%= form_with(model: [:keys, api_key], url: (api_key.persisted? ? key_path(api_key) : keys_path), local: true) do |form| %>
+<%= form_with(model: [:keys, api_key], url: (api_key.persisted? ? key_path(api_key) : keys_path),
+              local: true, html: { id: "api-keys-key-form" }) do |form| %>
   <% if api_key.errors.any? %>
     <div class="api-keys-form-errors">
       <strong><%= pluralize(api_key.errors.count, "error") %> prohibited this API key from being saved:</strong>
@@ -47,7 +48,7 @@
       <%= form.text_field :name, placeholder: "e.g., myproject-production-key" %>
     </div>
 
-    <div>
+    <div data-api-keys-expiration>
       <%= form.label :expires_at_preset, "Expiration" %>
       <%= form.select :expires_at_preset,
           options_for_select([
@@ -57,7 +58,7 @@
             ["60 days", "60_days"],
             ["90 days", "90_days"],
             ["365 days", "365_days"] # Common presets
-          ], api_key.expires_at.present? ? nil : "no_expiration"), # Default selection
+          ], api_key.expires_at_preset.presence || (api_key.expires_at.present? ? nil : "no_expiration")), # Default selection
           {}, # html options
           {} # data attributes
       %>
@@ -86,6 +87,8 @@
         <% end %>
       </div>
     <% end %>
+
+    <%= render "api_keys/keys/restriction_fields", form: form, api_key: api_key %>
 
   <% end %>
 
@@ -119,6 +122,8 @@
         <% end %>
       </div>
     <% end %>
+
+    <%= render "api_keys/keys/restriction_fields", form: form, api_key: api_key %>
   <% end %>
 
   <div>
@@ -127,9 +132,45 @@
       <%= link_to "Cancel", keys_path %>
     <% else %>
       <h4><strong>Keep it safe</strong></h4>
-      <p>Your API key will only be shown once after creation. <strong>Your key cannot be recovered:</strong> copy it immediately and store it securely.</p>
+      <p>Secret API keys are only shown once after creation. Copy the new key immediately and store it securely.</p>
       <%= form.submit "Create API Key" %>
       <%= link_to "Cancel", keys_path %>
     <% end %>
   </div>
+<% end %>
+
+<% if !api_key.persisted? && ApiKeys.configuration.key_types.present? %>
+  <% key_type_policies = ApiKeys.configuration.key_types.to_h do |type, config| %>
+    <% [type.to_s, {
+      restrictions: ApiKeys::ApiKey.restriction_kinds_for(config).map(&:to_s),
+      expirable: ApiKeys::ApiKey.revocable_for(config)
+    }] %>
+  <% end %>
+  <script nonce="<%= content_security_policy_nonce %>">
+    (() => {
+      const form = document.getElementById("api-keys-key-form");
+      const keyType = form && form.querySelector("#api_key_key_type");
+      if (!form || !keyType) return;
+
+      const policies = <%= raw json_escape(key_type_policies.to_json) %>;
+      const updatePolicyFields = () => {
+        const policy = policies[keyType.value];
+
+        form.querySelectorAll("[data-api-keys-restriction-kind]").forEach((container) => {
+          const enabled = policy && policy.restrictions.includes(container.dataset.apiKeysRestrictionKind);
+          container.hidden = !enabled;
+          container.querySelectorAll("input, select, textarea").forEach((input) => { input.disabled = !enabled; });
+        });
+
+        form.querySelectorAll("[data-api-keys-expiration]").forEach((container) => {
+          const enabled = policy && policy.expirable;
+          container.hidden = !enabled;
+          container.querySelectorAll("input, select, textarea").forEach((input) => { input.disabled = !enabled; });
+        });
+      };
+
+      keyType.addEventListener("change", updatePolicyFields);
+      updatePolicyFields();
+    })();
+  </script>
 <% end %>

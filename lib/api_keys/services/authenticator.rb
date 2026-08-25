@@ -5,6 +5,7 @@ require "active_support/core_ext/object/blank"
 require "digest"
 require_relative "../models/api_key"
 require_relative "../services/digestor"
+require_relative "../restrictions"
 require_relative "../logging"
 
 module ApiKeys
@@ -25,8 +26,13 @@ module ApiKeys
           new(success?: true, api_key: api_key)
         end
 
-        def self.failure(error_code:, message:)
-          new(success?: false, error_code: error_code, message: message)
+        # `api_key` is present when the key WAS identified and a policy check
+        # refused it (environment isolation, request restrictions): the
+        # after_authentication callback then reports WHICH key was refused,
+        # exactly as it already does for scope refusals. Lookup failures have
+        # no key to name, so they leave it nil.
+        def self.failure(error_code:, message:, api_key: nil)
+          new(success?: false, error_code: error_code, message: message, api_key: api_key)
         end
 
         # Do not delegate to Struct's default inspection: it recursively inspects
@@ -82,20 +88,25 @@ module ApiKeys
                  elsif api_key&.active?
                    log_debug "[ApiKeys Auth] Verification successful. Key ID: #{api_key.id}"
 
-                   # Check environment isolation if enabled
+                   # Check environment isolation, then the key's request restrictions.
+                   # Both run on every request, including token-cache hits: the
+                   # cache only shortcuts the lookup, and the row is reloaded fresh.
                    env_check_result = check_environment_isolation(api_key, config)
+                   restriction_result = env_check_result ? nil : check_request_restrictions(api_key, request, config)
                    if env_check_result
                      env_check_result  # Return failure result
+                   elsif restriction_result
+                     restriction_result # Return failure result
                    else
                      # TODO: Optionally update last_used_at and requests_count
                      Result.success(api_key)
                    end
                  elsif api_key&.revoked?
                    log_debug "[ApiKeys Auth] Verification failed: Key revoked. Key ID: #{api_key.id}"
-                   Result.failure(error_code: :revoked_key, message: "API key has been revoked")
+                   Result.failure(error_code: :revoked_key, message: "API key has been revoked", api_key: api_key)
                  elsif api_key&.expired?
                    log_debug "[ApiKeys Auth] Verification failed: Key expired. Key ID: #{api_key.id}"
-                   Result.failure(error_code: :expired_key, message: "API key has expired")
+                   Result.failure(error_code: :expired_key, message: "API key has expired", api_key: api_key)
                  else # Not found, mismatch, or inactive
                    log_debug "[ApiKeys Auth] Verification failed: Token invalid or key not found."
                    Result.failure(error_code: :invalid_token, message: "API token is invalid")
@@ -357,7 +368,7 @@ module ApiKeys
         return nil if configured
 
         log_warn "[ApiKeys Security] Rejected API key ID #{api_key.id} because its key type is not configured."
-        Result.failure(error_code: :unknown_key_type, message: "API key type is not configured")
+        Result.failure(error_code: :unknown_key_type, message: "API key type is not configured", api_key: api_key)
       end
 
       def self.check_environment_configuration(api_key, config)
@@ -371,7 +382,7 @@ module ApiKeys
         return nil if configured
 
         log_warn "[ApiKeys Security] Rejected API key ID #{api_key.id} because its environment is not configured."
-        Result.failure(error_code: :unknown_environment, message: "API key environment is not configured")
+        Result.failure(error_code: :unknown_environment, message: "API key environment is not configured", api_key: api_key)
       end
 
       # Check if the API key's environment matches the current environment
@@ -386,7 +397,8 @@ module ApiKeys
         if key_env.blank?
           return Result.failure(
             error_code: :environment_misconfigured,
-            message: "API key environment could not be verified"
+            message: "API key environment could not be verified",
+            api_key: api_key
           )
         end
 
@@ -398,7 +410,8 @@ module ApiKeys
           log_warn "[ApiKeys Security] Current environment resolution failed (#{error.class})."
           return Result.failure(
             error_code: :environment_misconfigured,
-            message: "API key environment could not be verified"
+            message: "API key environment could not be verified",
+            api_key: api_key
           )
         end
 
@@ -412,7 +425,8 @@ module ApiKeys
           log_warn "[ApiKeys Security] Strict environment isolation is enabled, but current_environment resolved to blank."
           return Result.failure(
             error_code: :environment_misconfigured,
-            message: "API key environment could not be verified"
+            message: "API key environment could not be verified",
+            api_key: api_key
           )
         end
 
@@ -420,11 +434,72 @@ module ApiKeys
           log_debug "[ApiKeys Auth] Environment mismatch for key ID #{api_key.id}."
           return Result.failure(
             error_code: :environment_mismatch,
-            message: "API key cannot be used in this environment"
+            message: "API key cannot be used in this environment",
+            api_key: api_key
           )
         end
 
         nil # Check passed
+      end
+
+      # Enforces the key's request restrictions: which web origins and which IP
+      # addresses may present it. Empty lists mean unrestricted, so every key
+      # written before this feature existed passes untouched.
+      #
+      # Every list that is present must pass (AND across kinds); within a list
+      # any entry admits the request (OR within a kind). A locked list plus an
+      # unreadable request context refuses: these checks fail closed.
+      #
+      # @return [ApiKeys::Services::Authenticator::Result, nil] Failure, or nil when the check passes.
+      def self.check_request_restrictions(api_key, request, config)
+        restrictions = api_key.restrictions
+        return nil if restrictions.unrestricted?
+
+        if restrictions.malformed?
+          log_warn "[ApiKeys Security] Rejected API key ID #{api_key.id} because its stored request restrictions are malformed."
+          return Result.failure(
+            error_code: :restriction_misconfigured,
+            message: "This API key's request restrictions could not be verified",
+            api_key: api_key
+          )
+        end
+
+        if restrictions.origins.any?
+          origin_host = ApiKeys::Restrictions.extract_origin_host(request)
+          unless restrictions.origin_allowed?(origin_host)
+            log_warn "[ApiKeys Security] Rejected API key ID #{api_key.id} because the request origin is not allowed."
+            return Result.failure(
+              error_code: :origin_not_allowed,
+              message: "This API key is restricted to specific web origins, and this request's origin is not allowed",
+              api_key: api_key
+            )
+          end
+        end
+
+        if restrictions.ips.any?
+          unless restrictions.ip_allowed?(resolve_client_ip(request, config))
+            log_warn "[ApiKeys Security] Rejected API key ID #{api_key.id} because the request IP address is not allowed."
+            return Result.failure(
+              error_code: :ip_not_allowed,
+              message: "This API key is restricted to specific IP addresses, and this request's address is not allowed",
+              api_key: api_key
+            )
+          end
+        end
+
+        nil # Check passed
+      end
+
+      # Resolves the client IP through the configured resolver. A resolver that
+      # blows up yields nil, which an IP-locked key treats as a refusal.
+      def self.resolve_client_ip(request, config)
+        resolver = config.client_ip_resolver
+        return nil unless resolver.respond_to?(:call)
+
+        resolver.call(request)
+      rescue StandardError => error
+        log_warn "[ApiKeys Security] Client IP resolution failed (#{error.class}); treating the address as unknown."
+        nil
       end
 
       private_class_method :extract_token, :find_and_verify_key, :find_sha256_key,
@@ -437,7 +512,8 @@ module ApiKeys
                            :safe_find_by_id, :sanitize_prefixes, :valid_token?,
                            :production_environment?, :secure_request?,
                            :check_key_type_configuration, :check_environment_configuration,
-                           :check_environment_isolation
+                           :check_environment_isolation, :check_request_restrictions,
+                           :resolve_client_ip
     end
   end
 end

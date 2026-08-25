@@ -2,6 +2,8 @@
 
 # Migration responsible for creating the core api_keys table.
 class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
+  RESTRICTIONS_CONSTRAINT_NAME = "api_keys_restrictions_is_object"
+
   def change
     primary_key_type, foreign_key_type = primary_and_foreign_key_types
 
@@ -29,6 +31,10 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
 
       # Optional freeform metadata for tagging
       t.send(json_column_type, :metadata, default: {}, null: false)
+
+      # Optional request restrictions: which web origins and IP addresses may
+      # present this key. An empty object means the key is unrestricted.
+      t.send(json_column_type, :restrictions, default: {}, null: false)
 
       # Optional auto-expiration timestamp
       t.datetime :expires_at
@@ -67,6 +73,8 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       t.index :environment
       t.index [:owner_type, :owner_id, :key_type, :environment], name: "index_api_keys_owner_type_env"
     end
+
+    add_restrictions_object_constraint
   end
 
   private
@@ -93,5 +101,19 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
   rescue ActiveRecord::ConnectionNotEstablished
     # Fallback during initial setup or if connection isn't available
     :text
+  end
+
+  def add_restrictions_object_constraint
+    return unless connection.supports_check_constraints?
+
+    expression = case connection.adapter_name.downcase
+                 when /postgres/
+                   "jsonb_typeof(restrictions) = 'object'"
+                 when /sqlite/
+                   "json_valid(restrictions) AND json_type(restrictions) = 'object'"
+                 when /mysql|trilogy/
+                   "JSON_TYPE(restrictions) = 'OBJECT'"
+                 end
+    add_check_constraint :api_keys, expression, name: RESTRICTIONS_CONSTRAINT_NAME if expression
   end
 end
