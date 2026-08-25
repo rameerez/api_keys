@@ -87,6 +87,8 @@
       </div>
     <% end %>
 
+    <%= render "api_keys/keys/restriction_fields", form: form, api_key: api_key %>
+
   <% end %>
 
   <%# Fields editable on EDIT %>
@@ -119,6 +121,8 @@
         <% end %>
       </div>
     <% end %>
+
+    <%= render "api_keys/keys/restriction_fields", form: form, api_key: api_key %>
   <% end %>
 
   <div>

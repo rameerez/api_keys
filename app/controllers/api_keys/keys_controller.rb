@@ -4,7 +4,7 @@ module ApiKeys
   # Controller for managing API keys belonging to the current owner.
   class KeysController < ApplicationController
     before_action :set_api_key, only: [:show, :edit, :update, :revoke]
-    helper_method :key_types_feature_enabled?
+    helper_method :key_types_feature_enabled?, :api_keys_allowed_restriction_kinds
 
     # GET /keys
     def index
@@ -62,7 +62,10 @@ module ApiKeys
           name: submitted_params[:name],
           scopes: submitted_params[:scopes],
           expires_at: parse_expiration(submitted_params[:expires_at_preset]),
-          key_type: submitted_params[:key_type].presence
+          key_type: submitted_params[:key_type].presence,
+          # The model normalizes these raw strings; no parser needed here.
+          allowed_origins: submitted_params[:allowed_origins],
+          allowed_ips: submitted_params[:allowed_ips]
           # Metadata could be added here if needed
         )
 
@@ -133,18 +136,23 @@ module ApiKeys
       submitted = params.require(:api_key)
       raise ActionController::ParameterMissing, :api_key unless submitted.respond_to?(:permit)
 
-      permitted_params = submitted.permit(:name, :expires_at_preset, :key_type, scopes: [])
+      permitted_params = submitted.permit(:name, :expires_at_preset, :key_type,
+                                          :allowed_origins, :allowed_ips, scopes: [])
       permitted_params[:scopes]&.reject!(&:blank?) # Filter out blank strings
       permitted_params
     end
 
-    # Only allow updating name and scopes.
+    # Only allow updating name, scopes, and request restrictions.
+    # Restriction edits stay available on non-revocable keys on purpose: they
+    # are the one control the owner of an unrevocable public key still has.
     def api_key_update_params
       submitted = params.require(:api_key)
       raise ActionController::ParameterMissing, :api_key unless submitted.respond_to?(:permit)
 
-      permitted_params = submitted.permit(:name, scopes: [])
+      permitted_params = submitted.permit(:name, :allowed_origins, :allowed_ips, scopes: [])
       permitted_params[:scopes]&.reject!(&:blank?) # Filter out blank strings
+      permitted_params.delete(:allowed_origins) unless ApiKeys::ApiKey.restrictions_column?
+      permitted_params.delete(:allowed_ips) unless ApiKeys::ApiKey.restrictions_column?
       permitted_params
     end
 
@@ -167,6 +175,25 @@ module ApiKeys
         name: submitted_params[:name],
         scopes: submitted_params[:scopes]
       )
+    end
+
+    # Which restriction kinds the form may offer for a given key.
+    # A typed key answers with its own ceiling; an unsaved key that has not
+    # picked a type yet offers everything any configured type allows.
+    #
+    # @param api_key [ApiKeys::ApiKey]
+    # @return [Array<Symbol>]
+    def api_keys_allowed_restriction_kinds(api_key)
+      return restriction_kinds_for(api_key.key_type_config) if api_key.key_type.present?
+      return ApiKeys::Restrictions::KINDS.dup unless key_types_feature_enabled?
+
+      ApiKeys.configuration.key_types.flat_map { |_type, settings| restriction_kinds_for(settings) }.uniq
+    end
+
+    def restriction_kinds_for(type_config)
+      return ApiKeys::Restrictions::KINDS.dup unless type_config.is_a?(Hash) && type_config.key?(:restrictions)
+
+      Array(type_config[:restrictions]).map(&:to_sym)
     end
 
     # Check if key types feature is enabled
