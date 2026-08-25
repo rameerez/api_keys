@@ -1,0 +1,31 @@
+# frozen_string_literal: true
+
+# Migration to add the `restrictions` column to the api_keys table.
+# This enables request restrictions: locking a key to specific web origins
+# (with `*.` subdomain wildcards) and/or to specific IP addresses and CIDR
+# ranges.
+#
+# Run this migration if you're upgrading from a version of api_keys that
+# didn't have request restrictions support. The column defaults to an empty
+# object, which means "unrestricted", so existing keys are unaffected.
+class AddRestrictionsToApiKeys < ActiveRecord::Migration<%= migration_version %>
+  def change
+    add_column :api_keys, :restrictions, json_column_type, default: {}, null: false
+  end
+
+  private
+
+  # Helper method to determine the appropriate JSON column type based on the database adapter.
+  # Uses :jsonb for PostgreSQL for better performance and indexing, :json otherwise.
+  def json_column_type
+    # Check connection availability for adapter name inspection
+    if ActiveRecord::Base.connection.adapter_name.downcase.include?('postgresql')
+      :jsonb
+    else
+      :json
+    end
+  rescue ActiveRecord::ConnectionNotEstablished
+    # Fallback during initial setup or if connection isn't available
+    :text
+  end
+end

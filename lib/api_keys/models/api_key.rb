@@ -4,6 +4,7 @@ require "active_record"
 require "json"
 require_relative "../services/token_generator"
 require_relative "../services/digestor"
+require_relative "../restrictions"
 
 module ApiKeys
   # The core ActiveRecord model representing an API key.
@@ -11,6 +12,11 @@ module ApiKeys
     MAX_SCOPES = 100
     MAX_SCOPE_BYTESIZE = 128
     MAX_METADATA_BYTESIZE = 16_384
+    MAX_RESTRICTION_ENTRIES = 100
+    MAX_RESTRICTION_ENTRY_BYTESIZE = 255
+    RESTRICTIONS_COLUMN = "restrictions"
+    # Deliberately excludes `restrictions`: tightening the origins of a leaked
+    # publishable key is the one control the owner of a non-revocable key has.
     IMMUTABLE_IDENTITY_ATTRIBUTES = %w[
       token_digest digest_algorithm prefix last4 owner_type owner_id key_type environment
     ].freeze
@@ -45,6 +51,57 @@ module ApiKeys
       super(cleaned)
     end
 
+    # == Request Restrictions ==
+    # Where this key may be used from. Reads always answer with a value object,
+    # so `key.restrictions.origins` works even on a key that has none.
+    #
+    # @return [ApiKeys::Restrictions]
+    def restrictions
+      return ApiKeys::Restrictions.none unless self.class.restrictions_column?
+
+      ApiKeys::Restrictions.wrap(self[:restrictions])
+    end
+
+    # Accepts a Restrictions instance, a hash of lists, or nil. Hashes are
+    # normalized into the storage shape; anything else is stored untouched so
+    # the validation, rather than a silent coercion, is what reports it.
+    def restrictions=(value)
+      ensure_restrictions_column!
+
+      normalized = if value.nil? || value.is_a?(Hash) || value.is_a?(ApiKeys::Restrictions)
+                     ApiKeys::Restrictions.wrap(value).to_h
+                   else
+                     value
+                   end
+      super(normalized)
+    end
+
+    # @return [Array<String>] Allowed web origins (hosts and `*.host` wildcards).
+    def allowed_origins
+      restrictions.origins
+    end
+
+    # @return [Array<String>] Allowed IP addresses and CIDR ranges.
+    def allowed_ips
+      restrictions.ips
+    end
+
+    # Accepts an array or a raw string ("example.com, *.example.com") and
+    # normalizes it, so host applications never need their own parser.
+    def allowed_origins=(value)
+      self.restrictions = restrictions.to_h.merge("origins" => ApiKeys::Restrictions.normalize_origins(value))
+    end
+
+    # Accepts an array or a raw string ("203.0.113.7, 10.0.0.0/8").
+    def allowed_ips=(value)
+      self.restrictions = restrictions.to_h.merge("ips" => ApiKeys::Restrictions.normalize_ips(value))
+    end
+
+    # @return [Boolean] true when this key carries any request restriction.
+    def restricted?
+      restrictions.restricted?
+    end
+
     # == Validations ==
     validates :token_digest, presence: true, uniqueness: { case_sensitive: true }
     validates :prefix, presence: true, length: { maximum: 64 }
@@ -73,6 +130,8 @@ module ApiKeys
     validate :token_digest_matches_algorithm
     validate :token_identifiers_are_well_formed
     validate :metadata_is_well_formed
+    validate :restrictions_are_well_formed
+    validate :restrictions_respect_key_type, if: -> { key_type.present? }
     validate :authentication_identity_is_immutable, on: :update
 
     # TODO: Add validation for scope string format
@@ -102,6 +161,10 @@ module ApiKeys
     # .secret returns keys that are NOT publishable (includes legacy keys with nil/blank key_type)
     scope :publishable, -> { where(key_type: "publishable") }
     scope :secret, -> { where.not(key_type: "publishable") }
+
+    # Keys that carry request restrictions, and keys usable from anywhere.
+    scope :restricted, -> { where.not(restrictions: {}) }
+    scope :unrestricted, -> { where(restrictions: {}) }
 
     # === Usage Analytics Scopes ===
     # These scopes help admin dashboards analyze API key usage patterns.
@@ -306,7 +369,22 @@ module ApiKeys
     # == Class Methods ==
     # Most creation logic is handled by standard ActiveRecord methods + callbacks
 
+    # Whether the `restrictions` column exists. Installations that predate
+    # v0.5.0 keep working untouched until they run the generator.
+    # @return [Boolean]
+    def self.restrictions_column?
+      column_names.include?(RESTRICTIONS_COLUMN)
+    rescue StandardError
+      false
+    end
+
     private
+
+    def ensure_restrictions_column!
+      return if self.class.restrictions_column?
+
+      raise ApiKeys::Errors::RestrictionsMigrationRequiredError
+    end
 
     # Set defaults for attributes not handled by the `attribute` API in the engine.
     def set_defaults
@@ -465,6 +543,77 @@ module ApiKeys
       errors.add(:metadata, "is too large") if JSON.generate(metadata).bytesize > MAX_METADATA_BYTESIZE
     rescue JSON::GeneratorError, EncodingError
       errors.add(:metadata, "must contain valid JSON data")
+    end
+
+    # Restrictions are security policy: a malformed list must fail loudly at
+    # write time rather than quietly protecting nothing at authentication time.
+    def restrictions_are_well_formed
+      return unless self.class.restrictions_column?
+
+      raw = self[:restrictions]
+      return if raw.nil?
+
+      unless raw.is_a?(Hash)
+        errors.add(:restrictions, "must be an object")
+        return
+      end
+
+      unknown_kinds = raw.keys.map(&:to_s) - ApiKeys::Restrictions::KIND_NAMES
+      if unknown_kinds.any?
+        errors.add(:restrictions, "contains unknown restriction kinds: #{unknown_kinds.sort.join(', ')}")
+      end
+
+      validate_restriction_list(:origins) { |entry| ApiKeys::Restrictions.valid_origin_entry?(entry) }
+      validate_restriction_list(:ips) { |entry| ApiKeys::Restrictions.valid_ip_entry?(entry) }
+    end
+
+    def validate_restriction_list(kind)
+      entries = restrictions.public_send(kind)
+
+      if entries.length > MAX_RESTRICTION_ENTRIES
+        errors.add(:restrictions, "#{kind} cannot contain more than #{MAX_RESTRICTION_ENTRIES} entries")
+      end
+
+      if entries.any? { |entry| !valid_restriction_entry_size?(entry) }
+        errors.add(:restrictions, "#{kind} entries cannot exceed #{MAX_RESTRICTION_ENTRY_BYTESIZE} bytes")
+      end
+
+      return if entries.all? { |entry| yield(entry) }
+
+      message = if kind == :origins
+                  "origins must be bare hosts, optionally prefixed with a `*.` subdomain wildcard"
+                else
+                  "ips must be valid IPv4/IPv6 addresses or CIDR ranges"
+                end
+      errors.add(:restrictions, message)
+    end
+
+    # Non-string entries are reported by the shape check below, not here.
+    def valid_restriction_entry_size?(entry)
+      return true unless entry.is_a?(String)
+      return false unless entry.valid_encoding?
+
+      entry.bytesize <= MAX_RESTRICTION_ENTRY_BYTESIZE
+    rescue ArgumentError
+      false
+    end
+
+    # Key types may declare a ceiling on the restriction kinds their keys carry,
+    # mirroring the way `permissions:` caps scopes.
+    def restrictions_respect_key_type
+      exceeded = restrictions.kinds - restriction_ceiling
+      return if exceeded.empty?
+
+      errors.add(:restrictions, "#{exceeded.sort.join(', ')} are not allowed for #{key_type} keys")
+    end
+
+    # @return [Array<Symbol>] Restriction kinds this key's type permits.
+    #   An omitted `restrictions:` setting permits every kind.
+    def restriction_ceiling
+      config = key_type_config
+      return ApiKeys::Restrictions::KINDS.dup unless config&.key?(:restrictions)
+
+      Array(config[:restrictions]).map(&:to_sym)
     end
 
     def authentication_identity_is_immutable

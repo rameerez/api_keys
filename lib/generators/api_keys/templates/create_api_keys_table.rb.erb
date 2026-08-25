@@ -30,6 +30,10 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       # Optional freeform metadata for tagging
       t.send(json_column_type, :metadata, default: {}, null: false)
 
+      # Optional request restrictions: which web origins and IP addresses may
+      # present this key. An empty object means the key is unrestricted.
+      t.send(json_column_type, :restrictions, default: {}, null: false)
+
       # Optional auto-expiration timestamp
       t.datetime :expires_at
 
