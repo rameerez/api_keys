@@ -255,6 +255,28 @@ class RequestRestrictionsTest < ApiKeys::Test
     assert_equal :environment_mismatch, result.error_code
   end
 
+  test "a policy refusal names the key it refused" do
+    # The key WAS identified; a policy said no. The result carries the key so
+    # the after_authentication callback can attribute the refusal — a locked
+    # key under a misconfigured origin must not look identical to a key
+    # nobody ever tried. Scope refusals already behave this way.
+    origin_key, origin_token = create_key(allowed_origins: "example.com")
+    ip_key, ip_token = create_key(allowed_ips: "203.0.113.0/24")
+
+    origin_result = authenticate(token: origin_token, origin: "https://freeloader.example")
+    ip_result = authenticate(token: ip_token, remote_ip: "198.51.100.7")
+
+    assert_equal origin_key.id, origin_result.api_key&.id
+    assert_equal ip_key.id, ip_result.api_key&.id
+  end
+
+  test "a lookup failure has no key to name" do
+    result = authenticate(token: "vdb_sk_never_minted")
+
+    refute result.success?
+    assert_nil result.api_key
+  end
+
   # =============================================================================
   # Controller concern: status codes and messages
   # =============================================================================

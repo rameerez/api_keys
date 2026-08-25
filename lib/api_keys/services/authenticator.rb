@@ -26,8 +26,13 @@ module ApiKeys
           new(success?: true, api_key: api_key)
         end
 
-        def self.failure(error_code:, message:)
-          new(success?: false, error_code: error_code, message: message)
+        # `api_key` is present when the key WAS identified and a policy check
+        # refused it (environment isolation, request restrictions): the
+        # after_authentication callback then reports WHICH key was refused,
+        # exactly as it already does for scope refusals. Lookup failures have
+        # no key to name, so they leave it nil.
+        def self.failure(error_code:, message:, api_key: nil)
+          new(success?: false, error_code: error_code, message: message, api_key: api_key)
         end
 
         # Do not delegate to Struct's default inspection: it recursively inspects
@@ -392,7 +397,8 @@ module ApiKeys
         if key_env.blank?
           return Result.failure(
             error_code: :environment_misconfigured,
-            message: "API key environment could not be verified"
+            message: "API key environment could not be verified",
+            api_key: api_key
           )
         end
 
@@ -404,7 +410,8 @@ module ApiKeys
           log_warn "[ApiKeys Security] Current environment resolution failed (#{error.class})."
           return Result.failure(
             error_code: :environment_misconfigured,
-            message: "API key environment could not be verified"
+            message: "API key environment could not be verified",
+            api_key: api_key
           )
         end
 
@@ -418,7 +425,8 @@ module ApiKeys
           log_warn "[ApiKeys Security] Strict environment isolation is enabled, but current_environment resolved to blank."
           return Result.failure(
             error_code: :environment_misconfigured,
-            message: "API key environment could not be verified"
+            message: "API key environment could not be verified",
+            api_key: api_key
           )
         end
 
@@ -426,7 +434,8 @@ module ApiKeys
           log_debug "[ApiKeys Auth] Environment mismatch for key ID #{api_key.id}."
           return Result.failure(
             error_code: :environment_mismatch,
-            message: "API key cannot be used in this environment"
+            message: "API key cannot be used in this environment",
+            api_key: api_key
           )
         end
 
@@ -452,7 +461,8 @@ module ApiKeys
             log_warn "[ApiKeys Security] Rejected API key ID #{api_key.id} because the request origin is not allowed."
             return Result.failure(
               error_code: :origin_not_allowed,
-              message: "This API key is restricted to specific web origins, and this request's origin is not allowed"
+              message: "This API key is restricted to specific web origins, and this request's origin is not allowed",
+              api_key: api_key
             )
           end
         end
@@ -462,7 +472,8 @@ module ApiKeys
             log_warn "[ApiKeys Security] Rejected API key ID #{api_key.id} because the request IP address is not allowed."
             return Result.failure(
               error_code: :ip_not_allowed,
-              message: "This API key is restricted to specific IP addresses, and this request's address is not allowed"
+              message: "This API key is restricted to specific IP addresses, and this request's address is not allowed",
+              api_key: api_key
             )
           end
         end

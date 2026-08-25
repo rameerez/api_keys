@@ -9,6 +9,7 @@
 - `rails generate api_keys:add_restrictions` for existing installations; new installs create the column from the start.
 - Dashboard: origin and IP fields on the key form (shown per the key type's ceiling) and a "Restricted" badge. Restriction edits stay available on non-revocable keys, which is the one control the owner of an unrevocable public key has.
 - Model surface: `restrictions`, `restricted?`, `allowed_origins`/`allowed_ips` readers and raw-string writers, `restricted`/`unrestricted` scopes, and `create_api_key!(restrictions:, allowed_origins:, allowed_ips:)`.
+- Refusal attribution: when an identified key is refused by policy (environment isolation, origin or IP restrictions), the `after_authentication` callback context now carries its `api_key_id`, as scope refusals always did. A key under a misconfigured lock no longer looks identical to a key nobody ever tried.
 
 ### Security
 
