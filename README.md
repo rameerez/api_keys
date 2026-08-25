@@ -1143,7 +1143,7 @@ end
 ### Creating Typed Keys
 
 ```ruby
-# Create a publishable key (limited permissions, cannot be revoked)
+# Create a publishable key (limited permissions, viewable and revocable)
 pk = user.create_api_key!(
   name: "Production App",
   key_type: :publishable,
@@ -1181,14 +1181,25 @@ sk.scopes  # => ["read", "validate", "issue_license", "admin"]
 
 ### Non-Revocable Keys
 
-Keys with `revocable: false` protect against accidental deletion:
+Keys with `revocable: false` protect against accidental deletion. Configure
+that lifecycle explicitly on the key type that needs it:
 
 ```ruby
-pk = user.create_api_key!(key_type: :publishable)
+ApiKeys.configure do |config|
+  config.key_types = {
+    permanent_server: {
+      prefix: "skp",
+      permissions: :all,
+      revocable: false
+    }
+  }
+end
 
-pk.revocable?  # => false
-pk.revoke!     # Raises ApiKeys::Errors::KeyNotRevocableError
-pk.destroy!    # Raises ApiKeys::Errors::KeyNotRevocableError
+key = user.create_api_key!(key_type: :permanent_server)
+
+key.revocable?  # => false
+key.revoke!     # Raises ApiKeys::Errors::KeyNotRevocableError
+key.destroy!    # Raises ApiKeys::Errors::KeyNotRevocableError
 ```
 
 The dashboard UI automatically hides the revoke button for non-revocable keys.
