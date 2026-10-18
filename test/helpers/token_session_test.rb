@@ -730,6 +730,23 @@ module ApiKeys
         assert_equal :missing, TokenSession.retrieve_once_with_status(mismatched_copy, api_key_id: 21).status
       end
 
+      test "a retrieval result never prints its token" do
+        require "pp"
+        TokenSession.store(@session, bound_key("printable_secret_token", 40))
+        retrieval = TokenSession.retrieve_once_with_status(@session, api_key_id: 40)
+        assert_equal "printable_secret_token", retrieval.token, "the token is still readable on purpose"
+
+        renderings = [retrieval.inspect, retrieval.to_s, "#{retrieval}", retrieval.pretty_inspect,
+                      [retrieval].inspect, { result: retrieval }.inspect, retrieval.to_json, JSON.generate(retrieval.as_json)]
+        renderings.each { |text| refute_includes text, "printable_secret_token" }
+        assert_includes retrieval.inspect, "status=:retrieved"
+        assert_includes retrieval.inspect, "token=[REDACTED]"
+        assert_equal({ "status" => "retrieved", "token" => "[REDACTED]" }, JSON.parse(retrieval.to_json))
+
+        missing = TokenSession.retrieve_once_with_status(@session, api_key_id: 40)
+        assert_includes missing.inspect, "token=nil"
+      end
+
       test "handoffs written before 0.5.1 are also one-time" do
         use_cache(ActiveSupport::Cache::MemoryStore.new)
         ensure_key_row(12)

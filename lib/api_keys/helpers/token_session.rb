@@ -94,6 +94,8 @@ module ApiKeys
       #   transaction.
       # - `:missing`: no usable handoff for this key (none stored, expired,
       #   tampered, or bound to another key).
+      #
+      # Inspection never prints the token.
       Retrieval = Struct.new(:token, :status) do
         def retrieved?
           status == :retrieved
@@ -101,6 +103,23 @@ module ApiKeys
 
         def already_shown?
           status == :already_shown
+        end
+
+        # Struct's default inspection, string, pretty-print and JSON forms
+        # would all print the plaintext token; these say only whether there
+        # is one. Read it through #token.
+        def inspect
+          "#<#{self.class.name} status=#{status.inspect} token=#{token.nil? ? 'nil' : '[REDACTED]'}>"
+        end
+
+        alias_method :to_s, :inspect
+
+        def pretty_print(printer)
+          printer.text(inspect)
+        end
+
+        def as_json(*)
+          { "status" => status.to_s, "token" => (token.nil? ? nil : "[REDACTED]") }
         end
       end
       ENCRYPTION_CIPHER = "aes-256-gcm"
