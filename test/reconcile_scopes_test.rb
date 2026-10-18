@@ -2,22 +2,21 @@
 
 require "test_helper"
 
-# Revokes chosen keys from another "connection" at the moment reconcile locks
-# them: after the batch selected them as non-revoked, before the lock. Inert
-# unless a test sets revoke_ids.
-module RevokeBeforeLock
+# Writes to chosen keys, as another process would, at the moment reconcile
+# locks them: after the batch selected them, before the lock. Inert unless a
+# test sets changes ({ key id => attributes }).
+module ChangeBeforeLock
   class << self
-    attr_accessor :revoke_ids
+    attr_accessor :changes
   end
 
   def with_lock(*args, &block)
-    if RevokeBeforeLock.revoke_ids&.include?(id)
-      self.class.where(id: id).update_all(revoked_at: Time.current)
-    end
+    attributes = ChangeBeforeLock.changes&.[](id)
+    self.class.where(id: id).update_all(attributes) if attributes
     super
   end
 end
-ApiKeys::ApiKey.prepend(RevokeBeforeLock) unless ApiKeys::ApiKey <= RevokeBeforeLock
+ApiKeys::ApiKey.prepend(ChangeBeforeLock) unless ApiKeys::ApiKey <= ChangeBeforeLock
 
 # Issue #28, option 2: an add-only backfill for stored-scope key types whose
 # ceiling was widened. It may only ever add permissions the type already allows.
@@ -49,7 +48,7 @@ class ReconcileScopesTest < ApiKeys::Test
     survivor = @user.create_api_key!(name: "Survivor", key_type: :publishable, scopes: %w[read])
     late = @user.create_api_key!(name: "Revoked late", key_type: :publishable, scopes: %w[read])
     configure!(publishable: %w[read heartbeat], secret: %w[read write])
-    RevokeBeforeLock.revoke_ids = [late.id]
+    ChangeBeforeLock.changes = { late.id => { revoked_at: Time.current } }
 
     assert_equal 1, ApiKeys.reconcile_scopes!(key_type: :publishable), "the late revocation is not counted"
 
@@ -57,7 +56,22 @@ class ReconcileScopesTest < ApiKeys::Test
     assert_equal %w[read], late.scopes, "revoked keys are left alone"
     assert_equal %w[read heartbeat], survivor.reload.scopes
   ensure
-    RevokeBeforeLock.revoke_ids = nil
+    ChangeBeforeLock.changes = nil
+  end
+
+  test "a key retyped between selection and lock gains nothing" do
+    survivor = @user.create_api_key!(name: "Survivor", key_type: :publishable, scopes: %w[read])
+    retyped = @user.create_api_key!(name: "Retyped late", key_type: :publishable, scopes: %w[read])
+    configure!(publishable: %w[read heartbeat], secret: %w[read write])
+    ChangeBeforeLock.changes = { retyped.id => { key_type: "secret" } }
+
+    assert_equal 1, ApiKeys.reconcile_scopes!(key_type: :publishable), "the retyped key is not counted"
+
+    assert_equal "secret", retyped.reload.key_type, "precondition: it was retyped after being selected"
+    assert_equal %w[read], retyped.scopes, "a publishable ceiling never reaches a key of another type"
+    assert_equal %w[read heartbeat], survivor.reload.scopes
+  ensure
+    ChangeBeforeLock.changes = nil
   end
 
   test "is add-only and idempotent" do

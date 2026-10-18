@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "active_support/message_encryptor"
+require "timeout"
 require "tmpdir"
 
 module ApiKeys
@@ -40,22 +41,33 @@ module ApiKeys
 
       # Retrieves every copy at once, each from its own thread on its own
       # autocommit connection to the file database (see with_file_database),
-      # and returns every Retrieval.
+      # and returns every Retrieval. The barrier opens only once every thread
+      # holds a distinct connection, so the claims really race.
       def race_on_file_database(copies, api_key_id:)
         ApiKeys::ApiKey.column_names # load the schema once, before the threads
-        gate = Queue.new
+        checked_out = Queue.new
+        go = Queue.new
         threads = copies.map do |copy|
           Thread.new do
-            gate.pop
             ApiKeys::ApiKey.connection_pool.with_connection do |connection|
               raise "a race thread must not share a transaction" if connection.transaction_open?
 
+              checked_out << connection.object_id
+              go.pop
               TokenSession.retrieve_once_with_status(copy, api_key_id: api_key_id)
             end
           end
         end
-        copies.size.times { gate << true }
+        connection_ids = Timeout.timeout(15) { Array.new(copies.size) { checked_out.pop } }
+        assert_equal copies.size, connection_ids.uniq.size, "every thread holds its own connection before any retrieves"
+        copies.size.times { go << true }
         threads.map(&:value)
+      end
+
+      # One winner; every loser was refused by the committed claim.
+      def assert_one_winner(results, token)
+        assert_equal [token], results.filter_map(&:token)
+        assert_equal({ retrieved: 1, already_shown: results.size - 1 }, results.map(&:status).tally)
       end
 
       # Points ApiKeys::ApiKey at a fresh file-backed SQLite database for the
@@ -303,7 +315,7 @@ module ApiKeys
 
           results = race_on_file_database(Array.new(8) { @session.deep_dup }, api_key_id: 9)
 
-          assert_equal ["raced_token"], results.filter_map(&:token)
+          assert_one_winner(results, "raced_token")
           assert ApiKeys::ApiKey.find(9).token_shown?, "the winning claim was committed"
         end
       end
@@ -318,7 +330,7 @@ module ApiKeys
 
           results = race_on_file_database(Array.new(8) { @session.deep_dup }, api_key_id: 19)
 
-          assert_equal ["raced_without_cache_token"], results.filter_map(&:token)
+          assert_one_winner(results, "raced_without_cache_token")
           assert ApiKeys::ApiKey.find(19).token_shown?, "the winning claim was committed"
           retrieval = TokenSession.retrieve_once_with_status(late_copy, api_key_id: 19)
           assert_nil retrieval.token, "a copy replayed after the race finds the committed claim"
@@ -410,6 +422,78 @@ module ApiKeys
         assert_equal "rollback_then_flush_token", TokenSession.retrieve_once(copies[0], api_key_id: 35)
         cache.clear
         assert_nil TokenSession.retrieve_once(copies[1], api_key_id: 35)
+      end
+
+      # An abstract record on its own database: a transaction there is not a
+      # transaction on the ApiKey connection.
+      class OtherDatabaseRecord < ActiveRecord::Base
+        self.abstract_class = true
+      end
+
+      test "a transaction on another database's connection does not refuse the retrieval" do
+        use_cache(ActiveSupport::Cache::NullStore.new)
+        OtherDatabaseRecord.establish_connection(adapter: "sqlite3", database: ":memory:")
+        TokenSession.store(@session, bound_key("other_pool_token", 41))
+        copied_cookie = @session.deep_dup
+        retrieval = nil
+
+        OtherDatabaseRecord.transaction do
+          OtherDatabaseRecord.connection_pool.with_connection do |connection|
+            assert connection.transaction_open?, "precondition: a transaction is open on the other pool"
+          end
+          retrieval = TokenSession.retrieve_once_with_status(@session, api_key_id: 41)
+        end
+
+        assert_equal :retrieved, retrieval.status
+        assert ApiKeys::ApiKey.find(41).token_shown?, "the claim committed on the ApiKey connection"
+        assert_nil TokenSession.retrieve_once(copied_cookie, api_key_id: 41)
+      ensure
+        OtherDatabaseRecord.remove_connection
+      end
+
+      test "any Active Record transaction on the ApiKey connection refuses the retrieval, nested ones too" do
+        use_cache(ActiveSupport::Cache::MemoryStore.new)
+        TokenSession.stubs(:log_warn)
+        {
+          "ApiKey.transaction" => ->(&work) { ApiKeys::ApiKey.transaction(&work) },
+          "ActiveRecord::Base.transaction" => ->(&work) { ActiveRecord::Base.transaction(&work) },
+          "a host model's transaction on the same database" => ->(&work) { User.transaction(&work) },
+          "a savepoint (requires_new)" => lambda { |&work|
+            ApiKeys::ApiKey.transaction { ApiKeys::ApiKey.transaction(requires_new: true, &work) }
+          },
+          "a non-joinable inner transaction" => lambda { |&work|
+            User.transaction { ApiKeys::ApiKey.transaction(joinable: false, &work) }
+          }
+        }.each_with_index do |(label, wrap), index|
+          id = 420 + index
+          session = {}
+          TokenSession.store(session, bound_key("nested_token_#{index}", id))
+          retrieval = nil
+
+          wrap.call { retrieval = TokenSession.retrieve_once_with_status(session, api_key_id: id) }
+
+          assert_equal :inside_transaction, retrieval.status, label
+          refute ApiKeys::ApiKey.find(id).token_shown?, label
+          assert_equal "nested_token_#{index}", TokenSession.retrieve_once(session, api_key_id: id), label
+        end
+      end
+
+      # The documented boundary: the check is Active Record's transaction
+      # manager, so a transaction opened with raw SQL is not seen, and a
+      # rollback of it undoes the claim. Pinned so the docs stay true.
+      test "a transaction opened with raw SQL is not detected" do
+        use_cache(ActiveSupport::Cache::NullStore.new)
+        TokenSession.store(@session, bound_key("raw_sql_token", 43))
+        retrieval = nil
+
+        ApiKeys::ApiKey.connection_pool.with_connection do |connection|
+          connection.execute("BEGIN")
+          retrieval = TokenSession.retrieve_once_with_status(@session, api_key_id: 43)
+          connection.execute("ROLLBACK")
+        end
+
+        assert_equal :retrieved, retrieval.status, "not detected"
+        refute ApiKeys::ApiKey.find(43).token_shown?, "the raw rollback undid the claim"
       end
 
       test "inside a transaction a handoff an earlier claim used up is refused, not kept" do

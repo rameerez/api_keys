@@ -823,6 +823,24 @@ module ApiKeys
       end
     end
 
+    test "a create that omits the type and scopes resolves the default ceiling type" do
+      configure_ceiling_types!(%w[read write])
+      ApiKeys.configuration.default_key_type = :sdk
+      with_owner_default_scopes(%w[read write admin]) do
+        post :create, params: { api_key: { name: "Default SDK" } }
+        key = @user.api_keys.order(:created_at).last
+        assert_redirected_to key_path(key)
+        assert_equal "sdk", key.key_type
+        assert_equal %w[read write], key.scopes
+
+        post :create, params: { api_key: { name: "Default SDK crafted", scopes: ["", "admin"] } }
+        key = @user.api_keys.order(:created_at).last
+        assert_redirected_to key_path(key)
+        assert_equal "sdk", key.key_type
+        assert_equal %w[read write], key.scopes, "scopes for the default ceiling type are ignored too"
+      end
+    end
+
     test "an ordinary type on the same form still saves the boxes that were checked" do
       configure_ceiling_types!(%w[read write])
       with_owner_default_scopes(%w[read heartbeat]) do
