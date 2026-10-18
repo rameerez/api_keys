@@ -27,7 +27,7 @@
 
 ### Upgrade notes
 
-- Run `rails generate api_keys:add_key_activity` and `rails db:migrate` to start recording refusals and make the token handoff durable. Until then, authentication is unchanged, refusals are not recorded, and the handoff relies on the cache marker alone, as in 0.5.1. Migrate before deploying the code, or deploy and then migrate: both orders are safe.
+- Run `rails generate api_keys:add_key_activity` and `rails db:migrate` to start recording refusals and make the token handoff durable. Until then, authentication is unchanged, refusals are not recorded, and the handoff relies on the cache marker alone, as in 0.5.1. Migrate before deploying the code, or deploy and then migrate: both orders are safe, and a process started before the migration picks up the columns when it restarts.
 - Each key's token can now be handed off once, ever. A host that stores two handoffs for the same key (for example under two session keys) gets the token from the first retrieval only.
 - Deploy job workers together with web processes. A refusal job enqueued by 0.6.0 errors on a 0.5.x worker, whose `perform` takes no keyword; depending on your backend it is retried or dropped, and it is never recorded as a use.
 - If you have widened a key type's `permissions:` since its keys were created, those keys still carry the old list. Opt the type into `scopes: :ceiling` when its users do not curate scopes, or run `ApiKeys.reconcile_scopes!(key_type: ...)`. See the README section "Widening a ceiling does not reach existing keys".
