@@ -41,7 +41,10 @@ module ApiKeys
     # This is not a standard show action, it's used transiently after creation.
     def show
       # Key is set by set_api_key. The plaintext token comes from the one-time
-      # session handoff written by create; it is released once, ever.
+      # session handoff written by create; it is released once, ever. This
+      # action opens no database transaction, so the durable claim commits
+      # before the token is rendered; keep it that way (inside a transaction
+      # the claim could be rolled back, see ApiKeys::TokenSession).
       retrieval = ApiKeys::TokenSession.retrieve_once_with_status(session, api_key: @api_key)
       @plaintext_token = retrieval.token
       return if @plaintext_token

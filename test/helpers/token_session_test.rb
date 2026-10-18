@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "active_support/message_encryptor"
+require "tmpdir"
 
 module ApiKeys
   module Helpers
@@ -41,7 +42,9 @@ module ApiKeys
       # test's in-memory SQLite connection (each new connection would open an
       # empty database), the way Active Record's own fixtures share it. The
       # pin wraps the race in a transaction that is rolled back afterwards, so
-      # a block given here checks the database before that.
+      # this exercises the in-transaction path, where the cache marker carries
+      # the guarantee; a block given here checks the database before the
+      # rollback. Independent connections race in `with_file_database`.
       def race_retrievals(copies, api_key_id:)
         ApiKeys::ApiKey.column_names # load the schema once, before the threads
         pool = ApiKeys::ApiKey.connection_pool
@@ -59,6 +62,46 @@ module ApiKeys
         released
       ensure
         pool&.unpin_connection!
+      end
+
+      # Points ApiKeys::ApiKey at a fresh file-backed SQLite database for the
+      # block, so threads get independent connections that share data (an
+      # in-memory database is private to one connection). Restores the
+      # shared test database afterwards.
+      def with_file_database
+        Dir.mktmpdir("api_keys_handoff") do |dir|
+          ApiKeys::ApiKey.establish_connection(adapter: "sqlite3", database: File.join(dir, "handoff.sqlite3"),
+                                               pool: 16, timeout: 10_000)
+          ApiKeys::ApiKey.connection_pool.with_connection do |connection|
+            connection.create_table :api_keys do |t|
+              t.string :prefix, null: false
+              t.string :token_digest, null: false
+              t.string :digest_algorithm, null: false
+              t.string :name
+              t.references :owner, polymorphic: true, null: true
+              t.text :scopes, default: "[]", null: false
+              t.text :metadata, default: "{}", null: false
+              t.text :restrictions, default: "{}", null: false
+              t.datetime :expires_at
+              t.datetime :last_used_at
+              t.bigint :requests_count, default: 0, null: false
+              t.datetime :last_refused_at
+              t.bigint :refusals_count, default: 0, null: false
+              t.string :last_refusal_code, limit: 64
+              t.datetime :token_shown_at
+              t.datetime :revoked_at
+              t.string :last4, null: false, default: ""
+              t.string :key_type
+              t.string :environment
+              t.timestamps
+            end
+          end
+          ApiKeys::ApiKey.reset_column_information
+          yield
+        ensure
+          ApiKeys::ApiKey.remove_connection
+          ApiKeys::ApiKey.reset_column_information
+        end
       end
 
       test "stores token from api_key object with token method" do
@@ -270,12 +313,182 @@ module ApiKeys
         assert_equal ["raced_token"], released
       end
 
-      test "concurrent retrievals release the token once on the durable claim alone" do
-        use_cache(ActiveSupport::Cache::NullStore.new) # remembers nothing
-        TokenSession.store(@session, bound_key("raced_without_cache_token", 19))
-        copies = Array.new(16) { @session.deep_dup }
+      # Independent connections, each in autocommit, against a file database:
+      # the committed claim alone decides, with no cache at all.
+      test "independent connections racing outside any transaction release the token once" do
+        with_file_database do
+          use_cache(ActiveSupport::Cache::NullStore.new) # remembers nothing
+          TokenSession.store(@session, bound_key("raced_without_cache_token", 19))
+          copies = Array.new(8) { @session.deep_dup }
+          late_copy = @session.deep_dup
+          ApiKeys::ApiKey.column_names # load the schema once, before the threads
+          gate = Queue.new
+          threads = copies.map do |copy|
+            Thread.new do
+              gate.pop
+              ApiKeys::ApiKey.connection_pool.with_connection do |connection|
+                raise "a race thread must not share a transaction" if connection.transaction_open?
 
-        assert_equal ["raced_without_cache_token"], race_retrievals(copies, api_key_id: 19)
+                TokenSession.retrieve_once(copy, api_key_id: 19)
+              end
+            end
+          end
+          copies.size.times { gate << true }
+
+          assert_equal ["raced_without_cache_token"], threads.map(&:value).compact
+          assert ApiKeys::ApiKey.find(19).token_shown?, "the winning claim was committed"
+          retrieval = TokenSession.retrieve_once_with_status(late_copy, api_key_id: 19)
+          assert_nil retrieval.token, "a copy replayed after the race finds the committed claim"
+          assert_equal :already_shown, retrieval.status
+        end
+      end
+
+      # =======================================================================
+      # Retrieval inside a database transaction: the claim is only durable
+      # once it commits, and the token would already be out by then.
+      # =======================================================================
+
+      test "inside a transaction with no shared cache the token is withheld and the handoff kept" do
+        use_cache(ActiveSupport::Cache::NullStore.new)
+        TokenSession.store(@session, bound_key("in_transaction_token", 32))
+        copied_cookie = @session.deep_dup
+        warnings = []
+        TokenSession.stubs(:log_warn).with { |message| warnings << message; true }
+        retrieval = nil
+
+        ApiKeys::ApiKey.transaction do
+          retrieval = TokenSession.retrieve_once_with_status(@session, api_key_id: 32)
+          raise ActiveRecord::Rollback
+        end
+
+        assert_nil retrieval.token
+        assert_equal :inside_transaction, retrieval.status
+        assert @session[:api_keys_new_token], "the handoff stays for a retry outside the transaction"
+        refute ApiKeys::ApiKey.find(32).token_shown?, "nothing was claimed"
+        assert_equal 1, warnings.size
+        assert_includes warnings.first, "inside an open database transaction"
+        refute_includes warnings.join, "in_transaction_token"
+
+        # Outside the transaction the handoff is released once, durably.
+        assert_equal "in_transaction_token", TokenSession.retrieve_once(@session, api_key_id: 32)
+        assert_nil TokenSession.retrieve_once(copied_cookie, api_key_id: 32)
+      end
+
+      test "a rolled-back retrieval with no shared cache cannot be replayed from a copy" do
+        # Astra's reproduction: retrieve inside a transaction, roll back, then
+        # replay a copy of the session taken before retrieval.
+        use_cache(ActiveSupport::Cache::NullStore.new)
+        TokenSession.stubs(:log_warn)
+        TokenSession.store(@session, bound_key("rollback_token", 33))
+        copied_cookie = @session.deep_dup
+        released = []
+
+        ApiKeys::ApiKey.transaction do
+          released << TokenSession.retrieve_once(@session, api_key_id: 33)
+          raise ActiveRecord::Rollback
+        end
+        released << TokenSession.retrieve_once(copied_cookie, api_key_id: 33)
+        released << TokenSession.retrieve_once(@session, api_key_id: 33)
+
+        assert_equal ["rollback_token"], released.compact, "released once, never twice"
+      end
+
+      test "inside a rolled-back transaction the cache marker refuses the replay" do
+        cache = ActiveSupport::Cache::MemoryStore.new
+        use_cache(cache)
+        TokenSession.store(@session, bound_key("rolled_back_cached_token", 34))
+        copied_cookie = @session.deep_dup
+        later_copy = @session.deep_dup
+
+        ApiKeys::ApiKey.transaction do
+          assert_equal "rolled_back_cached_token", TokenSession.retrieve_once(@session, api_key_id: 34)
+          raise ActiveRecord::Rollback
+        end
+        refute ApiKeys::ApiKey.find(34).token_shown?, "precondition: the rollback undid the claim"
+
+        retrieval = TokenSession.retrieve_once_with_status(copied_cookie, api_key_id: 34)
+        assert_nil retrieval.token, "the marker carries the guarantee the rolled-back claim could not"
+        assert_equal :already_shown, retrieval.status
+        assert ApiKeys::ApiKey.find(34).token_shown?, "the refused replay ran outside the transaction and claimed durably"
+
+        cache.clear
+        assert_nil TokenSession.retrieve_once(later_copy, api_key_id: 34)
+      end
+
+      # Documented limitation: inside a transaction that rolls back, the cache
+      # marker is the only protection, so losing it re-opens replay.
+      test "after a rollback, losing the cache marker re-opens replay" do
+        cache = ActiveSupport::Cache::MemoryStore.new
+        use_cache(cache)
+        TokenSession.store(@session, bound_key("rollback_then_flush_token", 35))
+        copied_cookie = @session.deep_dup
+
+        ApiKeys::ApiKey.transaction do
+          assert_equal "rollback_then_flush_token", TokenSession.retrieve_once(@session, api_key_id: 35)
+          raise ActiveRecord::Rollback
+        end
+        cache.clear
+
+        assert_equal "rollback_then_flush_token", TokenSession.retrieve_once(copied_cookie, api_key_id: 35)
+      end
+
+      test "a retrieval inside a transaction that commits is durable" do
+        cache = ActiveSupport::Cache::MemoryStore.new
+        use_cache(cache)
+        TokenSession.store(@session, bound_key("committed_token", 36))
+        copied_cookie = @session.deep_dup
+
+        ApiKeys::ApiKey.transaction do
+          assert_equal "committed_token", TokenSession.retrieve_once(@session, api_key_id: 36)
+        end
+        cache.clear
+
+        assert ApiKeys::ApiKey.find(36).token_shown?
+        assert_nil TokenSession.retrieve_once(copied_cookie, api_key_id: 36)
+      end
+
+      test "inside a transaction a handoff an earlier claim used up is refused, not kept" do
+        use_cache(ActiveSupport::Cache::NullStore.new)
+        TokenSession.store(@session, bound_key("already_claimed_token", 37))
+        copied_cookie = @session.deep_dup
+        assert_equal "already_claimed_token", TokenSession.retrieve_once(@session, api_key_id: 37)
+        retrieval = nil
+
+        ApiKeys::ApiKey.transaction do
+          retrieval = TokenSession.retrieve_once_with_status(copied_cookie, api_key_id: 37)
+        end
+
+        assert_equal :already_shown, retrieval.status
+        assert_nil copied_cookie[:api_keys_new_token], "a spent handoff is not put back"
+      end
+
+      test "without the column a transaction changes nothing: the 0.5.1 behaviour" do
+        TokenShownAtSchema.without_column do
+          use_cache(ActiveSupport::Cache::NullStore.new)
+          TokenSession.store(@session, bound_key("unmigrated_in_transaction_token", 38))
+          released = nil
+
+          ApiKeys::ApiKey.transaction do
+            released = TokenSession.retrieve_once(@session, api_key_id: 38)
+          end
+
+          assert_equal "unmigrated_in_transaction_token", released
+        end
+      end
+
+      test "a database error while checking for a transaction withholds the token" do
+        use_cache(ActiveSupport::Cache::MemoryStore.new)
+        TokenSession.store(@session, bound_key("unknown_transaction_token", 39))
+        ApiKeys::ApiKey.stubs(:connection_pool).raises(ActiveRecord::ConnectionNotEstablished, "unknown_transaction_token")
+        warnings = []
+        TokenSession.stubs(:log_warn).with { |message| warnings << message; true }
+
+        retrieval = TokenSession.retrieve_once_with_status(@session, api_key_id: 39)
+        ApiKeys::ApiKey.unstub(:connection_pool)
+
+        assert_nil retrieval.token
+        assert_equal :withheld, retrieval.status
+        refute_includes warnings.join, "unknown_transaction_token"
       end
 
       test "available? reports a handoff consumed through another copy as gone" do

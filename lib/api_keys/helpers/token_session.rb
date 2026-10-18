@@ -31,6 +31,15 @@ module ApiKeys
     #    exactly one claim succeed, and a cache flush cannot undo it. Zero rows
     #    changed (already shown, or the key is gone) returns nil. Installations
     #    without the column skip this layer and behave as 0.5.1.
+    #
+    #    The claim is only durable once it commits, so it must run outside any
+    #    database transaction: the plaintext is returned before an enclosing
+    #    transaction could roll the claim back. Retrieval inside an open
+    #    transaction on the api_keys connection therefore relies on the cache
+    #    marker below. With no shared cache it withholds the token with
+    #    `:inside_transaction` and leaves the handoff in the session, so the
+    #    host can retrieve it again outside the transaction. The dashboard
+    #    always retrieves outside any transaction.
     # 2. Cache marker (0.5.1): each handoff has a random ID, and retrieval
     #    records it in `Rails.cache` with `write(..., unless_exist: true)`;
     #    a later retrieval of the same handoff finds the marker and gets nil.
@@ -78,6 +87,11 @@ module ApiKeys
       #   earlier retrieval already released (a replayed copy of the session).
       # - `:withheld`: the database or cache could not record the retrieval,
       #   so the token is withheld rather than risk a second release.
+      # - `:inside_transaction`: retrieval ran inside an open database
+      #   transaction with no shared cache, so its one-time claim could have
+      #   been rolled back after the token was shown. The token is withheld
+      #   and the handoff stays in the session for a retry outside the
+      #   transaction.
       # - `:missing`: no usable handoff for this key (none stored, expired,
       #   tampered, or bound to another key).
       Retrieval = Struct.new(:token, :status) do
@@ -168,6 +182,13 @@ module ApiKeys
 
           # A handoff bound to another key says nothing about this one.
           return Retrieval.new(nil, :missing).freeze if bound_elsewhere
+
+          if status == :inside_transaction
+            # Nothing was recorded, so the handoff goes back into the session
+            # and a retrieval outside the transaction can still release it.
+            session[key] = payload
+            return Retrieval.new(nil, :inside_transaction).freeze
+          end
           return Retrieval.new(nil, status).freeze unless status == :consumed
           return Retrieval.new(nil, :missing).freeze unless valid_token_payload?(token)
 
@@ -241,10 +262,48 @@ module ApiKeys
         # :consumed only to the first consumer of a handoff; a later one gets
         # :already_shown, and any failure :withheld (fail closed).
         def consume_handoff(decoded_payload)
+          stored_id = decoded_payload["api_key_id"]
+          return consume_inside_transaction(decoded_payload, stored_id) if claim_could_roll_back?(stored_id)
+
           durable = claim_durably(decoded_payload)
           return durable unless durable.nil? || durable == :consumed
 
           consume_cache_marker(decoded_payload)
+        rescue StandardError => error
+          log_warn "[ApiKeys Security] Token handoff could not be checked against the database (#{error.class}); withholding the token."
+          :withheld
+        end
+
+        # Whether this handoff has a durable claim that an open transaction on
+        # the api_keys connection could roll back after the token was shown.
+        # Raises on database errors (the caller withholds the token).
+        def claim_could_roll_back?(stored_id)
+          return false if stored_id.nil? || !defined?(::ApiKeys::ApiKey)
+          return false unless ::ApiKeys::ApiKey.column_names.include?(::ApiKeys::ApiKey::TOKEN_SHOWN_AT_COLUMN)
+
+          ::ApiKeys::ApiKey.connection_pool.with_connection(&:transaction_open?)
+        end
+
+        # Inside a transaction the claim is not durable until the host commits,
+        # and the token is returned before that. With a shared cache the
+        # marker carries the one-time guarantee (the claim still runs, and
+        # still refuses a handoff an earlier, committed claim used up). With
+        # no cache nothing durable can be relied on, so the token is withheld
+        # and nothing is recorded.
+        def consume_inside_transaction(decoded_payload, stored_id)
+          if consumption_cache
+            durable = claim_durably(decoded_payload)
+            return durable unless durable.nil? || durable == :consumed
+
+            return consume_cache_marker(decoded_payload)
+          end
+
+          return :already_shown if ::ApiKeys::ApiKey.token_handoff_claimable?(stored_id) == false
+
+          log_warn "[ApiKeys Security] Token handoff retrieval ran inside an open database transaction with no shared cache, " \
+                   "so its one-time claim could be rolled back; withholding the token and leaving the handoff in place. " \
+                   "Retrieve it outside the transaction."
+          :inside_transaction
         end
 
         # The durable layer: the key's `token_shown_at`, claimed by one
