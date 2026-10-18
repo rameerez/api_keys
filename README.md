@@ -887,7 +887,7 @@ You can check if an API key is allowed to do actions by checking its scopes:
 # => true
 ```
 
-An empty scope list grants nothing whenever scopes are enforced: on typed keys, and when `key_types` or `default_scopes` are configured. On an untyped key in an app that configures neither, an empty list keeps its legacy meaning and allows every scope. So a key saved from the dashboard with every permission cleared becomes unrestricted if you later remove the owner's `default_scopes` (and the global ones) without using key types.
+An empty scope list grants nothing whenever scopes are enforced: on typed keys, and when `key_types` or `default_scopes` are configured. The exception is a key whose type uses `scopes: :ceiling`: its stored scopes are not consulted, so even with `scopes: []` it has exactly its type's live `permissions:` (see [Widening a ceiling does not reach existing keys](#widening-a-ceiling-does-not-reach-existing-keys)). On an untyped key in an app that configures neither, an empty list keeps its legacy meaning and allows every scope. So a key saved from the dashboard with every permission cleared becomes unrestricted if you later remove the owner's `default_scopes` (and the global ones) without using key types.
 
 ## Controllers: secure your API endpoints
 
