@@ -189,6 +189,23 @@ class RefusalStatsTest < ApiKeys::Test
     assert_nil key.reload.last_refused_at, "only a verified token can be attributed to a key"
   end
 
+  test "under bcrypt, a forgery of a real key's prefix and last four stamps nothing" do
+    with_hash_strategy(:bcrypt) do
+      key = @user.create_api_key!(name: "Bcrypt target")
+      assert_equal "bcrypt", key.digest_algorithm
+      forged = key.token.dup
+      forged[-6] = forged[-6] == "A" ? "B" : "A"
+      assert_equal key.token.last(4), forged.last(4), "precondition: same last four, so it reaches the bcrypt candidates"
+
+      controller = authenticate(forged)
+
+      assert_equal :unauthorized, controller.rendered[:status]
+      assert_no_refusal_jobs
+      assert_empty usage_jobs
+      assert_nil key.reload.last_refused_at
+    end
+  end
+
   test "only identified refusal codes can be stamped, whatever the caller passes" do
     key = @user.create_api_key!(name: "Allowlisted")
     controller = FakeController.new(FakeRequest.new(token: key.token))
@@ -215,6 +232,100 @@ class RefusalStatsTest < ApiKeys::Test
     key.update_column(:last_refused_at, 2.minutes.ago)
     authenticate(key.token, origin: "https://elsewhere.example")
     assert_equal 1, refusal_jobs.length
+  end
+
+  # The persisted timestamp only debounces once a worker has run, so a burst
+  # that arrives first used to enqueue one job per request.
+  test "a burst of refused requests enqueues one refusal job per interval with a shared cache" do
+    debounce_with_cache(ActiveSupport::Cache::MemoryStore.new)
+    key = @user.create_api_key!(name: "Burst", allowed_origins: "example.com")
+
+    25.times { authenticate(key.token, origin: "https://elsewhere.example") }
+    assert_equal 1, refusal_jobs.length
+
+    travel 61.seconds do
+      authenticate(key.token, origin: "https://elsewhere.example")
+      assert_equal 2, refusal_jobs.length, "the reservation expires with the interval"
+    end
+  end
+
+  test "a burst of working requests enqueues one usage job per interval with a shared cache" do
+    debounce_with_cache(ActiveSupport::Cache::MemoryStore.new)
+    key = @user.create_api_key!(name: "Busy")
+
+    25.times { authenticate(key.token) }
+
+    assert_equal 1, usage_jobs.length
+    assert_no_refusal_jobs
+  end
+
+  test "reservations are per key and per kind" do
+    debounce_with_cache(ActiveSupport::Cache::MemoryStore.new)
+    first = @user.create_api_key!(name: "First", allowed_origins: "example.com")
+    second = @user.create_api_key!(name: "Second", allowed_origins: "example.com")
+
+    3.times do
+      authenticate(first.token, origin: "https://elsewhere.example")
+      authenticate(second.token, origin: "https://elsewhere.example")
+      authenticate(first.token, origin: "https://example.com")
+    end
+
+    assert_equal [first.id, second.id].sort, refusal_jobs.map { |job| job[:args].first }.sort
+    assert_equal [first.id], usage_jobs.map { |job| job[:args].first }
+  end
+
+  # Documented limitation: with nothing shared to reserve in, only the
+  # persisted timestamp debounces, so a burst before the worker runs still
+  # enqueues one job per request.
+  test "without a shared cache a burst enqueues one job per request, as before" do
+    debounce_with_cache(ActiveSupport::Cache::NullStore.new)
+    key = @user.create_api_key!(name: "Uncached", allowed_origins: "example.com")
+
+    5.times { authenticate(key.token, origin: "https://elsewhere.example") }
+
+    assert_equal 5, refusal_jobs.length
+  end
+
+  test "a failing cache falls back to the persisted timestamp" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    cache.stubs(:write).raises(IOError, "cache unavailable")
+    debounce_with_cache(cache)
+    key = @user.create_api_key!(name: "Flaky", allowed_origins: "example.com")
+
+    2.times { authenticate(key.token, origin: "https://elsewhere.example") }
+
+    assert_equal 2, refusal_jobs.length
+  end
+
+  test "exact counting is never deduplicated" do
+    Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
+    ApiKeys.configuration.stats_update_interval = 1.hour # track_requests_count stays on
+    key = @user.create_api_key!(name: "Counted burst", allowed_origins: "example.com")
+
+    3.times { authenticate(key.token, origin: "https://elsewhere.example") }
+
+    assert_equal 3, refusal_jobs.length
+  end
+
+  test "a reservation whose job could not be enqueued is released" do
+    debounce_with_cache(ActiveSupport::Cache::MemoryStore.new)
+    key = @user.create_api_key!(name: "Queue down", allowed_origins: "example.com")
+    # The first enqueue fails; without releasing its reservation the second
+    # request would be skipped and perform_later called only once.
+    ApiKeys::Jobs::UpdateStatsJob.expects(:perform_later).twice
+                                 .raises(StandardError, "queue down").then.returns(true)
+
+    authenticate(key.token, origin: "https://elsewhere.example")
+    authenticate(key.token, origin: "https://elsewhere.example")
+  end
+
+  test "a usage reservation whose job could not be enqueued is released" do
+    debounce_with_cache(ActiveSupport::Cache::MemoryStore.new)
+    key = @user.create_api_key!(name: "Usage queue down")
+    ApiKeys::Jobs::UpdateStatsJob.expects(:perform_later).twice
+                                 .raises(StandardError, "queue down").then.returns(true)
+
+    2.times { authenticate(key.token) }
   end
 
   test "exact counting stamps every refusal" do
@@ -323,6 +434,20 @@ class RefusalStatsTest < ApiKeys::Test
     controller = FakeController.new(FakeRequest.new(token: token, **request_options))
     controller.send(:authenticate_api_key!, scope: scope)
     controller
+  end
+
+  def debounce_with_cache(cache)
+    Rails.stubs(:cache).returns(cache)
+    ApiKeys.configure do |config|
+      config.track_requests_count = false
+      config.stats_update_interval = 1.minute
+    end
+  end
+
+  def usage_jobs
+    enqueued_jobs.select do |job|
+      job[:job] == ApiKeys::Jobs::UpdateStatsJob && !ActiveJob::Arguments.deserialize(job[:args]).last.is_a?(Hash)
+    end
   end
 
   def refusal_jobs

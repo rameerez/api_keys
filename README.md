@@ -1159,6 +1159,8 @@ config.stats_update_interval = 0         # record every successful request
 
 Enabling `track_requests_count` bypasses this debounce because every successful request must be counted. Set `enable_async_operations = false` if the application handles statistics and callbacks elsewhere and wants the gem to enqueue no background jobs.
 
+The debounce reads the stored `last_used_at`, which only moves once a worker has run the job. So that a burst of requests arriving before then does not enqueue one job each, the first request in an interval also reserves the enqueue for its key in `Rails.cache` with an atomic `write(..., unless_exist: true, expires_in: stats_update_interval)`, and the rest of the burst is skipped. That needs a cache every process shares (Redis, Memcached, Solid Cache). With `NullStore`, no `Rails.cache`, or a cache that raises, the stored timestamp is the only debounce, and a burst that arrives before the worker runs still enqueues one job per request.
+
 ### Refused requests: why a key is not working
 
 A key can be perfectly valid and still be refused: an origin or IP lock, the wrong environment, a missing scope, a revoked or expired key. Refusals never touch `last_used_at` or `requests_count` (a refused request must not look like a working integration), so without anything else a key that is being used and refused would look exactly like a key nobody ever tried.
@@ -1174,7 +1176,7 @@ The gem therefore records them separately, through the same background stats job
 The dashboard's key page then says *"Requests are arriving but refused: last at X, because Y"*, and the key list shows the latest refusal under "Last Used".
 
 - Only refusals of an identified key are recorded: the request presented the key's real token and a policy said no. A missing, malformed, or unknown token names no key and is never recorded, so nobody can write to a key's statistics without holding its token.
-- Refusal updates are debounced by `stats_update_interval` exactly like `last_used_at` (so within one interval you see the first refusal's code), and every refusal is recorded when `track_requests_count` is on. A client hammering a refused key costs no more writes than a working one.
+- Refusal updates are debounced by `stats_update_interval` exactly like `last_used_at` (so within one interval you see the first refusal's code), including the cache reservation that stops a burst from enqueueing one job per request before the worker runs, and every refusal is recorded when `track_requests_count` is on. A client hammering a refused key costs no more writes than a working one; without a shared cache it can still queue one job per request until the first job has run.
 - `enable_async_operations = false` turns them off with every other job.
 - New installs get the columns from the start. Existing installs run `rails generate api_keys:add_key_activity`; until then, authentication is unchanged and refusals are not recorded.
 
