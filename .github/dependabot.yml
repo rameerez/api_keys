@@ -17,6 +17,12 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    groups:
+      # init and analyze must run the same codeql-action version, or the
+      # analyze step aborts; one PR per release keeps them together.
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"
 
   - package-ecosystem: docker
     directory: "/test/dummy"
