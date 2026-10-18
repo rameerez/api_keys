@@ -16,6 +16,7 @@
 - `ApiKeys::Jobs::UpdateStatsJob#perform` takes an optional `refusal_code:` keyword. Jobs enqueued by earlier versions run unchanged. A job carrying any refusal marker, recognized or not, never touches `last_used_at` or `requests_count`.
 - The scope-ceiling validation no longer blocks saving an existing `scopes: :ceiling` key whose stored scopes exceed a narrowed ceiling, as long as the scopes themselves are not being written. Those stored scopes authorize nothing, and the validation would otherwise stop owners from renaming the key or tightening its request restrictions.
 - Dashboard edits of a `scopes: :ceiling` key never write its stored scopes. The form shows the type's live permissions with no scope boxes, the update ignores any submitted scopes, and stored scopes above a narrowed ceiling are kept as metadata rather than dropped. Every other key type keeps 0.5.1's rules: the form edits only the scopes it offers, keeps the rest, and drops held scopes outside the current ceiling.
+- The dashboard's creation form hides and disables the scope boxes when a `scopes: :ceiling` type is selected and shows that type's live permissions instead, so an owner can no longer clear every box and still get a key with the whole ceiling. A create for such a type ignores any submitted scopes and stores the type's current ceiling as the key's metadata.
 
 ### Security
 

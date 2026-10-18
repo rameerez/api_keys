@@ -69,10 +69,13 @@
     </div>
 
     <%# The offered scopes are the owner's default scopes. The controller reads %>
-    <%# the same list (dashboard_scope_choices) when it saves the form. %>
+    <%# the same list (dashboard_scope_choices) when it saves the form. A key type %>
+    <%# with `scopes: :ceiling` has no scopes to choose: the script below hides and %>
+    <%# disables these boxes and shows that type's live permissions instead, and %>
+    <%# the controller ignores scopes submitted for it. %>
     <% @available_scopes = dashboard_scope_choices %>
     <% if @available_scopes.present? %>
-      <div>
+      <%= tag.div data: { api_keys_scope_choices: "" }, hidden: api_key.scopes_follow_ceiling? do %>
         <%= form.label :scopes, "Permissions" %>
         <%# Browsers omit unchecked boxes, so clearing every box would send no scopes %>
         <%# parameter at all and the key would silently get the defaults. This empty %>
@@ -95,7 +98,21 @@
             <%= form.label "scopes_#{scope.parameterize}", class: "form-check-label" do %><code><%= scope %></code><% end %>
           </div>
         <% end %>
-      </div>
+      <% end %>
+    <% end %>
+
+    <% ApiKeys.configuration.key_types.to_h.each do |type, config| %>
+      <% next unless ApiKeys::ApiKey.scopes_follow_ceiling_for?(config) %>
+      <%= tag.div class: "api-keys-ceiling-scopes", data: { api_keys_ceiling_contract: type.to_s },
+                  hidden: api_key.key_type.to_s != type.to_s do %>
+        <p><strong>Permissions</strong></p>
+        <% config[:permissions].each do |scope| %>
+          <kbd class="tag is-small"><%= scope %></kbd>
+        <% end %>
+        <small class="api-keys-form-help">
+          <%= type.to_s.humanize %> keys always have exactly these permissions, and follow the key type when it changes.
+        </small>
+      <% end %>
     <% end %>
 
     <%= render "api_keys/keys/restriction_fields", form: form, api_key: api_key %>
@@ -182,7 +199,8 @@
   <% key_type_policies = ApiKeys.configuration.key_types.to_h do |type, config| %>
     <% [type.to_s, {
       restrictions: ApiKeys::ApiKey.restriction_kinds_for(config).map(&:to_s),
-      expirable: ApiKeys::ApiKey.revocable_for(config)
+      expirable: ApiKeys::ApiKey.revocable_for(config),
+      ceiling: ApiKeys::ApiKey.scopes_follow_ceiling_for?(config)
     }] %>
   <% end %>
   <script nonce="<%= content_security_policy_nonce %>">
@@ -205,6 +223,17 @@
           const enabled = policy && policy.expirable;
           container.hidden = !enabled;
           container.querySelectorAll("input, select, textarea").forEach((input) => { input.disabled = !enabled; });
+        });
+
+        // A scopes: :ceiling type has no scopes to choose: hide and disable the
+        // boxes (so none are submitted) and show that type's live permissions.
+        const ceiling = Boolean(policy && policy.ceiling);
+        form.querySelectorAll("[data-api-keys-scope-choices]").forEach((container) => {
+          container.hidden = ceiling;
+          container.querySelectorAll("input, select, textarea").forEach((input) => { input.disabled = ceiling; });
+        });
+        form.querySelectorAll("[data-api-keys-ceiling-contract]").forEach((container) => {
+          container.hidden = !(ceiling && container.dataset.apiKeysCeilingContract === keyType.value);
         });
       };
 

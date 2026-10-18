@@ -168,7 +168,7 @@ config.authenticate_owner_method = :ensure_team_access!
 Once configured, your users can:
 - self-issue new API keys
 - set expiration dates
-- attach scopes / permissions to individual keys (the edit form changes only the scopes it shows, the owner's default scopes, keeps any other scope a key holds, and drops a held scope its type no longer allows; keys of a `scopes: :ceiling` type show their live permissions instead, and a save never edits their stored scopes)
+- attach scopes / permissions to individual keys (the edit form changes only the scopes it shows, the owner's default scopes, keeps any other scope a key holds, and drops a held scope its type no longer allows; keys of a `scopes: :ceiling` type show their live permissions instead, on the creation form as soon as such a type is selected, and the dashboard never takes scopes for them)
 - add and edit the key names
 - lock a key to specific web origins or IP addresses
 - revoke instantly
@@ -1299,7 +1299,7 @@ With `scopes: :ceiling`, every scope check for keys of that type (`authenticate_
 
 - Widening `permissions:` reaches every existing key on its next request, and narrowing it takes effect just as fast.
 - Every key of the type has exactly the ceiling, including a key created with an empty or narrower scope list. Do not opt in a type whose users choose scopes per key: their choices would stop mattering.
-- Stored `scopes` stay on the row as metadata and are still validated against the ceiling whenever they are written. The dashboard shows the live permissions for these keys and stops offering scope checkboxes, and a dashboard save never writes their stored scopes: submitted scopes are ignored, and stored scopes above a narrowed ceiling stay as they are (other types drop them on the next save). Renaming such a key or tightening its restrictions still saves.
+- Stored `scopes` stay on the row as metadata and are still validated against the ceiling whenever they are written. The dashboard shows the live permissions for these keys and stops offering scope checkboxes, both on the edit form and on the creation form once such a type is selected. It never takes scopes for them: on create, submitted scopes are ignored and the key stores the type's current ceiling; on edit, submitted scopes are ignored and stored scopes above a narrowed ceiling stay as they are (other types drop them on the next save). Renaming such a key or tightening its restrictions still saves.
 - `scopes: :ceiling` requires a finite, non-empty `permissions` list. `permissions: :all` raises when the configuration loads.
 - Removing `scopes: :ceiling` later can only narrow: keys go back to their stored scopes, still capped by the ceiling.
 - Every other key type, untyped legacy keys, and keys whose type is no longer configured behave exactly as before.

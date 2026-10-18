@@ -71,12 +71,23 @@ module ApiKeys
       # re-checking every scope the owner had cleared.
       @submitted_scopes = submitted_params[:scopes]
 
+      # A `scopes: :ceiling` type is authorized by its live permissions, so
+      # the form offers no scopes for it and any submitted (cleared boxes, or
+      # a crafted request) are ignored. The key stores the type's current
+      # ceiling as its metadata.
+      type_config = requested_key_type_config(submitted_params[:key_type])
+      scopes = if ApiKeys::ApiKey.scopes_follow_ceiling_for?(type_config)
+                 type_config[:permissions].map(&:to_s)
+               else
+                 submitted_params[:scopes]
+               end
+
       # Use the HasApiKeys helper method to create the key
       begin
         # create_api_key! now returns the ApiKey instance
         @api_key = current_api_keys_owner.create_api_key!(
           name: submitted_params[:name],
-          scopes: submitted_params[:scopes],
+          scopes: scopes,
           expires_at: parse_expiration(submitted_params[:expires_at_preset]),
           key_type: submitted_params[:key_type].presence,
           # The model normalizes these raw strings; no parser needed here.
@@ -296,6 +307,18 @@ module ApiKeys
       return Array(api_key.key_type_config[:permissions]).map(&:to_s) if api_key.scopes_follow_ceiling?
 
       api_key.scopes.is_a?(Array) ? api_key.scopes : []
+    end
+
+    # The configuration of the key type a create request resolves to, the way
+    # create_api_key! resolves it (the submitted type, else the default), or
+    # nil when there is none or it is unknown.
+    #
+    # @return [Hash, nil]
+    def requested_key_type_config(key_type_param)
+      type_name = key_type_param.presence || ApiKeys.configuration.default_key_type
+      return nil if type_name.blank?
+
+      (ApiKeys.configuration.key_types || {}).find { |name, _settings| name.to_s == type_name.to_s }&.last
     end
 
     # Check if key types feature is enabled

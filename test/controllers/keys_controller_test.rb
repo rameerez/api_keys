@@ -214,8 +214,8 @@ module ApiKeys
       assert_response :success
       assert_includes response.body, 'data-api-keys-restriction-kind="origins"'
       assert_includes response.body, 'data-api-keys-restriction-kind="ips"'
-      assert_includes response.body, '"browser":{"restrictions":["origins"],"expirable":true}'
-      assert_includes response.body, '"permanent_server":{"restrictions":["ips"],"expirable":false}'
+      assert_includes response.body, '"browser":{"restrictions":["origins"],"expirable":true,"ceiling":false}'
+      assert_includes response.body, '"permanent_server":{"restrictions":["ips"],"expirable":false,"ceiling":false}'
       assert_match(/<script nonce="[^"]+">/, response.body)
     end
 
@@ -768,6 +768,70 @@ module ApiKeys
         key.reload
         assert_equal "Server renamed", key.name
         assert_equal %w[read], key.scopes
+      end
+    end
+
+    test "the new form shows a ceiling type's live permissions instead of scope boxes" do
+      configure_ceiling_types!(%w[read write])
+      with_owner_default_scopes(%w[read write admin]) do
+        get :new
+
+        assert_response :success
+        contract = css_select('[data-api-keys-ceiling-contract="sdk"]').first
+        assert contract, "the sdk contract is rendered for the script to show"
+        assert contract.attribute("hidden"), "hidden until the sdk type is selected"
+        assert_equal %w[read write], contract.css("kbd").map { |tag| tag.text.strip }
+        assert_select '[data-api-keys-ceiling-contract="server"]', count: 0
+        choices = css_select("[data-api-keys-scope-choices]").first
+        refute choices.attribute("hidden"), "no type is preselected, so the boxes are visible"
+        policies = JSON.parse(response.body[/const policies = (\{.*?\});/m, 1])
+        assert_equal true, policies.dig("sdk", "ceiling")
+        assert_equal false, policies.dig("server", "ceiling")
+
+        # With the ceiling type preselected the server renders the final state.
+        ApiKeys.configuration.default_key_type = :sdk
+        get :new
+        assert css_select("[data-api-keys-scope-choices]").first.attribute("hidden")
+        refute css_select('[data-api-keys-ceiling-contract="sdk"]').first.attribute("hidden")
+      end
+    end
+
+    test "creating a ceiling-type key with every box cleared gets the type's permissions" do
+      configure_ceiling_types!(%w[read write])
+      with_owner_default_scopes(%w[read write admin]) do
+        post :create, params: { api_key: { name: "SDK", key_type: "sdk", scopes: [""] } }
+
+        key = @user.api_keys.order(:created_at).last
+        assert_redirected_to key_path(key)
+        assert_equal %w[read write], key.scopes, "the type's ceiling is stored as metadata"
+        assert key.allows_scope?("read")
+        assert key.allows_scope?("write")
+      end
+    end
+
+    test "scopes crafted for a ceiling type on create are ignored, never applied or refused" do
+      configure_ceiling_types!(%w[read write])
+      with_owner_default_scopes(%w[read write admin]) do
+        [["", "admin"], ["", "read"], %w[read write admin]].each do |crafted|
+          post :create, params: { api_key: { name: "SDK #{crafted.join}", key_type: "sdk", scopes: crafted } }
+
+          key = @user.api_keys.order(:created_at).last
+          assert_redirected_to key_path(key)
+          assert_equal %w[read write], key.scopes, crafted.inspect
+          refute key.allows_scope?("admin")
+        end
+      end
+    end
+
+    test "an ordinary type on the same form still saves the boxes that were checked" do
+      configure_ceiling_types!(%w[read write])
+      with_owner_default_scopes(%w[read heartbeat]) do
+        post :create, params: { api_key: { name: "Server", key_type: "server", scopes: ["", "read"] } }
+
+        key = @user.api_keys.order(:created_at).last
+        assert_redirected_to key_path(key)
+        assert_equal %w[read], key.scopes
+        refute key.allows_scope?("heartbeat")
       end
     end
 
