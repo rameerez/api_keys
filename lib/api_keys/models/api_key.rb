@@ -648,6 +648,10 @@ module ApiKeys
       ceiling = ceiling.map(&:to_s)
       where(key_type: type_name.to_s, revoked_at: nil).find_each.count do |api_key|
         api_key.with_lock do
+          # with_lock reloads the row: a key revoked (or retyped) after it was
+          # selected is skipped, so a revoked key never gains scopes.
+          next false if api_key.revoked_at.present? || api_key.key_type.to_s != type_name.to_s
+
           stored = api_key.scopes
           next false unless stored.is_a?(Array) && stored.all? { |scope| api_key.send(:valid_scope_value?, scope) }
 

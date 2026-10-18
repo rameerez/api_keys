@@ -2,6 +2,23 @@
 
 require "test_helper"
 
+# Revokes chosen keys from another "connection" at the moment reconcile locks
+# them: after the batch selected them as non-revoked, before the lock. Inert
+# unless a test sets revoke_ids.
+module RevokeBeforeLock
+  class << self
+    attr_accessor :revoke_ids
+  end
+
+  def with_lock(*args, &block)
+    if RevokeBeforeLock.revoke_ids&.include?(id)
+      self.class.where(id: id).update_all(revoked_at: Time.current)
+    end
+    super
+  end
+end
+ApiKeys::ApiKey.prepend(RevokeBeforeLock) unless ApiKeys::ApiKey <= RevokeBeforeLock
+
 # Issue #28, option 2: an add-only backfill for stored-scope key types whose
 # ceiling was widened. It may only ever add permissions the type already allows.
 class ReconcileScopesTest < ApiKeys::Test
@@ -26,6 +43,21 @@ class ReconcileScopesTest < ApiKeys::Test
     assert first.allows_scope?("heartbeat")
     assert_equal %w[read], revoked.reload.scopes, "revoked keys are left alone"
     assert_equal %w[read], other_type.reload.scopes, "only the named type is touched"
+  end
+
+  test "a key revoked between selection and lock gains nothing" do
+    survivor = @user.create_api_key!(name: "Survivor", key_type: :publishable, scopes: %w[read])
+    late = @user.create_api_key!(name: "Revoked late", key_type: :publishable, scopes: %w[read])
+    configure!(publishable: %w[read heartbeat], secret: %w[read write])
+    RevokeBeforeLock.revoke_ids = [late.id]
+
+    assert_equal 1, ApiKeys.reconcile_scopes!(key_type: :publishable), "the late revocation is not counted"
+
+    assert late.reload.revoked?, "precondition: it was revoked after being selected"
+    assert_equal %w[read], late.scopes, "revoked keys are left alone"
+    assert_equal %w[read heartbeat], survivor.reload.scopes
+  ensure
+    RevokeBeforeLock.revoke_ids = nil
   end
 
   test "is add-only and idempotent" do
