@@ -35,16 +35,13 @@
   </div>
 
 
-  <% if api_key.scopes.present? %>
+  <% displayed_scopes = api_keys_displayed_scopes(api_key) %>
+  <% if displayed_scopes.present? %>
     <div class="api-keys-token-scopes">
       <p><strong>Permissions</strong></p>
 
-      <% if api_key.scopes.present? %>
-        <% api_key.scopes.each do |scope| %>
-          <kbd class="tag is-small"><%= scope %></kbd>
-        <% end %>
-      <% else %>
-        &mdash;
+      <% displayed_scopes.each do |scope| %>
+        <kbd class="tag is-small"><%= scope %></kbd>
       <% end %>
     </div>
   <% end %>

@@ -1,3 +1,31 @@
+## [0.6.0] - Unreleased
+
+### Added
+
+- Ceiling-authoritative scopes, opt-in per key type ([#28](https://github.com/rameerez/api_keys/issues/28)). `key_types[...][:scopes] = :ceiling` makes the type's live `permissions:` list the contract for every key of that type, so widening it reaches existing keys and narrowing it takes effect on the next request. Every scope check consults it (`authenticate_api_key!(scope:)`, `allows_scope?`, `allows_permission?`); stored `scopes` stay as metadata. Requires a finite, non-empty `permissions` list. `ApiKey#scopes_follow_ceiling?` reports it, and the dashboard shows these keys' live permissions instead of scope checkboxes that would change nothing.
+- `ApiKeys.reconcile_scopes!(key_type:)`: an add-only backfill that merges a type's current ceiling into the stored scopes of its non-revoked keys, for types that keep stored scopes after their ceiling was widened.
+- Refused-but-identified traffic ([#38](https://github.com/rameerez/api_keys/issues/38)). `last_refused_at`, `refusals_count`, and `last_refusal_code` on `api_keys`, stamped through the same async `UpdateStatsJob` path as `last_used_at` whenever a request presents a key's real token and a policy refuses it: revoked, expired, type/environment configuration, environment isolation, origin/IP restrictions, and missing scope. The dashboard's key page says "Requests are arriving but refused: last at X, because Y", and the key list shows the latest refusal under "Last Used". `refusals_count` follows `track_requests_count`, like `requests_count`.
+- `rails generate api_keys:add_refusal_stats` for existing installations (idempotent); new installs create the columns from the start.
+- `ApiKeys::ViewHelpers#api_key_refusal_reason` explains a key's latest refusal for custom dashboards.
+
+### Changed
+
+- `ApiKeys::Jobs::UpdateStatsJob#perform` takes an optional `refusal_code:` keyword. Jobs enqueued by earlier versions run unchanged. A job carrying any refusal marker, recognized or not, never touches `last_used_at` or `requests_count`.
+- The scope-ceiling validation no longer blocks saving an existing `scopes: :ceiling` key whose stored scopes exceed a narrowed ceiling, as long as the scopes themselves are not being written. Those stored scopes authorize nothing, and the validation would otherwise stop owners from renaming the key or tightening its request restrictions.
+
+### Security
+
+- `scopes: :ceiling` widens nothing it was not asked to. Types that do not opt in, untyped keys, and keys whose type is no longer configured keep their exact previous behavior. `:ceiling` against `permissions: :all` or an empty list is rejected when the configuration loads, and ignored at authorization time should a configuration bypass that validation. Damaged stored scopes on a ceiling key deny every scope.
+- A refusal is never a use: refused traffic cannot move `last_used_at` or `requests_count`, so integrations that detect a first working request from `last_used_at` stay correct.
+- Refusal statistics are written only after the presented token is verified, only for an allowlist of policy refusal codes, and debounced exactly like `last_used_at`. They add no unauthenticated write path and no write amplification.
+- The dashboard explains a refusal with fixed sentences and never renders the stored code itself.
+
+### Upgrade notes
+
+- Run `rails generate api_keys:add_refusal_stats` and `rails db:migrate` to start recording refusals. Until then, authentication is unchanged and refusals are not recorded.
+- Deploy job workers together with web processes. A refusal job enqueued by 0.6.0 errors on a 0.5.x worker, whose `perform` takes no keyword; depending on your backend it is retried or dropped, and it is never recorded as a use.
+- If you have widened a key type's `permissions:` since its keys were created, those keys still carry the old list. Opt the type into `scopes: :ceiling` when its users do not curate scopes, or run `ApiKeys.reconcile_scopes!(key_type: ...)`. See the README section "Widening a ceiling does not reach existing keys".
+
 ## [0.5.1] - 2026-10-18
 
 ### Security

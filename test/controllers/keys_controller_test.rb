@@ -327,6 +327,97 @@ module ApiKeys
       refute_includes response.body, "leaked-value"
     end
 
+    test "the key page says when and why requests are being refused" do
+      key = @user.create_api_key!(name: "Locked Widget", allowed_origins: "example.com")
+      key.update_columns(last_refused_at: 5.minutes.ago, last_refusal_code: "origin_not_allowed")
+
+      get :edit, params: { id: key.id }
+
+      assert_response :success
+      assert_includes response.body, "Requests are arriving but refused"
+      assert_includes response.body, "because the request came from a web origin the key does not allow"
+
+      get :index
+
+      assert_includes response.body, "Never used", "a refusal is not a use"
+      assert_includes response.body, "Refused 5 minutes ago: the request came from a web origin the key does not allow"
+    end
+
+    test "a key that worked since its last refusal is not reported as refused-only" do
+      ApiKeys.configuration.track_requests_count = true
+      key = @user.create_api_key!(name: "Mixed Widget")
+      key.update_columns(last_refused_at: 10.minutes.ago, last_refusal_code: "ip_not_allowed",
+                         refusals_count: 2, last_used_at: 1.minute.ago)
+
+      get :edit, params: { id: key.id }
+
+      assert_includes response.body, "Some requests were refused"
+      refute_includes response.body, "Requests are arriving but refused"
+      assert_includes response.body, "2 refusals recorded so far"
+    end
+
+    test "keys without refusals show no refusal notice" do
+      key = @user.create_api_key!(name: "Quiet Widget")
+
+      get :edit, params: { id: key.id }
+      assert_no_refusal_notice
+
+      get :index
+      assert_no_refusal_notice
+    end
+
+    test "a tampered refusal code never reaches the page" do
+      key = @user.create_api_key!(name: "Tampered Widget")
+      key.update_columns(last_refused_at: 1.minute.ago, last_refusal_code: "<script>alert(1)</script>")
+
+      get :edit, params: { id: key.id }
+
+      assert_response :success
+      refute_includes response.body, "alert(1)"
+      assert_includes response.body, ApiKeys::Helpers::ViewHelpers::UNKNOWN_REFUSAL_REASON
+    end
+
+    test "without the refusal stats columns the dashboard renders as before" do
+      key = @user.create_api_key!(name: "Unmigrated Widget")
+
+      RefusalStatsSchema.without_columns do
+        get :index
+        assert_response :success
+        assert_no_refusal_notice
+
+        get :edit, params: { id: ApiKeys::ApiKey.find(key.id).id }
+        assert_response :success
+        assert_no_refusal_notice
+      end
+    end
+
+    test "a ceiling key shows its live permissions instead of editable stored scopes" do
+      original_settings = User.api_keys_settings
+      User.api_keys_settings = original_settings.merge(default_scopes: %w[read heartbeat])
+      configure_ceiling_types!(%w[read])
+      ceiling_key = @user.create_api_key!(name: "SDK", key_type: :sdk, scopes: %w[read])
+      stored_key = @user.create_api_key!(name: "Server", key_type: :server, scopes: %w[read])
+      configure_ceiling_types!(%w[read heartbeat])
+
+      get :edit, params: { id: ceiling_key.id }
+
+      assert_response :success
+      assert_includes response.body, "Permissions follow the sdk key type"
+      assert_includes response.body, "heartbeat"
+      refute_includes response.body, "api_key[scopes][]", "stored scopes authorize nothing here, so they are not offered"
+
+      get :edit, params: { id: stored_key.id }
+      assert_includes response.body, "api_key[scopes][]"
+
+      get :index
+      assert_select "td.api-keys-cell-scopes kbd", text: "heartbeat", count: 1
+
+      get :new
+      assert_includes response.body, "Always has exactly the read, heartbeat permissions"
+    ensure
+      User.api_keys_settings = original_settings
+    end
+
     test "keys belonging to another owner cannot be viewed" do
       other = User.create!(name: "Other Owner")
       other_key = other.create_api_key!(name: "Other Key")
@@ -585,6 +676,102 @@ module ApiKeys
     end
 
     # =========================================================================
+    # 0.6.0 with 0.5.1: a `scopes: :ceiling` key's stored scopes are metadata,
+    # so the dashboard shows the live ceiling and never edits them; ordinary
+    # types in the same configuration keep the 0.5.1 rules.
+    # =========================================================================
+
+    test "a ceiling key's edit form offers no scope field, sentinel, or removal notice after its ceiling narrowed" do
+      configure_ceiling_types!(%w[read write])
+      with_owner_default_scopes(%w[read write]) do
+        key = @user.create_api_key!(name: "SDK", key_type: :sdk, scopes: %w[read write])
+        configure_ceiling_types!(%w[read])
+
+        get :edit, params: { id: key.id }
+
+        assert_response :success
+        assert_select 'input[name="api_key[scopes][]"]', count: 0
+        assert_equal %w[read], css_select(".api-keys-ceiling-scopes kbd").map { |tag| tag.text.strip }
+        refute_match(/no longer allowed for this key/, response.body,
+                     "nothing is removed from a ceiling key on save, so the form must not say so")
+      end
+    end
+
+    test "a browser save of a ceiling key never writes its stored scopes" do
+      configure_ceiling_types!(%w[read write])
+      with_owner_default_scopes(%w[read write]) do
+        key = @user.create_api_key!(name: "SDK", key_type: :sdk, scopes: %w[read write])
+        configure_ceiling_types!(%w[read])
+
+        get :edit, params: { id: key.id }
+        submission = browser_submission(response.body) do |form|
+          form.at_css('input[name="api_key[name]"]')["value"] = "SDK renamed"
+          form.at_css('input[name="api_key[allowed_origins]"]')["value"] = "example.com"
+        end
+        refute submission.fetch("api_key").key?("scopes"), "the form submits no scopes for a ceiling key"
+        patch :update, params: submission.merge("id" => key.id)
+
+        assert_redirected_to keys_path
+        key.reload
+        assert_equal "SDK renamed", key.name
+        assert_equal ["example.com"], key.allowed_origins
+        assert_equal %w[read write], key.scopes, "stored metadata is kept, not trimmed to the narrowed ceiling"
+        assert key.allows_scope?("read")
+        refute key.allows_scope?("write"), "the narrowed live ceiling still decides"
+      end
+    end
+
+    test "scopes submitted for a ceiling key are ignored, never applied or refused" do
+      configure_ceiling_types!(%w[read write])
+      with_owner_default_scopes(%w[read write admin]) do
+        key = @user.create_api_key!(name: "SDK", key_type: :sdk, scopes: %w[read])
+
+        # A crafted request granting more, including a scope outside the ceiling.
+        patch :update, params: { id: key.id, api_key: { name: "SDK", scopes: ["", "read", "write", "admin"] } }
+        assert_redirected_to keys_path
+        assert_equal %w[read], key.reload.scopes
+
+        # The sentinel alone, which clears every offered scope on an ordinary key.
+        patch :update, params: { id: key.id, api_key: { name: "SDK", scopes: [""] } }
+        assert_redirected_to keys_path
+        assert_equal %w[read], key.reload.scopes
+
+        # Authorization follows the ceiling either way.
+        assert key.allows_scope?("write")
+        refute key.allows_scope?("admin")
+      end
+    end
+
+    test "an ordinary type beside a ceiling type keeps the 0.5.1 edit rules" do
+      configure_ceiling_types!(%w[read], server_permissions: %w[read write heartbeat])
+      with_owner_default_scopes(%w[read write]) do
+        key = @user.create_api_key!(name: "Server", key_type: :server, scopes: %w[read write heartbeat])
+
+        # Clearing the boxes removes the offered scopes and keeps the unoffered one.
+        get :edit, params: { id: key.id }
+        assert_select 'input[type="checkbox"][name="api_key[scopes][]"]', count: 2
+        patch :update, params: browser_submission(response.body) { |form| uncheck_all_scopes(form) }.merge("id" => key.id)
+        assert_redirected_to keys_path
+        assert_equal %w[heartbeat], key.reload.scopes
+
+        # A narrowed ceiling drops the held scope it now excludes on the next save.
+        key.update!(scopes: %w[read heartbeat])
+        configure_ceiling_types!(%w[read], server_permissions: %w[read write])
+        get :edit, params: { id: key.id }
+        notes = css_select("small.api-keys-form-help").map { |note| note.text.squish }
+        assert_includes notes, "heartbeat is no longer allowed for this key and will be removed when you save."
+        submission = browser_submission(response.body) do |form|
+          form.at_css('input[name="api_key[name]"]')["value"] = "Server renamed"
+        end
+        patch :update, params: submission.merge("id" => key.id)
+        assert_redirected_to keys_path
+        key.reload
+        assert_equal "Server renamed", key.name
+        assert_equal %w[read], key.scopes
+      end
+    end
+
+    # =========================================================================
     # 0.5.1: a stored malformed policy survives a rename only as a refusal
     # =========================================================================
 
@@ -754,6 +941,22 @@ module ApiKeys
     def configure_secret_type(permissions:)
       ApiKeys.configure do |config|
         config.key_types = { secret: { prefix: "sk", permissions: permissions } }
+        config.environments = { test: { prefix_segment: "test" } }
+        config.current_environment = :test
+      end
+    end
+
+    def assert_no_refusal_notice
+      assert_select ".api-keys-refusal-notice", count: 0
+      assert_select ".api-keys-refusal-text", count: 0
+    end
+
+    def configure_ceiling_types!(sdk_permissions, server_permissions: %w[read heartbeat])
+      ApiKeys.configure do |config|
+        config.key_types = {
+          sdk: { prefix: "sdk", permissions: sdk_permissions, scopes: :ceiling },
+          server: { prefix: "srv", permissions: server_permissions }
+        }
         config.environments = { test: { prefix_segment: "test" } }
         config.current_environment = :test
       end

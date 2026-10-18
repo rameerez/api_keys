@@ -148,11 +148,20 @@ ApiKeys.configure do |config|
   #                any subset of [:origins, :ips]. Omitted = both allowed.
   #                `restrictions: []` forbids restrictions for this type.
   #                See "REQUEST RESTRICTIONS" below.
+  # - scopes:      Where scope checks look. :stored (default) uses the scopes each
+  #                key saved at creation, so WIDENING `permissions` LATER DOES NOT
+  #                REACH EXISTING KEYS: they keep the old list and 403 new scopes.
+  #                :ceiling makes the live `permissions` list the contract for
+  #                every key of the type (widening and narrowing apply at once).
+  #                Use it for types whose users do not pick scopes; it requires a
+  #                finite, non-empty permissions list. For :stored types, backfill
+  #                after widening with ApiKeys.reconcile_scopes!(key_type: :name).
   #
   # config.key_types = {
   #   publishable: {
   #     prefix: "pk",                    # → pk_test_, pk_live_
   #     permissions: %w[read validate],  # Can ONLY have these scopes
+  #     scopes: :ceiling,                # Every pk key has exactly these, even after edits
   #     public: true,                    # Store token for later viewing in dashboard
   #     limit: 1,                        # Only 1 publishable key per environment
   #     restrictions: [:origins]         # Browser keys lock to domains, not IPs
@@ -344,8 +353,16 @@ ApiKeys.configure do |config|
 
   # Minimum interval between last_used_at jobs when exact request counting is
   # disabled. Set to 0 or nil to update on every successful authentication.
+  # The same interval debounces refusal stats (below).
   # Default: 1.minute
   # config.stats_update_interval = 1.minute
+
+  # Refused requests: when a request presents a key's real token and a policy
+  # refuses it (origin/IP lock, environment, missing scope, revoked, expired),
+  # the same stats job stamps last_refused_at and last_refusal_code (and
+  # refusals_count when track_requests_count is on). A refusal never moves
+  # last_used_at or requests_count. The dashboard shows it on the key's page.
+  # Existing installs: rails generate api_keys:add_refusal_stats && rails db:migrate
 
   # Queue names for background jobs.
   # Default: :default

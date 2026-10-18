@@ -4,8 +4,9 @@ module ApiKeys
   # Controller for managing API keys belonging to the current owner.
   class KeysController < ApplicationController
     before_action :set_api_key, only: [:show, :edit, :update, :revoke]
+    helper ApiKeys::Helpers::ViewHelpers
     helper_method :key_types_feature_enabled?, :api_keys_allowed_restriction_kinds,
-                  :dashboard_scope_choices, :restriction_field_text
+                  :dashboard_scope_choices, :restriction_field_text, :api_keys_displayed_scopes
 
     # GET /keys
     def index
@@ -105,7 +106,14 @@ module ApiKeys
     # PATCH/PUT /keys/:id
     def update
       attributes = api_key_update_params
-      if attributes.key?(:scopes)
+      if @api_key.scopes_follow_ceiling?
+        # The type's live ceiling authorizes this key and its stored scopes are
+        # metadata. The form offers no scope boxes for it, so any submitted
+        # scopes (the sentinel, or a crafted request) are ignored, and held
+        # scopes outside a narrowed ceiling are kept: the model lets such a key
+        # save as long as its scopes are not written.
+        attributes.delete(:scopes)
+      elsif attributes.key?(:scopes)
         attributes[:scopes] = scopes_after_editing_offered_choices(attributes[:scopes])
       elsif held_scopes_within_ceiling != Array(@api_key.scopes)
         # No scope boxes were shown, but the key still holds a scope its type
@@ -293,6 +301,18 @@ module ApiKeys
       ApiKeys.configuration.key_types.flat_map do |_type, settings|
         ApiKeys::ApiKey.restriction_kinds_for(settings)
       end.uniq
+    end
+
+    # The permissions a key actually has, for display. A `scopes: :ceiling` key
+    # is authorized by its type's live ceiling, so showing the list it stored
+    # at creation would misstate what it can do.
+    #
+    # @param api_key [ApiKeys::ApiKey]
+    # @return [Array<String>]
+    def api_keys_displayed_scopes(api_key)
+      return Array(api_key.key_type_config[:permissions]).map(&:to_s) if api_key.scopes_follow_ceiling?
+
+      api_key.scopes.is_a?(Array) ? api_key.scopes : []
     end
 
     # Check if key types feature is enabled

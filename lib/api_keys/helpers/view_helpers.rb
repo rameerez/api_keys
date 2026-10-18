@@ -19,6 +19,39 @@ module ApiKeys
     #   end
     #
     module ViewHelpers
+      # Plain-language reasons for every code ApiKeys::ApiKey::REFUSAL_CODES can
+      # stamp on a key. Written to finish the sentence "...refused, because".
+      REFUSAL_REASONS = {
+        "revoked_key" => "the key has been revoked",
+        "expired_key" => "the key has expired",
+        "unknown_key_type" => "the key's type is no longer configured",
+        "unknown_environment" => "the key's environment is no longer configured",
+        "environment_misconfigured" => "the key's environment could not be verified",
+        "environment_mismatch" => "the key was used in the wrong environment",
+        "origin_not_allowed" => "the request came from a web origin the key does not allow",
+        "ip_not_allowed" => "the request came from an IP address the key does not allow",
+        "restriction_misconfigured" => "the key's stored request restrictions could not be verified",
+        "missing_scope" => "the key lacks a permission the endpoint requires"
+      }.freeze
+      UNKNOWN_REFUSAL_REASON = "the request was refused for an unrecognized reason"
+
+      # Explains the most recently recorded refusal of a key: a request that
+      # presented the key's real token and was refused by a policy. Never echoes
+      # the stored code itself, so a tampered value cannot reach the page.
+      #
+      # @param api_key [ApiKeys::ApiKey] The API key
+      # @return [String, nil] A reason, or nil when no refusal has been recorded
+      #
+      # @example
+      #   "Last refused because #{api_key_refusal_reason(@key)}"
+      #   # => "Last refused because the request came from a web origin the key does not allow"
+      #
+      def api_key_refusal_reason(api_key)
+        return nil if api_key.last_refused_at.nil?
+
+        REFUSAL_REASONS.fetch(api_key.last_refusal_code.to_s, UNKNOWN_REFUSAL_REASON)
+      end
+
       # Returns the status of an API key as a symbol.
       #
       # @param api_key [ApiKeys::ApiKey] The API key

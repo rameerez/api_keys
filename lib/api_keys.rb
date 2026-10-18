@@ -42,6 +42,13 @@ module ApiKeys
     def reset_configuration!
       @configuration = ::ApiKeys::Configuration.new
     end
+
+    # Add-only backfill after widening a key type's `permissions:` ceiling, for
+    # types that keep stored scopes. See ApiKeys::ApiKey.reconcile_scopes!.
+    # @return [Integer] How many keys gained scopes.
+    def reconcile_scopes!(key_type:)
+      ::ApiKeys::ApiKey.reconcile_scopes!(key_type: key_type)
+    end
   end
 end
 

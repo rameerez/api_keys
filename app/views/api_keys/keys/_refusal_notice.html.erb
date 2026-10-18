@@ -1,0 +1,24 @@
+<%# Refused-but-identified traffic for one key: requests that presented this key's %>
+<%# real token and were refused by a policy. Renders nothing until one is recorded, %>
+<%# and nothing on installations without the refusal stats columns. %>
+<%# Locals: key (required), compact (optional, for the key list) %>
+
+<% refused_at = key.last_refused_at %>
+<% if refused_at %>
+  <% reason = api_key_refusal_reason(key) %>
+  <% still_refused = key.last_used_at.nil? || refused_at > key.last_used_at %>
+  <% if local_assigns[:compact] %>
+    <small class="api-keys-refusal-text" title="<%= refused_at.utc.strftime('%Y-%m-%d %H:%M:%S UTC') %>">
+      Refused <%= time_ago_in_words(refused_at) %> ago: <%= reason %>
+    </small>
+  <% else %>
+    <p class="api-keys-refusal-notice" role="status">
+      <strong><%= still_refused ? "Requests are arriving but refused" : "Some requests were refused" %>:</strong>
+      last at <time datetime="<%= refused_at.utc.iso8601 %>"><%= refused_at.utc.strftime("%Y-%m-%d %H:%M:%S UTC") %></time>
+      (<%= time_ago_in_words(refused_at) %> ago), because <%= reason %>.
+      <% if ApiKeys.configuration.track_requests_count && key.refusals_count.positive? %>
+        <%= pluralize(key.refusals_count, "refusal") %> recorded so far.
+      <% end %>
+    </p>
+  <% end %>
+<% end %>

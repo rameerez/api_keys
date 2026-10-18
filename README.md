@@ -50,6 +50,15 @@ rails db:migrate
 
 New installations get this column from the start, so this is only for upgrades.
 
+To record refused requests on each key (see [Refused requests](#refused-requests-why-a-key-is-not-working)), add the refusal stats columns:
+
+```bash
+rails generate api_keys:add_refusal_stats
+rails db:migrate
+```
+
+New installations get these columns from the start too. Until an existing app runs the migration, authentication keeps working exactly as before and refusals are simply not recorded.
+
 ## Quick Start
 
 Just add `has_api_keys` to your desired model. For example, if you want your `User` records to have API keys, you'd have:
@@ -159,11 +168,12 @@ config.authenticate_owner_method = :ensure_team_access!
 Once configured, your users can:
 - self-issue new API keys
 - set expiration dates
-- attach scopes / permissions to individual keys (the edit form changes only the scopes it shows, the owner's default scopes, and keeps any other scope a key holds)
+- attach scopes / permissions to individual keys (the edit form changes only the scopes it shows, the owner's default scopes, keeps any other scope a key holds, and drops a held scope its type no longer allows; keys of a `scopes: :ceiling` type show their live permissions instead, and a save never edits their stored scopes)
 - add and edit the key names
 - lock a key to specific web origins or IP addresses
 - revoke instantly
 - see the status of all their keys
+- see when a key's requests are arriving but being refused, and why
 
 It provides an UI with everything you'd expect from an API keys dashboard, working right out of the box:
 
@@ -433,6 +443,7 @@ Methods available on `ApiKeys::ApiKey` instances:
 # Scopes
 @api_key.scopes                   # => ["read", "write"]
 @api_key.allows_scope?("read")    # => true
+@api_key.scopes_follow_ceiling?   # => true for `scopes: :ceiling` key types
 
 # Request restrictions (where the key may be used from)
 @api_key.allowed_origins          # => ["example.com", "*.example.com"]
@@ -446,6 +457,11 @@ Methods available on `ApiKeys::ApiKey` instances:
 @api_key.expires_at
 @api_key.last_used_at
 @api_key.requests_count           # If tracking enabled
+
+# Refused requests (the key's real token, refused by a policy)
+@api_key.last_refused_at          # => 2026-10-18 12:00:00 UTC, or nil
+@api_key.last_refusal_code        # => "origin_not_allowed", or nil
+@api_key.refusals_count           # If tracking enabled
 ```
 
 ---
@@ -635,6 +651,14 @@ end
 
 <%= api_key_environment_label_from_token(@token) %>
 <%# => "Test mode", "Live mode", or "Default" %>
+```
+
+#### Refusal Helper
+
+```erb
+<%# Why the key's latest recorded refusal happened (nil if none) %>
+<%= api_key_refusal_reason(@key) %>
+<%# => "the request came from a web origin the key does not allow" %>
 ```
 
 ---
@@ -1106,6 +1130,25 @@ config.stats_update_interval = 0         # record every successful request
 
 Enabling `track_requests_count` bypasses this debounce because every successful request must be counted. Set `enable_async_operations = false` if the application handles statistics and callbacks elsewhere and wants the gem to enqueue no background jobs.
 
+### Refused requests: why a key is not working
+
+A key can be perfectly valid and still be refused: an origin or IP lock, the wrong environment, a missing scope, a revoked or expired key. Refusals never touch `last_used_at` or `requests_count` (a refused request must not look like a working integration), so without anything else a key that is being used and refused would look exactly like a key nobody ever tried.
+
+The gem therefore records them separately, through the same background stats job as `last_used_at`:
+
+| Column | Meaning |
+|---|---|
+| `last_refused_at` | When the most recently recorded refusal happened |
+| `last_refusal_code` | Why: the `error_code` the client received, such as `origin_not_allowed`, `ip_not_allowed`, `environment_mismatch`, `missing_scope`, `revoked_key`, or `expired_key` |
+| `refusals_count` | How many refusals. Like `requests_count`, it is only kept with `track_requests_count = true` |
+
+The dashboard's key page then says *"Requests are arriving but refused: last at X, because Y"*, and the key list shows the latest refusal under "Last Used".
+
+- Only refusals of an identified key are recorded: the request presented the key's real token and a policy said no. A missing, malformed, or unknown token names no key and is never recorded, so nobody can write to a key's statistics without holding its token.
+- Refusal updates are debounced by `stats_update_interval` exactly like `last_used_at` (so within one interval you see the first refusal's code), and every refusal is recorded when `track_requests_count` is on. A client hammering a refused key costs no more writes than a working one.
+- `enable_async_operations = false` turns them off with every other job.
+- New installs get the columns from the start. Existing installs run `rails generate api_keys:add_refusal_stats`; until then, authentication is unchanged and refusals are not recorded.
+
 ## Key Types: Stripe-style Publishable & Secret Keys
 
 For applications that distribute software with embedded API keys (desktop apps, mobile apps, CLI tools), you may want to differentiate between key types with different permission levels. The `api_keys` gem supports Stripe-style publishable/secret key types with optional test/live environment isolation.
@@ -1131,6 +1174,7 @@ ApiKeys.configure do |config|
     publishable: {
       prefix: "pk",                    # Token prefix → pk_test_, pk_live_
       permissions: %w[read validate],  # Scope ceiling (max permissions allowed)
+      # scopes: :ceiling,              # Optional: see "Widening a ceiling" below
       public: true,                    # Store token so it remains viewable
       limit: 1,                        # Max 1 per owner per environment
       restrictions: [:origins]         # May be locked to domains, not to IPs
@@ -1199,6 +1243,45 @@ sk = user.create_api_key!(
 )
 sk.scopes  # => ["read", "validate", "issue_license", "admin"]
 ```
+
+### Widening a ceiling does not reach existing keys
+
+> [!WARNING]
+> Each key stores its `scopes` when it is created. **Widening a key type's `permissions:` later does not touch the keys that already exist.** Add `heartbeat` to your publishable keys and every existing publishable key keeps its old list: it answers `403 missing_scope` on the new endpoint while freshly created keys work. Nothing fails loudly, and the key itself is valid, so it looks like a bug in your client. (Narrowing is safe either way: a scope above the current ceiling is denied at request time.)
+
+There are two ways out.
+
+**Make the ceiling the contract.** For key types whose users do not pick scopes (auto-created keys, `limit: 1`, the publishable-key pattern), opt the type into ceiling-authoritative scopes:
+
+```ruby
+config.key_types = {
+  publishable: {
+    prefix: "pk",
+    permissions: %w[read validate heartbeat],
+    scopes: :ceiling,    # every pk key has exactly these permissions, now and after you edit them
+    public: true,
+    limit: 1
+  },
+  secret: { prefix: "sk", permissions: :all }   # stored scopes, as before
+}
+```
+
+With `scopes: :ceiling`, every scope check for keys of that type (`authenticate_api_key!(scope:)`, `allows_scope?`, `allows_permission?`) reads the live `permissions:` list instead of the key's stored scopes:
+
+- Widening `permissions:` reaches every existing key on its next request, and narrowing it takes effect just as fast.
+- Every key of the type has exactly the ceiling, including a key created with an empty or narrower scope list. Do not opt in a type whose users choose scopes per key: their choices would stop mattering.
+- Stored `scopes` stay on the row as metadata and are still validated against the ceiling whenever they are written. The dashboard shows the live permissions for these keys and stops offering scope checkboxes, and a dashboard save never writes their stored scopes: submitted scopes are ignored, and stored scopes above a narrowed ceiling stay as they are (other types drop them on the next save). Renaming such a key or tightening its restrictions still saves.
+- `scopes: :ceiling` requires a finite, non-empty `permissions` list. `permissions: :all` raises when the configuration loads.
+- Removing `scopes: :ceiling` later can only narrow: keys go back to their stored scopes, still capped by the ceiling.
+- Every other key type, untyped legacy keys, and keys whose type is no longer configured behave exactly as before.
+
+**Or backfill the stored scopes** right after widening a type that keeps stored scopes, for example in the same deploy:
+
+```ruby
+ApiKeys.reconcile_scopes!(key_type: :publishable) # => number of keys that gained scopes
+```
+
+It adds the type's current `permissions:` to the stored scopes of every non-revoked key of that type and never removes anything. Because it also re-adds permissions a user removed on purpose, only run it for types whose users do not curate scopes. It raises for an unknown type or a `permissions: :all` ceiling, and skips any row whose stored scopes are malformed.
 
 ### Non-Revocable Keys
 

@@ -78,6 +78,7 @@ module ApiKeys
           after_auth_context[:required_scope_check] = { required: scope, passed: false }
           after_auth_context[:success] = false
           after_auth_context[:error_code] = :missing_scope
+          refused_key = @current_api_key
           @current_api_key = nil
           render_unauthorized(
             error_code: :missing_scope,
@@ -85,6 +86,7 @@ module ApiKeys
             status: :forbidden,
             required_scope: scope
           )
+          record_key_refusal(refused_key, :missing_scope)
         else
           after_auth_context[:required_scope_check] = { required: scope, passed: true } if scope
           # Authentication and scope check successful, enqueue stats update
@@ -95,6 +97,8 @@ module ApiKeys
         log_debug "[ApiKeys Auth] Authentication failed. Error: #{result.error_code}, Message: #{result.message}"
         status = FORBIDDEN_ERROR_CODES.include?(result.error_code) ? :forbidden : :unauthorized
         render_unauthorized(error_code: result.error_code, message: result.message, status: status)
+        # Only identified refusals carry a key; lookup failures have none to stamp.
+        record_key_refusal(result.api_key, result.error_code) if result.api_key
       end
 
       # Enqueue after_authentication callback asynchronously regardless of success/failure
@@ -129,7 +133,7 @@ module ApiKeys
       return unless ApiKeys.configuration.enable_async_operations
       return unless current_api_key
 
-      if stats_update_debounced?
+      if stats_update_debounced?(current_api_key.last_used_at)
         log_debug "[ApiKeys Auth] Skipping a recently recorded last-used update for ApiKey ID: #{current_api_key.id}"
         return
       end
@@ -151,16 +155,40 @@ module ApiKeys
       end
     end
 
-    def stats_update_debounced?
+    # Enqueues the refusal half of UpdateStatsJob for a key that presented its
+    # real token and was refused by a policy. It moves only last_refused_at,
+    # last_refusal_code and (with track_requests_count) refusals_count; a
+    # refusal never counts as a use. Debounced exactly like last_used_at, so a
+    # client hammering a refused key costs no more writes than a working one.
+    # Never raises: the refusal response has already been rendered.
+    def record_key_refusal(api_key, error_code)
+      return unless ApiKeys.configuration.enable_async_operations
+      return unless api_key&.id
+
+      code = error_code.to_s
+      return unless ApiKeys::ApiKey::REFUSAL_CODES.include?(code)
+      return unless ApiKeys::ApiKey.refusal_stats_columns?
+
+      if stats_update_debounced?(api_key.last_refused_at)
+        log_debug "[ApiKeys Auth] Skipping a recently recorded refusal update for ApiKey ID: #{api_key.id}"
+        return
+      end
+
+      ApiKeys::Jobs::UpdateStatsJob.perform_later(api_key.id, Time.current, refusal_code: code)
+    rescue StandardError => error
+      log_error "[ApiKeys Auth] Failed to enqueue a refusal stats update for key #{api_key&.id} (#{error.class})."
+    end
+
+    def stats_update_debounced?(last_recorded_at)
       config = ApiKeys.configuration
       return false if config.track_requests_count
 
       interval = config.stats_update_interval
       seconds = interval.to_f if interval.respond_to?(:to_f)
       return false unless seconds&.finite? && seconds.positive?
-      return false unless current_api_key.last_used_at
+      return false unless last_recorded_at
 
-      current_api_key.last_used_at >= Time.current - seconds
+      last_recorded_at >= Time.current - seconds
     end
 
     # Helper to safely enqueue callback jobs.

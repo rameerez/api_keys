@@ -33,7 +33,11 @@
           <% if config[:permissions] != :all %>
             <small class="api-keys-form-help">
               <strong><%= type.to_s.humanize %>:</strong>
-              Limited to <%= config[:permissions]&.join(", ") || "no" %> permissions
+              <% if ApiKeys::ApiKey.scopes_follow_ceiling_for?(config) %>
+                Always has exactly the <%= config[:permissions].join(", ") %> permissions
+              <% else %>
+                Limited to <%= config[:permissions]&.join(", ") || "no" %> permissions
+              <% end %>
               <% unless config.fetch(:revocable, true) %>
                 <em>(cannot be revoked)</em>
               <% end %>
@@ -105,18 +109,31 @@
       <%= form.text_field :name %>
     </div>
 
-    <%# The edit form offers the owner's default scopes and edits only those: %>
-    <%# saving keeps every other scope the key holds, except scopes its type no %>
-    <%# longer allows (see the controller's scopes_after_editing_offered_choices). %>
+    <%# A `scopes: :ceiling` key is authorized by its type's live permissions and %>
+    <%# its stored scopes are metadata, so the form shows the live ceiling and %>
+    <%# offers nothing to edit; the controller ignores scopes submitted for it. %>
+    <%# Any other key gets the owner's default scopes as boxes, and a save edits %>
+    <%# only those: it keeps every other scope the key holds, except scopes its %>
+    <%# type no longer allows (see the controller's scopes_after_editing_offered_choices). %>
     <% @available_scopes = dashboard_scope_choices %>
-    <% dropped_scopes = Array(api_key.scopes).reject { |scope| api_key.scope_within_ceiling?(scope) } %>
+    <% dropped_scopes = api_key.scopes_follow_ceiling? ? [] : Array(api_key.scopes).reject { |scope| api_key.scope_within_ceiling?(scope) } %>
     <% if dropped_scopes.any? %>
       <small class="api-keys-form-help">
         <%= safe_join(dropped_scopes.map { |scope| content_tag(:code, scope) }, ", ") %>
         <%= dropped_scopes.one? ? "is" : "are" %> no longer allowed for this key and will be removed when you save.
       </small>
     <% end %>
-    <% if @available_scopes.present? %>
+    <% if api_key.scopes_follow_ceiling? %>
+      <div class="api-keys-ceiling-scopes">
+        <p><strong>Permissions / Scopes</strong></p>
+        <% api_keys_displayed_scopes(api_key).each do |scope| %>
+          <kbd class="tag is-small"><%= scope %></kbd>
+        <% end %>
+        <small class="api-keys-form-help">
+          Permissions follow the <%= api_key.key_type.humanize.downcase %> key type and update automatically when it changes.
+        </small>
+      </div>
+    <% elsif @available_scopes.present? %>
       <div>
         <%= form.label :scopes, "Permissions / Scopes" %>
         <%# Empty sentinel: clearing every box must remove every offered scope, not keep the old ones. %>

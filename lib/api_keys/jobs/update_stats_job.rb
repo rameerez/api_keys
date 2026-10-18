@@ -9,6 +9,11 @@ module ApiKeys
   module Jobs
     # Background job to update API key usage statistics (last_used_at, requests_count).
     # Enqueued by the Authentication concern after a successful request.
+    #
+    # With `refusal_code:` it records refused-but-identified traffic instead
+    # (last_refused_at, last_refusal_code, refusals_count). The two halves never
+    # share a write: a refusal is not a use, so it can never move last_used_at
+    # or requests_count, whatever the code says.
     class UpdateStatsJob < ActiveJob::Base
       include ApiKeys::Logging # Include logging helpers
 
@@ -21,7 +26,9 @@ module ApiKeys
       #
       # @param api_key_id [Integer, String] The ID of the ApiKey to update.
       # @param timestamp [Time] The timestamp of the request (when it was authenticated).
-      def perform(api_key_id, timestamp)
+      # @param refusal_code [String, nil] Present when the request was refused
+      #   after the key was identified; one of ApiKeys::ApiKey::REFUSAL_CODES.
+      def perform(api_key_id, timestamp, refusal_code: nil)
         api_key = ApiKey.find_by(id: api_key_id)
 
         unless api_key
@@ -37,6 +44,13 @@ module ApiKeys
 
         if timestamp > Time.current + MAX_FUTURE_CLOCK_SKEW
           log_warn "[ApiKeys::Jobs::UpdateStatsJob] Rejected a timestamp too far in the future."
+          return
+        end
+
+        # Any refusal marker at all, even a blank or unrecognized one, takes the
+        # refusal branch: the usage branch runs only for a genuine success.
+        unless refusal_code.nil?
+          record_refusal(api_key, timestamp, refusal_code)
           return
         end
 
@@ -67,6 +81,36 @@ module ApiKeys
       rescue StandardError => error
         log_error "[ApiKeys::Jobs::UpdateStatsJob] Unexpected error processing ApiKey ID: #{api_key_id} (#{error.class})."
         # Consider re-raising or using a dead-letter queue strategy depending on job system
+      end
+
+      private
+
+      # Stamps a refusal. An installation that has not run
+      # `rails generate api_keys:add_refusal_stats` yet skips it quietly, so a
+      # deploy that ships code before the migration never fails these jobs.
+      def record_refusal(api_key, timestamp, refusal_code)
+        unless ApiKey.refusal_stats_columns?
+          log_debug "[ApiKeys::Jobs::UpdateStatsJob] Refusal stats columns are missing; skipping. " \
+                    "Run: rails generate api_keys:add_refusal_stats && rails db:migrate"
+          return
+        end
+
+        code = refusal_code.to_s
+        unless ApiKey::REFUSAL_CODES.include?(code)
+          log_warn "[ApiKeys::Jobs::UpdateStatsJob] Ignored an unrecognized refusal code for ApiKey ID: #{api_key.id}."
+          return
+        end
+
+        # Same ordering guard as last_used_at: an older refusal processed late
+        # cannot overwrite a newer one, and the code always matches its timestamp.
+        ApiKey
+          .where(id: api_key.id)
+          .where("last_refused_at IS NULL OR last_refused_at < ?", timestamp)
+          .update_all(last_refused_at: timestamp, last_refusal_code: code)
+
+        # Counted under the same switch as requests_count, which is also the only
+        # mode in which no refusal is debounced away, so the count is exact.
+        ApiKey.increment_counter(:refusals_count, api_key.id) if ApiKeys.configuration.track_requests_count
       end
     end
   end

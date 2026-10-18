@@ -107,6 +107,13 @@ module ApiKeys
     #     - :restrictions [Array<Symbol>] Which request-restriction kinds keys of this
     #       type may carry: any subset of [:origins, :ips]. Omitted means both are
     #       allowed; `[]` forbids restrictions entirely for this type.
+    #     - :scopes [Symbol] Where scope checks for keys of this type look.
+    #       `:stored` (default) checks the scopes each key stored at creation,
+    #       capped by the type's permissions. `:ceiling` makes the type's live
+    #       `permissions` list the contract: every key of the type is authorized
+    #       for exactly that list, so widening or narrowing it applies to existing
+    #       keys immediately, and stored scopes become metadata. `:ceiling`
+    #       requires a finite, non-empty permissions list (never `:all`).
     #   @example
     #     config.key_types = {
     #       publishable: { prefix: "pk", permissions: %w[read], public: true, limit: 1,
@@ -147,6 +154,9 @@ module ApiKeys
     VALID_HASH_STRATEGIES = %i[sha256 bcrypt].freeze
     VALID_TOKEN_ALPHABETS = %i[base58 hex].freeze
     VALID_DASHBOARD_CONTENT_SECURITY_POLICIES = [:default, :strict, false, nil].freeze
+    # Where a key type's scope checks look: the scopes each key stored at
+    # creation (default), or the type's live permission ceiling.
+    KEY_TYPE_SCOPE_SOURCES = %w[stored ceiling].freeze
     TOKEN_LENGTH_RANGE = (16..64)
     MAX_CONFIGURED_SCOPES = 100
     CONFIG_NAME_PATTERN = /\A[a-zA-Z0-9_-]{1,64}\z/
@@ -434,6 +444,7 @@ module ApiKeys
         end
 
         validate_restriction_kinds!(name, type_config[:restrictions]) if type_config.key?(:restrictions)
+        validate_scope_source!(name, type_config[:scopes], permissions) if type_config.key?(:scopes)
 
         next unless type_config[:public] == true
 
@@ -455,6 +466,21 @@ module ApiKeys
 
       raise ArgumentError,
             "Key type '#{name}' restrictions must be an Array containing any of: #{ApiKeys::Restrictions::KIND_NAMES.join(', ')}"
+    end
+
+    # `scopes: :ceiling` makes the type's permission list authoritative for every
+    # existing key of the type. Against `:all` (or an empty list) that would turn
+    # each key into an unbounded or useless credential, so only a finite,
+    # non-empty ceiling may be the contract.
+    def validate_scope_source!(name, source, permissions)
+      unless (source.is_a?(Symbol) || source.is_a?(String)) && KEY_TYPE_SCOPE_SOURCES.include?(source.to_s)
+        raise ArgumentError, "Key type '#{name}' scopes must be :stored or :ceiling"
+      end
+      return unless source.to_s == "ceiling"
+      return if permissions.is_a?(Array) && permissions.any?
+
+      raise ArgumentError,
+            "Key type '#{name}' uses scopes: :ceiling, so its permissions must be a finite, non-empty list (never :all)"
     end
 
     def validate_config_name!(value, label)
