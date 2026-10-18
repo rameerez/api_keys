@@ -52,6 +52,11 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       t.bigint   :refusals_count, default: 0, null: false
       t.string   :last_refusal_code, limit: 64
 
+      # When this key's token was released through the one-time dashboard
+      # handoff. The first retrieval claims it with a conditional UPDATE, so a
+      # copied session can never show the token twice.
+      t.datetime :token_shown_at
+
       # Timestamp when the key was revoked (null means active)
       t.datetime :revoked_at
 

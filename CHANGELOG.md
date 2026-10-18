@@ -5,13 +5,16 @@
 - Ceiling-authoritative scopes, opt-in per key type ([#28](https://github.com/rameerez/api_keys/issues/28)). `key_types[...][:scopes] = :ceiling` makes the type's live `permissions:` list the contract for every key of that type, so widening it reaches existing keys and narrowing it takes effect on the next request. Every scope check consults it (`authenticate_api_key!(scope:)`, `allows_scope?`, `allows_permission?`); stored `scopes` stay as metadata. Requires a finite, non-empty `permissions` list. `ApiKey#scopes_follow_ceiling?` reports it, and the dashboard shows these keys' live permissions instead of scope checkboxes that would change nothing.
 - `ApiKeys.reconcile_scopes!(key_type:)`: an add-only backfill that merges a type's current ceiling into the stored scopes of its non-revoked keys, for types that keep stored scopes after their ceiling was widened.
 - Refused-but-identified traffic ([#38](https://github.com/rameerez/api_keys/issues/38)). `last_refused_at`, `refusals_count`, and `last_refusal_code` on `api_keys`, stamped through the same async `UpdateStatsJob` path as `last_used_at` whenever a request presents a key's real token and a policy refuses it: revoked, expired, type/environment configuration, environment isolation, origin/IP restrictions, and missing scope. The dashboard's key page says "Requests are arriving but refused: last at X, because Y", and the key list shows the latest refusal under "Last Used". `refusals_count` follows `track_requests_count`, like `requests_count`.
-- `rails generate api_keys:add_refusal_stats` for existing installations (idempotent); new installs create the columns from the start.
+- Durable one-time token handoff (promised in 0.5.1). A `token_shown_at` column on `api_keys`, claimed by the first retrieval of a key's token through `ApiKeys::TokenSession` with one conditional `UPDATE ... WHERE id = ? AND token_shown_at IS NULL`. `ApiKey#token_shown_at` and `#token_shown?` report it.
+- `ApiKeys::TokenSession.retrieve_once_with_status` consumes a handoff exactly like `retrieve_once` and also says why no token came back (`:already_shown`, `:withheld`, `:missing`). The dashboard's token page uses it: a replayed copy of the session, or a refresh after the token was shown, now says the token was already shown.
+- `rails generate api_keys:add_key_activity` for existing installations: one idempotent migration with every 0.6.0 column (`last_refused_at`, `refusals_count`, `last_refusal_code`, `token_shown_at`). New installs create the columns from the start.
 - `ApiKeys::ViewHelpers#api_key_refusal_reason` explains a key's latest refusal for custom dashboards.
 
 ### Changed
 
 - `ApiKeys::Jobs::UpdateStatsJob#perform` takes an optional `refusal_code:` keyword. Jobs enqueued by earlier versions run unchanged. A job carrying any refusal marker, recognized or not, never touches `last_used_at` or `requests_count`.
 - The scope-ceiling validation no longer blocks saving an existing `scopes: :ceiling` key whose stored scopes exceed a narrowed ceiling, as long as the scopes themselves are not being written. Those stored scopes authorize nothing, and the validation would otherwise stop owners from renaming the key or tightening its request restrictions.
+- Dashboard edits of a `scopes: :ceiling` key never write its stored scopes. The form shows the type's live permissions with no scope boxes, the update ignores any submitted scopes, and stored scopes above a narrowed ceiling are kept as metadata rather than dropped. Every other key type keeps 0.5.1's rules: the form edits only the scopes it offers, keeps the rest, and drops held scopes outside the current ceiling.
 
 ### Security
 
@@ -19,10 +22,12 @@
 - A refusal is never a use: refused traffic cannot move `last_used_at` or `requests_count`, so integrations that detect a first working request from `last_used_at` stay correct.
 - Refusal statistics are written only after the presented token is verified, only for an allowlist of policy refusal codes, and debounced exactly like `last_used_at`. They add no unauthenticated write path and no write amplification.
 - The dashboard explains a refusal with fixed sentences and never renders the stored code itself.
+- The one-time token handoff no longer depends on the cache keeping its marker. 0.5.1 recorded consumption only in `Rails.cache`, so a cache flush, restart, or eviction within the ten-minute handoff lifetime let a copy of the session taken before retrieval recover the token again. With `token_shown_at` the database admits exactly one retrieval per key, whatever happens to the cache and with any cache store, including `NullStore`. The cache marker stays as a second layer, made after the durable claim. Zero rows claimed (already shown, or the key no longer exists) and any database or cache error withhold the token. The model marks `token_shown_at` read-only, so no form or `update` can clear it and reopen a handoff. Without the column the handoff behaves exactly as in 0.5.1.
 
 ### Upgrade notes
 
-- Run `rails generate api_keys:add_refusal_stats` and `rails db:migrate` to start recording refusals. Until then, authentication is unchanged and refusals are not recorded.
+- Run `rails generate api_keys:add_key_activity` and `rails db:migrate` to start recording refusals and make the token handoff durable. Until then, authentication is unchanged, refusals are not recorded, and the handoff relies on the cache marker alone, as in 0.5.1. Migrate before deploying the code, or deploy and then migrate: both orders are safe.
+- Each key's token can now be handed off once, ever. A host that stores two handoffs for the same key (for example under two session keys) gets the token from the first retrieval only.
 - Deploy job workers together with web processes. A refusal job enqueued by 0.6.0 errors on a 0.5.x worker, whose `perform` takes no keyword; depending on your backend it is retried or dropped, and it is never recorded as a use.
 - If you have widened a key type's `permissions:` since its keys were created, those keys still carry the old list. Opt the type into `scopes: :ceiling` when its users do not curate scopes, or run `ApiKeys.reconcile_scopes!(key_type: ...)`. See the README section "Widening a ceiling does not reach existing keys".
 

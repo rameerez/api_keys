@@ -32,6 +32,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_18_120000) do
     t.datetime "revoked_at"
     t.json "scopes", default: [], null: false
     t.string "token_digest", null: false
+    t.datetime "token_shown_at"
     t.datetime "updated_at", null: false
     t.index ["environment"], name: "index_api_keys_on_environment"
     t.index ["expires_at"], name: "index_api_keys_on_expires_at"

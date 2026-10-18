@@ -362,7 +362,7 @@ ApiKeys.configure do |config|
   # the same stats job stamps last_refused_at and last_refusal_code (and
   # refusals_count when track_requests_count is on). A refusal never moves
   # last_used_at or requests_count. The dashboard shows it on the key's page.
-  # Existing installs: rails generate api_keys:add_refusal_stats && rails db:migrate
+  # Existing installs: rails generate api_keys:add_key_activity && rails db:migrate
 
   # Queue names for background jobs.
   # Default: :default

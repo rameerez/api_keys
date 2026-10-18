@@ -23,14 +23,24 @@ module ApiKeys
     # Deleting the payload from the session only consumes it in that session.
     # A copy of the session taken before retrieval (a copied CookieStore
     # cookie, or two requests racing with the same cookie) would still carry
-    # it. So each handoff also has a random ID, and the first retrieval
-    # records an atomic consumption marker for that ID in `Rails.cache`
-    # (`write(..., unless_exist: true)`). Any later retrieval of the same
-    # handoff finds the marker and gets nil. This guarantee needs a cache store
-    # that every application process shares and that implements
-    # `unless_exist:` atomically. With `ActiveSupport::Cache::NullStore` the
-    # marker cannot be recorded, so deleting the payload from the session is
-    # the only protection, as it was before 0.5.1.
+    # it. Two more layers make retrieval one-time across copies:
+    #
+    # 1. Durable (0.6.0): the first retrieval of a key's handoff claims the
+    #    key's `token_shown_at` column with one conditional UPDATE
+    #    (`... WHERE id = ? AND token_shown_at IS NULL`). The database makes
+    #    exactly one claim succeed, and a cache flush cannot undo it. Zero rows
+    #    changed (already shown, or the key is gone) returns nil. Installations
+    #    without the column skip this layer and behave as 0.5.1.
+    # 2. Cache marker (0.5.1): each handoff has a random ID, and retrieval
+    #    records it in `Rails.cache` with `write(..., unless_exist: true)`;
+    #    a later retrieval of the same handoff finds the marker and gets nil.
+    #    With the column it is a second layer (it also covers handoffs that
+    #    name no key); without it, it is the only one, and it needs a cache
+    #    store every process shares, with an atomic `unless_exist:`, that
+    #    keeps the marker for the handoff lifetime. With
+    #    `ActiveSupport::Cache::NullStore` the marker cannot be recorded.
+    #
+    # Any failure in either layer withholds the token (fail closed).
     #
     # @example In your controller
     #   # After creating a key:
@@ -61,6 +71,24 @@ module ApiKeys
       HANDOFF_TTL = 10.minutes
       HANDOFF_ID_PATTERN = /\A[A-Za-z0-9_-]{22,64}\z/
       CONSUMPTION_CACHE_NAMESPACE = "api_keys:v1:token_handoff_consumed"
+
+      # The outcome of `retrieve_once_with_status`. `token` is set only when
+      # `status` is `:retrieved`. The other statuses are:
+      # - `:already_shown`: an authentic handoff for this key whose token an
+      #   earlier retrieval already released (a replayed copy of the session).
+      # - `:withheld`: the database or cache could not record the retrieval,
+      #   so the token is withheld rather than risk a second release.
+      # - `:missing`: no usable handoff for this key (none stored, expired,
+      #   tampered, or bound to another key).
+      Retrieval = Struct.new(:token, :status) do
+        def retrieved?
+          status == :retrieved
+        end
+
+        def already_shown?
+          status == :already_shown
+        end
+      end
       ENCRYPTION_CIPHER = "aes-256-gcm"
       ENCRYPTION_SALT = "api_keys/token_session/v2"
       ENCRYPTION_PURPOSE = "api_keys.token_session"
@@ -111,26 +139,39 @@ module ApiKeys
         # @param key [Symbol] Optional custom session key (default: :api_keys_new_token)
         # @return [String, nil] The token, or nil if not present
         def retrieve_once(session, key: DEFAULT_SESSION_KEY, api_key: nil, api_key_id: nil)
+          retrieve_once_with_status(session, key: key, api_key: api_key, api_key_id: api_key_id).token
+        end
+
+        # Same as `retrieve_once`, and also says why no token came back, so a
+        # page can tell a replayed handoff ("already shown") from a missing
+        # one. The token is consumed exactly as `retrieve_once` consumes it.
+        #
+        # @return [Retrieval]
+        def retrieve_once_with_status(session, key: DEFAULT_SESSION_KEY, api_key: nil, api_key_id: nil)
           payload = session.delete(key)
           expected_id = normalize_api_key_id(api_key_id || (api_key.id if api_key.respond_to?(:id)))
 
           # Plain string payloads from older versions remain readable only when
           # the caller does not request ID binding.
-          return payload if expected_id.nil? && valid_token_payload?(payload)
+          return Retrieval.new(payload, :retrieved).freeze if expected_id.nil? && valid_token_payload?(payload)
           decoded_payload = decode_payload(payload)
-          return nil unless decoded_payload
+          return Retrieval.new(nil, :missing).freeze unless decoded_payload
+
+          token = decoded_payload["token"] || decoded_payload[:token]
+          stored_id = decoded_payload["api_key_id"] || decoded_payload[:api_key_id]
+          bound_elsewhere = expected_id && stored_id.to_s != expected_id.to_s
 
           # Any authentic retrieval attempt uses the handoff up, matching the
           # session deletion above: a mismatched or replayed attempt never
           # leaves the handoff available to a later one.
-          return nil unless consume_handoff(decoded_payload)
+          status = consume_handoff(decoded_payload)
 
-          token = decoded_payload["token"] || decoded_payload[:token]
-          stored_id = decoded_payload["api_key_id"] || decoded_payload[:api_key_id]
-          return nil if expected_id && stored_id.to_s != expected_id.to_s
-          return nil unless valid_token_payload?(token)
+          # A handoff bound to another key says nothing about this one.
+          return Retrieval.new(nil, :missing).freeze if bound_elsewhere
+          return Retrieval.new(nil, status).freeze unless status == :consumed
+          return Retrieval.new(nil, :missing).freeze unless valid_token_payload?(token)
 
-          token
+          Retrieval.new(token, :retrieved).freeze
         end
 
         # Check if a token is available in the session without removing it.
@@ -196,23 +237,68 @@ module ApiKeys
           nil
         end
 
-        # Records the consumption marker. Answers true only to the first
-        # consumer of a handoff; every later one, and any cache failure, is
-        # treated as "no token" (fail closed).
+        # Uses the handoff up, durably first and then in the cache. Answers
+        # :consumed only to the first consumer of a handoff; a later one gets
+        # :already_shown, and any failure :withheld (fail closed).
         def consume_handoff(decoded_payload)
-          cache = consumption_cache
-          return true unless cache
+          durable = claim_durably(decoded_payload)
+          return durable unless durable.nil? || durable == :consumed
 
-          marker = consumption_marker_key(decoded_payload)
-          return true unless marker
-
-          cache.write(marker, true, unless_exist: true, expires_in: HANDOFF_TTL) ? true : false
-        rescue StandardError => error
-          log_warn "[ApiKeys Security] Token handoff consumption could not be recorded (#{error.class}); withholding the token."
-          false
+          consume_cache_marker(decoded_payload)
         end
 
+        # The durable layer: the key's `token_shown_at`, claimed by one
+        # conditional UPDATE. nil when there is no durable layer for this
+        # handoff (the column does not exist yet, or the handoff names no key).
+        def claim_durably(decoded_payload)
+          stored_id = decoded_payload["api_key_id"]
+          return nil if stored_id.nil? || !defined?(::ApiKeys::ApiKey)
+
+          case ::ApiKeys::ApiKey.claim_token_handoff!(stored_id)
+          when nil then nil
+          when true then :consumed
+          else :already_shown
+          end
+        rescue StandardError => error
+          log_warn "[ApiKeys Security] Token handoff could not be recorded in the database (#{error.class}); withholding the token."
+          :withheld
+        end
+
+        # The cache layer from 0.5.1: an atomic marker named by the handoff ID.
+        def consume_cache_marker(decoded_payload)
+          cache = consumption_cache
+          return :consumed unless cache
+
+          marker = consumption_marker_key(decoded_payload)
+          return :consumed unless marker
+          return :consumed if cache.write(marker, true, unless_exist: true, expires_in: HANDOFF_TTL)
+
+          # Refused: normally the marker is already there (a replay), but some
+          # stores also answer false on error, so only a marker that is
+          # really present counts as "already shown".
+          cache.exist?(marker) ? :already_shown : :withheld
+        rescue StandardError => error
+          log_warn "[ApiKeys Security] Token handoff consumption could not be recorded (#{error.class}); withholding the token."
+          :withheld
+        end
+
+        # Read-only: whether either layer says the handoff was used up. A
+        # failed check reads as consumed (fail closed).
         def handoff_consumed?(decoded_payload)
+          durably_consumed?(decoded_payload) || cache_marker_present?(decoded_payload)
+        end
+
+        def durably_consumed?(decoded_payload)
+          stored_id = decoded_payload["api_key_id"]
+          return false if stored_id.nil? || !defined?(::ApiKeys::ApiKey)
+
+          ::ApiKeys::ApiKey.token_handoff_claimable?(stored_id) == false
+        rescue StandardError => error
+          log_warn "[ApiKeys Security] Token handoff consumption could not be checked in the database (#{error.class})."
+          true
+        end
+
+        def cache_marker_present?(decoded_payload)
           cache = consumption_cache
           return false unless cache
 

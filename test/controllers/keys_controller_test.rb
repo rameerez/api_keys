@@ -930,6 +930,118 @@ module ApiKeys
       assert_nil @controller.instance_variable_get(:@plaintext_token)
     end
 
+    # 0.6.0: the durable claim. The 0.5.1 limitation (a cache flush let a
+    # copied session show the token again) is closed, and the page says why.
+    test "after the cache is flushed a copied session still cannot show the token" do
+      cache = ActiveSupport::Cache::MemoryStore.new
+      Rails.stubs(:cache).returns(cache)
+      post :create, params: { api_key: { name: "Flush Target" } }
+      key = @user.api_keys.order(:created_at).last
+      copied_payload = @request.session[ApiKeys::TokenSession::DEFAULT_SESSION_KEY].deep_dup
+
+      get :show, params: { id: key.id }
+      assert_response :success
+      assert key.reload.token_shown?
+
+      cache.clear
+      @request.session[ApiKeys::TokenSession::DEFAULT_SESSION_KEY] = copied_payload
+      get :show, params: { id: key.id }
+
+      assert_redirected_to keys_path
+      assert_nil @controller.instance_variable_get(:@plaintext_token)
+      assert_equal ApiKeys::KeysController::ALREADY_SHOWN_ALERT, flash[:alert]
+    end
+
+    test "a replayed token page says the token was already shown" do
+      post :create, params: { api_key: { name: "Replay Message" } }
+      key = @user.api_keys.order(:created_at).last
+      copied_payload = @request.session[ApiKeys::TokenSession::DEFAULT_SESSION_KEY].deep_dup
+      get :show, params: { id: key.id }
+      assert_response :success
+
+      @request.session[ApiKeys::TokenSession::DEFAULT_SESSION_KEY] = copied_payload
+      get :show, params: { id: key.id }
+
+      assert_redirected_to keys_path
+      assert_equal ApiKeys::KeysController::ALREADY_SHOWN_ALERT, flash[:alert]
+      refute_includes flash[:alert], key.prefix
+    end
+
+    test "a refresh of the token page says the token was already shown" do
+      post :create, params: { api_key: { name: "Refresh Message" } }
+      key = @user.api_keys.order(:created_at).last
+      get :show, params: { id: key.id }
+      assert_response :success
+
+      get :show, params: { id: key.id }
+
+      assert_redirected_to keys_path
+      assert_equal ApiKeys::KeysController::ALREADY_SHOWN_ALERT, flash[:alert]
+    end
+
+    test "a key whose token was never handed off gets the generic message" do
+      key = @user.create_api_key!(name: "Programmatic")
+
+      get :show, params: { id: key.id }
+
+      assert_redirected_to keys_path
+      assert_equal "API key token can only be shown once immediately after creation.", flash[:alert]
+      refute key.reload.token_shown?, "visiting the page claims nothing without a handoff"
+    end
+
+    test "a handoff for one key cannot be spent or reported through another key's page" do
+      post :create, params: { api_key: { name: "First" } }
+      first = @user.api_keys.order(:created_at).last
+      second = @user.create_api_key!(name: "Second")
+
+      get :show, params: { id: second.id }
+
+      assert_redirected_to keys_path
+      assert_equal "API key token can only be shown once immediately after creation.", flash[:alert],
+                   "the first key's handoff says nothing about the second key"
+      refute second.reload.token_shown?
+      assert first.reload.token_shown?, "the mismatched attempt still used the first key's handoff up"
+    end
+
+    test "the dashboard cannot clear token_shown_at" do
+      post :create, params: { api_key: { name: "Readonly" } }
+      key = @user.api_keys.order(:created_at).last
+      get :show, params: { id: key.id }
+      shown_at = key.reload.token_shown_at
+      assert shown_at
+
+      patch :update, params: { id: key.id, api_key: { name: "Readonly", token_shown_at: "" } }
+
+      assert_redirected_to keys_path
+      assert_equal shown_at.to_i, key.reload.token_shown_at.to_i
+    end
+
+    test "without the token_shown_at column the token page works as in 0.5.1" do
+      TokenShownAtSchema.without_column do
+        cache = ActiveSupport::Cache::MemoryStore.new
+        Rails.stubs(:cache).returns(cache)
+        post :create, params: { api_key: { name: "Unmigrated" } }
+        key = @user.api_keys.order(:created_at).last
+        copied_payload = @request.session[ApiKeys::TokenSession::DEFAULT_SESSION_KEY].deep_dup
+
+        get :show, params: { id: key.id }
+        assert_response :success
+        assert @controller.instance_variable_get(:@plaintext_token).present?
+        refute key.reload.token_shown?
+
+        @request.session[ApiKeys::TokenSession::DEFAULT_SESSION_KEY] = copied_payload.deep_dup
+        get :show, params: { id: key.id }
+        assert_redirected_to keys_path
+        assert_equal ApiKeys::KeysController::ALREADY_SHOWN_ALERT, flash[:alert], "the cache marker still reports the replay"
+
+        # The documented 0.5.1 limitation, unchanged without the column.
+        cache.clear
+        @request.session[ApiKeys::TokenSession::DEFAULT_SESSION_KEY] = copied_payload.deep_dup
+        get :show, params: { id: key.id }
+        assert_response :success
+      end
+    end
+
     private
 
     def with_owner_default_scopes(scopes)

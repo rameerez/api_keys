@@ -18,6 +18,9 @@ module ApiKeys
     # Refused-but-identified traffic (0.6.0). Kept apart from last_used_at and
     # requests_count, which only ever describe successful authentications.
     REFUSAL_STATS_COLUMNS = %w[last_refused_at refusals_count last_refusal_code].freeze
+    # Durable one-time token handoff (0.6.0): stamped by the first retrieval
+    # of the key's token through ApiKeys::TokenSession, and never cleared.
+    TOKEN_SHOWN_AT_COLUMN = "token_shown_at"
     # Every refusal that happens after the presented token was verified, so the
     # key is known: lifecycle, type/environment configuration, isolation,
     # request restrictions, and scopes. Lookup failures (missing or invalid
@@ -44,6 +47,11 @@ module ApiKeys
     # == Attributes & Serialization ==
     # Expose the plaintext token only immediately after creation
     attr_reader :token
+
+    # Written only by the atomic claim in `claim_token_handoff!`. Ordinary
+    # saves can never set or clear it, so no update path (a form, mass
+    # assignment, a stray `update`) can reopen a handoff that was claimed.
+    attr_readonly :token_shown_at
     attr_accessor :expires_at_preset
 
     # JSON attributes (:scopes, :metadata) are defined in the engine initializer
@@ -455,7 +463,7 @@ module ApiKeys
     # == Refused-but-identified traffic ==
     # Stamped asynchronously when a request presents this key's real token and a
     # policy refuses it. Installations that have not run
-    # `rails generate api_keys:add_refusal_stats` read nil / 0 instead of raising.
+    # `rails generate api_keys:add_key_activity` read nil / 0 instead of raising.
 
     # @return [Time, nil] When the most recently recorded refusal happened.
     def last_refused_at
@@ -470,6 +478,21 @@ module ApiKeys
     # @return [String, nil] The error code of the most recently recorded refusal.
     def last_refusal_code
       self.class.refusal_stats_columns? ? self[:last_refusal_code] : nil
+    end
+
+    # == One-time token handoff ==
+
+    # When this key's token was released through the one-time handoff
+    # (ApiKeys::TokenSession). Nil when it never was, and on installations that
+    # have not run `rails generate api_keys:add_key_activity` yet.
+    # @return [Time, nil]
+    def token_shown_at
+      self.class.token_shown_at_column? ? self[:token_shown_at] : nil
+    end
+
+    # @return [Boolean] Whether the one-time handoff already released this key's token.
+    def token_shown?
+      !token_shown_at.nil?
     end
 
     # Provides a masked version of the token for display (e.g., ak_live_••••rj4p)
@@ -504,6 +527,51 @@ module ApiKeys
       (REFUSAL_STATS_COLUMNS - column_names).empty?
     rescue StandardError
       false
+    end
+
+    # Whether the `token_shown_at` column exists. Without it the one-time
+    # handoff falls back to the cache marker alone, as in 0.5.1.
+    # @return [Boolean]
+    def self.token_shown_at_column?
+      column_names.include?(TOKEN_SHOWN_AT_COLUMN)
+    rescue StandardError
+      false
+    end
+
+    # Durably claims the one-time token handoff of the key with +id+ in one
+    # conditional statement:
+    #
+    #   UPDATE api_keys SET token_shown_at = now WHERE id = ? AND token_shown_at IS NULL
+    #
+    # The database applies it atomically, so exactly one caller ever gets true
+    # for a key: across processes, across copies of a session, and after the
+    # cache is flushed. Zero rows changed means the token was already shown or
+    # the key no longer exists, and answers false (fail closed).
+    #
+    # Answers nil when the column does not exist yet (nothing can be recorded
+    # durably). Database errors are raised, not rescued: the caller withholds
+    # the token.
+    #
+    # @param id [Integer, String] The key's primary key.
+    # @return [Boolean, nil]
+    def self.claim_token_handoff!(id)
+      return nil unless column_names.include?(TOKEN_SHOWN_AT_COLUMN)
+      return false if id.nil?
+
+      where(primary_key => id, TOKEN_SHOWN_AT_COLUMN => nil)
+        .update_all(TOKEN_SHOWN_AT_COLUMN => Time.current) == 1
+    end
+
+    # Read-only companion of `claim_token_handoff!`: whether a claim for +id+
+    # could still succeed. Nil without the column. Raises on database errors.
+    #
+    # @param id [Integer, String] The key's primary key.
+    # @return [Boolean, nil]
+    def self.token_handoff_claimable?(id)
+      return nil unless column_names.include?(TOKEN_SHOWN_AT_COLUMN)
+      return false if id.nil?
+
+      where(primary_key => id, TOKEN_SHOWN_AT_COLUMN => nil).exists?
     end
 
     # Single source of truth for `scopes: :ceiling`. The finite-ceiling check

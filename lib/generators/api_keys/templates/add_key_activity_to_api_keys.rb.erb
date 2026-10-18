@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Migration to add refused-traffic statistics to the api_keys table.
+# Migration to add the api_keys 0.6.0 columns to the api_keys table.
 #
 # `last_refused_at`, `refusals_count`, and `last_refusal_code` record requests
 # that presented a key's real token and were refused by a policy (origin or IP
@@ -8,21 +8,28 @@
 # the dashboard can say "requests are arriving but refused" instead of showing
 # a key nobody ever tried. They never touch `last_used_at` or `requests_count`.
 #
-# Run this migration if you're upgrading from a version of api_keys that
-# didn't record refusals. New installs get the columns from the install
-# generator. Until it runs, authentication works unchanged and refusals are
-# simply not recorded. The migration is idempotent: columns that already exist
-# are left alone.
-class AddRefusalStatsToApiKeys < ActiveRecord::Migration<%= migration_version %>
+# `token_shown_at` records when the key's token was released through the
+# one-time dashboard handoff. The first retrieval claims it with a single
+# conditional UPDATE, so a copy of the session cannot show the token again,
+# even after the cache is flushed. Existing keys keep NULL.
+#
+# Run this migration if you're upgrading from a version of api_keys before
+# 0.6.0. New installs get the columns from the install generator. Until it
+# runs, authentication works unchanged, refusals are simply not recorded, and
+# the token handoff relies on the cache marker alone, as in 0.5.1. The
+# migration is idempotent: columns that already exist are left alone.
+class AddKeyActivityToApiKeys < ActiveRecord::Migration<%= migration_version %>
   def up
     add_column :api_keys, :last_refused_at, :datetime unless column_exists?(:api_keys, :last_refused_at)
     unless column_exists?(:api_keys, :refusals_count)
       add_column :api_keys, :refusals_count, :bigint, default: 0, null: false
     end
     add_column :api_keys, :last_refusal_code, :string, limit: 64 unless column_exists?(:api_keys, :last_refusal_code)
+    add_column :api_keys, :token_shown_at, :datetime unless column_exists?(:api_keys, :token_shown_at)
   end
 
   def down
+    remove_column :api_keys, :token_shown_at if column_exists?(:api_keys, :token_shown_at)
     remove_column :api_keys, :last_refusal_code if column_exists?(:api_keys, :last_refusal_code)
     remove_column :api_keys, :refusals_count if column_exists?(:api_keys, :refusals_count)
     remove_column :api_keys, :last_refused_at if column_exists?(:api_keys, :last_refused_at)

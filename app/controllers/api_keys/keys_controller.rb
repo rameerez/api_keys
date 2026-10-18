@@ -3,6 +3,9 @@
 module ApiKeys
   # Controller for managing API keys belonging to the current owner.
   class KeysController < ApplicationController
+    ALREADY_SHOWN_ALERT = "This API key's token was already shown and cannot be shown again. " \
+                          "If you did not save it, revoke this key and create a new one."
+
     before_action :set_api_key, only: [:show, :edit, :update, :revoke]
     helper ApiKeys::Helpers::ViewHelpers
     helper_method :key_types_feature_enabled?, :api_keys_allowed_restriction_kinds,
@@ -37,15 +40,20 @@ module ApiKeys
     # Shows the newly generated key's plaintext token ONCE.
     # This is not a standard show action, it's used transiently after creation.
     def show
-      # Key is set by set_api_key
-      # We need to retrieve the plaintext token stored temporarily
-      # after creation. This relies on how we handle creation.
-      # We'll likely store it in the session flash or pass it directly.
-      @plaintext_token = ApiKeys::TokenSession.retrieve_once(session, api_key: @api_key)
-      unless @plaintext_token
-        # If accessed directly without the token, redirect or show an error
-        redirect_to keys_path, alert: "API key token can only be shown once immediately after creation."
-      end
+      # Key is set by set_api_key. The plaintext token comes from the one-time
+      # session handoff written by create; it is released once, ever.
+      retrieval = ApiKeys::TokenSession.retrieve_once_with_status(session, api_key: @api_key)
+      @plaintext_token = retrieval.token
+      return if @plaintext_token
+
+      # A replayed copy of the session, or a refresh after the token page,
+      # gets an explicit answer instead of the generic one.
+      alert = if retrieval.already_shown? || @api_key.token_shown?
+                ALREADY_SHOWN_ALERT
+              else
+                "API key token can only be shown once immediately after creation."
+              end
+      redirect_to keys_path, alert: alert
     end
 
     # GET /keys/new

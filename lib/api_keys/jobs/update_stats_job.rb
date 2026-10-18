@@ -86,12 +86,12 @@ module ApiKeys
       private
 
       # Stamps a refusal. An installation that has not run
-      # `rails generate api_keys:add_refusal_stats` yet skips it quietly, so a
+      # `rails generate api_keys:add_key_activity` yet skips it quietly, so a
       # deploy that ships code before the migration never fails these jobs.
       def record_refusal(api_key, timestamp, refusal_code)
         unless ApiKey.refusal_stats_columns?
           log_debug "[ApiKeys::Jobs::UpdateStatsJob] Refusal stats columns are missing; skipping. " \
-                    "Run: rails generate api_keys:add_refusal_stats && rails db:migrate"
+                    "Run: rails generate api_keys:add_key_activity && rails db:migrate"
           return
         end
 

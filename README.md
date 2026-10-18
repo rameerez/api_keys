@@ -50,14 +50,14 @@ rails db:migrate
 
 New installations get this column from the start, so this is only for upgrades.
 
-To record refused requests on each key (see [Refused requests](#refused-requests-why-a-key-is-not-working)), add the refusal stats columns:
+To record refused requests on each key (see [Refused requests](#refused-requests-why-a-key-is-not-working)) and make the one-time token page durable (see [What "one-time" guarantees](#what-one-time-guarantees)), add the 0.6.0 columns in one migration:
 
 ```bash
-rails generate api_keys:add_refusal_stats
+rails generate api_keys:add_key_activity
 rails db:migrate
 ```
 
-New installations get these columns from the start too. Until an existing app runs the migration, authentication keeps working exactly as before and refusals are simply not recorded.
+New installations get these columns from the start too. Until an existing app runs the migration, authentication keeps working exactly as before, refusals are simply not recorded, and the one-time token page relies on the cache marker alone, as in 0.5.1.
 
 ## Quick Start
 
@@ -488,19 +488,37 @@ ApiKeys::TokenSession.store(session, @api_key, key: :my_custom_key)
 
 Treat the session payload as private implementation detail; use `store`, `available?`, and `retrieve_once` rather than reading it directly. A failed, expired, tampered, mismatched, or reused handoff returns `nil` and fails closed. Any retrieval attempt uses the handoff up, including one bound to the wrong key.
 
+To tell the owner *why* no token came back, use `retrieve_once_with_status`. It consumes the handoff exactly like `retrieve_once` and also returns a status: `:retrieved`, `:already_shown` (an earlier retrieval released this key's token, for example a replayed copy of the session), `:withheld` (the database or cache could not record the retrieval), or `:missing`:
+
+```ruby
+retrieval = ApiKeys::TokenSession.retrieve_once_with_status(session, api_key: @api_key)
+if retrieval.retrieved?
+  @token = retrieval.token
+elsif retrieval.already_shown? || @api_key.token_shown?
+  redirect_to keys_path, alert: "This key's token was already shown."
+else
+  redirect_to keys_path, alert: "The token can only be shown right after creation."
+end
+```
+
 #### What "one-time" guarantees
 
 Deleting the payload makes the handoff one-time within that session: a refresh, or a second visit with the same session, shows nothing. A copy of the session taken *before* the token was shown is a different session. That is what a copied `CookieStore` cookie is, and what two requests racing with the same cookie are. Deleting the payload from one copy does nothing to the other.
 
-So each handoff also carries a random ID inside its encrypted payload, and the first retrieval records that ID in `Rails.cache` with `write(key, true, unless_exist: true, expires_in: 10.minutes)`. While the cache still holds that record, any later retrieval of the same handoff, from any copy of the session, finds it and returns `nil`.
+So from 0.6.0 the first retrieval also claims the key's `token_shown_at` column with one conditional statement:
 
-- **The token is released at most once only when both conditions hold:** every application process shares a store that implements `unless_exist:` atomically (Redis, Memcached), and that store keeps the record for the whole ten-minute handoff lifetime.
-- **The record lives only in the cache.** If the cache is flushed, restarted without persistence, or evicts the record within those ten minutes, a copy of the session taken before retrieval can recover the token again for the rest of that window. Recording consumption durably, in a database column, is the stronger design and is planned for 0.6.0.
-- **`MemoryStore`** only covers the process that holds it. **`FileStore`** checks and then writes, so it stops a later replay on the same host but not two requests that arrive at the same instant.
-- **Solid Cache** (Rails 8's default production store) implements `unless_exist:` as a `SELECT … FOR UPDATE` followed by an upsert. On PostgreSQL that locks nothing while the key does not exist yet, so two simultaneous first retrievals can both succeed. Sequential replays are still stopped.
-- **With `ActiveSupport::Cache::NullStore`** (what Rails' generated development and test environments use unless you toggle caching on), or with no `Rails.cache` at all, nothing can be recorded. The gem keeps the pre-0.5.1 behaviour: the session deletion is the only protection, and a copy of the session taken before retrieval can show the token again during its ten-minute lifetime.
-- **If the cache raises or refuses the write**, the token is withheld. The owner sees the "shown only once" message and creates a new key, which is safer than risking a second release.
-- **With a shared cache, a second request for the token page with the same cookie gets nothing**, even if the first response never reached the browser. A client that drops the first response (a timeout or a cancelled load) sees "shown only once" and needs a new key. That is the intended trade-off: a token can be lost, never shown twice.
+```sql
+UPDATE api_keys SET token_shown_at = <now> WHERE id = <key id> AND token_shown_at IS NULL
+```
+
+The database applies it atomically, so exactly one retrieval of a key's handoff ever succeeds, across processes and across copies of the session, whatever happens to the cache. A later retrieval from any copy changes no row and returns `nil` (the dashboard says the token was already shown).
+
+- **With the column, the token is released at most once per key.** A cache flush, a restart, or an eviction changes nothing, and two simultaneous first retrievals are serialized by the database: one wins. `ApiKey#token_shown_at` and `#token_shown?` report it. A key whose row no longer exists gets nothing: zero rows claimed fails closed.
+- **The column is written only by that claim.** The model marks it read-only, so no form, mass assignment, or `update` can clear it and reopen a handoff.
+- **The cache marker from 0.5.1 stays as a second layer.** Each handoff carries a random ID inside its encrypted payload, and retrieval records it in `Rails.cache` with `write(key, true, unless_exist: true, expires_in: 10.minutes)`. With the column it refuses a release the claim did not see (a 0.5.1 process that served the token during a rolling deploy), and it is the only cross-copy layer for a handoff that names no key (`TokenSession.store(session, "a token string")`).
+- **Without the column** (an existing install that has not run `rails generate api_keys:add_key_activity`), the gem behaves as 0.5.1 and the marker is the only cross-copy layer. The token is then released at most once only when every application process shares a store that implements `unless_exist:` atomically (Redis, Memcached), and that store keeps the marker for the whole ten-minute handoff lifetime. If the cache is flushed, restarted without persistence, or evicts the marker within those ten minutes, a copy of the session taken before retrieval can recover the token again for the rest of that window. **`MemoryStore`** only covers the process that holds it. **`FileStore`** checks and then writes, so it stops a later replay on the same host but not two requests that arrive at the same instant. **Solid Cache** (Rails 8's default production store) implements `unless_exist:` as a `SELECT … FOR UPDATE` followed by an upsert; on PostgreSQL that locks nothing while the key does not exist yet, so two simultaneous first retrievals can both succeed. **`ActiveSupport::Cache::NullStore`** (Rails' generated development and test default), or no `Rails.cache` at all, records nothing, so the session deletion is the only protection.
+- **If the database or the cache raises or refuses the write**, the token is withheld. The owner sees the "shown only once" message and creates a new key, which is safer than risking a second release.
+- **A second request for the token page with the same cookie gets nothing**, even if the first response never reached the browser. A client that drops the first response (a timeout or a cancelled load) sees the "already shown" message and needs a new key. That is the intended trade-off: a token can be lost, never shown twice.
 
 None of this protects a session that has been stolen. Whoever holds a copy of the owner's session cookie can use the dashboard as that owner; the handoff is one-time, the session is not.
 
@@ -1147,7 +1165,7 @@ The dashboard's key page then says *"Requests are arriving but refused: last at 
 - Only refusals of an identified key are recorded: the request presented the key's real token and a policy said no. A missing, malformed, or unknown token names no key and is never recorded, so nobody can write to a key's statistics without holding its token.
 - Refusal updates are debounced by `stats_update_interval` exactly like `last_used_at` (so within one interval you see the first refusal's code), and every refusal is recorded when `track_requests_count` is on. A client hammering a refused key costs no more writes than a working one.
 - `enable_async_operations = false` turns them off with every other job.
-- New installs get the columns from the start. Existing installs run `rails generate api_keys:add_refusal_stats`; until then, authentication is unchanged and refusals are not recorded.
+- New installs get the columns from the start. Existing installs run `rails generate api_keys:add_key_activity`; until then, authentication is unchanged and refusals are not recorded.
 
 ## Key Types: Stripe-style Publishable & Secret Keys
 
