@@ -157,7 +157,12 @@ module ApiKeys
       begin
         timestamp = Time.current # Capture time once for the job
         log_debug "[ApiKeys Auth] Enqueuing UpdateStatsJob for ApiKey ID: #{current_api_key.id} at #{timestamp}"
-        ApiKeys::Jobs::UpdateStatsJob.perform_later(current_api_key.id, timestamp)
+        # Active Job answers false (instead of raising) when the adapter
+        # failed to enqueue; either way the reservation is freed.
+        unless ApiKeys::Jobs::UpdateStatsJob.perform_later(current_api_key.id, timestamp)
+          release_stats_enqueue(:used, current_api_key.id)
+          log_error "[ApiKeys Auth] UpdateStatsJob was not enqueued for key #{current_api_key.id}."
+        end
       rescue StandardError => error
         release_stats_enqueue(:used, current_api_key.id)
         log_error "[ApiKeys Auth] Failed to enqueue UpdateStatsJob for key #{current_api_key.id} (#{error.class})."
@@ -188,7 +193,12 @@ module ApiKeys
       end
 
       begin
-        ApiKeys::Jobs::UpdateStatsJob.perform_later(api_key.id, Time.current, refusal_code: code)
+        # Active Job answers false (instead of raising) when the adapter
+        # failed to enqueue; either way the reservation is freed.
+        unless ApiKeys::Jobs::UpdateStatsJob.perform_later(api_key.id, Time.current, refusal_code: code)
+          release_stats_enqueue(:refused, api_key.id)
+          log_error "[ApiKeys Auth] A refusal stats update was not enqueued for key #{api_key.id}."
+        end
       rescue StandardError
         release_stats_enqueue(:refused, api_key.id)
         raise

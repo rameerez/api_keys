@@ -354,6 +354,20 @@ class RefusalStatsTest < ApiKeys::Test
     2.times { authenticate(key.token) }
   end
 
+  # Active Job's perform_later answers false, without raising, when the
+  # adapter failed to enqueue the job.
+  test "a reservation whose enqueue answered false is released" do
+    debounce_with_cache(ActiveSupport::Cache::MemoryStore.new)
+    refused = @user.create_api_key!(name: "Refused not enqueued", allowed_origins: "example.com")
+    working = @user.create_api_key!(name: "Used not enqueued")
+    ApiKeys::Jobs::UpdateStatsJob.expects(:perform_later).times(4)
+                                 .returns(false).then.returns(true)
+                                 .then.returns(false).then.returns(true)
+
+    2.times { authenticate(refused.token, origin: "https://elsewhere.example") }
+    2.times { authenticate(working.token) }
+  end
+
   test "exact counting stamps every refusal" do
     ApiKeys.configuration.stats_update_interval = 1.hour
     key = @user.create_api_key!(name: "Counted", allowed_origins: "example.com")
