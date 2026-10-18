@@ -128,7 +128,39 @@ module ApiKeys
       configure_owner_scopes(%w[read])
 
       assert_nil submitted_scopes(render_scope_group([], object: user.api_keys.build))
+      assert_nil submitted_scopes(render_scope_group([], object: user.api_keys.build, include_hidden: true))
       assert_nil submitted_scopes(render_scope_group(%w[read], object: Object.new, checked: :none))
+    end
+
+    # Per-owner default scopes are read through the key's owner. A form built
+    # with `scope:` and no object, or on a bare ApiKey.new, cannot see them,
+    # so by default it renders no sentinel and a fully cleared group still
+    # creates a key with the defaults. `include_hidden: true` forces it.
+    test "an ownerless form needs include_hidden: true for a cleared group to mean none" do
+      user = User.create!(name: "Host Form Owner")
+      configure_owner_scopes(%w[read write])
+      refute ApiKeys::ApiKey.new.scopes_enforced?, "precondition: a bare key cannot see per-owner defaults"
+
+      { "no object (form_with scope:)" => nil, "a bare ApiKey.new" => ApiKeys::ApiKey.new }.each do |shape, object|
+        default_form = render_scope_group(%w[read write], object: object, checked: :none)
+        assert_nil submitted_scopes(default_form), "#{shape}: no sentinel by default"
+        defaulted = user.create_api_key!(name: "Defaulted", scopes: host_params(default_form)["scopes"])
+        assert_equal %w[read write], defaulted.scopes, "#{shape}: the documented default-path limitation"
+
+        forced_form = render_scope_group(%w[read write], object: object, checked: :none, include_hidden: true)
+        assert_equal [""], submitted_scopes(forced_form), "#{shape}: include_hidden: true forces the sentinel"
+        cleared = user.create_api_key!(name: "Cleared", scopes: host_params(forced_form)["scopes"])
+        assert_equal [], cleared.scopes, "#{shape}: a forced sentinel makes the cleared group mean none"
+      end
+    end
+
+    test "include_hidden: true also forces the sentinel where scopes are not enforced" do
+      user = User.create!(name: "Unscoped Host Owner")
+      key = user.create_api_key!(name: "Reader", scopes: %w[read])
+      refute key.scopes_enforced?
+
+      assert_equal [""], submitted_scopes(render_scope_group(%w[read write], object: key, checked: :none,
+                                                                             include_hidden: true))
     end
 
     test "the host scope group sentinel can be turned off" do

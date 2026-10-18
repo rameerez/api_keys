@@ -294,6 +294,20 @@ module ApiKeys
         assert_nil TokenSession.retrieve_once(@session, api_key_id: 8)
       end
 
+      test "available? reports nothing when the cache cannot be read" do
+        cache = ActiveSupport::Cache::MemoryStore.new
+        cache.stubs(:exist?).raises(IOError, "cache unavailable")
+        use_cache(cache)
+        TokenSession.store(@session, bound_key("unverifiable_token", 6))
+        warnings = []
+        TokenSession.stubs(:log_warn).with { |message| warnings << message; true }
+
+        refute TokenSession.available?(@session, api_key_id: 6)
+        assert_equal ["[ApiKeys Security] Token handoff consumption could not be checked (IOError)."], warnings
+        refute_includes warnings.join, "unverifiable_token"
+        assert @session[:api_keys_new_token], "a failed check is read-only and leaves the handoff in place"
+      end
+
       test "a cache that refuses the marker withholds the token" do
         cache = ActiveSupport::Cache::MemoryStore.new
         cache.stubs(:write).returns(false) # what Redis and Memcached answer on error, too

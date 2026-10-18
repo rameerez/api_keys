@@ -348,6 +348,22 @@ class RestrictionsTest < ApiKeys::Test
     refute wrapped.origin_allowed?("42"), "a non-string entry can never match a host"
   end
 
+  test "normalize_input clears nil or blank text for known kinds only" do
+    assert_equal({ "ips" => [], :origins => [] }, ApiKeys::Restrictions.normalize_input("ips" => nil, origins: "  "))
+    assert_equal({ "ips" => false }, ApiKeys::Restrictions.normalize_input("ips" => false))
+    assert_equal({ "ips" => [nil] }, ApiKeys::Restrictions.normalize_input("ips" => [nil]))
+    assert_equal({ "countries" => nil }, ApiKeys::Restrictions.normalize_input("countries" => nil))
+    assert_equal "garbage", ApiKeys::Restrictions.normalize_input("garbage")
+    assert_nil ApiKeys::Restrictions.normalize_input(nil)
+  end
+
+  test "stored rows are still read strictly: a null or blank kind is malformed" do
+    [nil, "", "   "].each do |value|
+      assert ApiKeys::Restrictions.wrap("ips" => value).malformed?, value.inspect
+      assert ApiKeys::Restrictions.wrap("origins" => value).malformed?, value.inspect
+    end
+  end
+
   test "wrap coerces a scalar list value into a single entry" do
     assert_equal [42], ApiKeys::Restrictions.wrap("origins" => 42).origins
     assert_equal [42], ApiKeys::Restrictions.normalize_origins(42)

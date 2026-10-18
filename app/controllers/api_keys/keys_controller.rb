@@ -4,7 +4,8 @@ module ApiKeys
   # Controller for managing API keys belonging to the current owner.
   class KeysController < ApplicationController
     before_action :set_api_key, only: [:show, :edit, :update, :revoke]
-    helper_method :key_types_feature_enabled?, :api_keys_allowed_restriction_kinds
+    helper_method :key_types_feature_enabled?, :api_keys_allowed_restriction_kinds,
+                  :dashboard_scope_choices, :restriction_field_text
 
     # GET /keys
     def index
@@ -103,7 +104,11 @@ module ApiKeys
 
     # PATCH/PUT /keys/:id
     def update
-      if @api_key.update(api_key_update_params)
+      attributes = api_key_update_params
+      attributes[:scopes] = scopes_after_editing_offered_choices(attributes[:scopes]) if attributes.key?(:scopes)
+      skip_untouched_restriction_fields!(attributes)
+
+      if @api_key.update(attributes)
         redirect_to keys_path, notice: "API key updated successfully."
       else
         flash.now[:alert] = "Failed to update API key: #{@api_key.errors.full_messages.join(', ')}"
@@ -154,6 +159,64 @@ module ApiKeys
     def normalize_submitted_scopes!(permitted_params)
       permitted_params[:scopes]&.reject!(&:blank?)
       permitted_params
+    end
+
+    # The scopes the dashboard offers as checkboxes: the owner's configured
+    # default scopes. The form renders exactly this list, and an update edits
+    # only scopes in it.
+    #
+    # @return [Array<String>]
+    def dashboard_scope_choices
+      Array(current_api_keys_owner.class.api_keys_settings.dig(:default_scopes))
+    end
+
+    # The edit form can only speak for the scopes it showed. Checked choices
+    # are granted and unchecked ones removed; any other scope the key holds
+    # (for example one granted programmatically, or a type permission outside
+    # the owner's defaults) is kept, in its current order. A submitted value
+    # that was never offered is ignored.
+    #
+    # @param submitted [Array<String>] Checked boxes, sentinel already stripped.
+    # @return [Array<String>]
+    def scopes_after_editing_offered_choices(submitted)
+      offered = dashboard_scope_choices
+      current = Array(@api_key.scopes)
+      kept = current.select { |scope| !offered.include?(scope) || submitted.include?(scope) }
+      added = offered.select { |scope| submitted.include?(scope) && !current.include?(scope) }
+      kept + added
+    end
+
+    # The text the form puts in a restriction field. Usable entries appear as
+    # they are stored; anything else a stored policy holds (null, false, a
+    # number, a blank string) is shown as JSON, so the owner can see it.
+    #
+    # @return [String]
+    def restriction_field_text(api_key, kind)
+      api_key.restrictions.public_send(kind).map do |entry|
+        if entry.is_a?(String) && entry.valid_encoding? && !entry.strip.empty?
+          entry
+        else
+          begin
+            JSON.generate(entry)
+          rescue StandardError
+            entry.inspect
+          end
+        end
+      end.join(", ")
+    end
+
+    # A restriction field submitted exactly as it was rendered was not
+    # touched, so its kind is left alone. Re-parsing the text would rewrite
+    # the stored list, and a malformed stored entry could come back as an
+    # empty (unrestricted) list or as a different, valid one. Left alone, a
+    # malformed stored policy keeps failing validation, so the save is refused
+    # until the owner corrects the field.
+    def skip_untouched_restriction_fields!(attributes)
+      { allowed_origins: :origins, allowed_ips: :ips }.each do |field, kind|
+        next unless attributes.key?(field)
+
+        attributes.delete(field) if attributes[field] == restriction_field_text(@api_key, kind)
+      end
     end
 
     # Only allow updating name, scopes, and request restrictions.

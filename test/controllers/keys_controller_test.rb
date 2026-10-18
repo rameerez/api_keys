@@ -403,7 +403,7 @@ module ApiKeys
           form.at_css('input[type="checkbox"][value="read"]')["checked"] = "checked"
         end
         patch :update, params: submission.merge("id" => key.id)
-        assert_equal %w[read write], key.reload.scopes
+        assert_equal %w[write read], key.reload.scopes, "existing order kept, new grant appended"
       end
     end
 
@@ -438,6 +438,121 @@ module ApiKeys
         post :create, params: resubmission
         assert_equal [], @user.api_keys.order(:created_at).last.scopes
       end
+    end
+
+    # The edit form offers only the owner's default scopes. With the sentinel,
+    # a rename of a key holding a scope outside that list used to save it with
+    # no scopes at all (0.5.0 kept it, because nothing was submitted).
+    test "a rename keeps a scope the edit form never offered" do
+      configure_secret_type(permissions: %w[read write admin])
+      with_owner_default_scopes(%w[read write]) do
+        key = @user.create_api_key!(name: "Admin Key", key_type: :secret, scopes: %w[admin])
+
+        get :edit, params: { id: key.id }
+        assert_select 'input[type="checkbox"][value="admin"]', count: 0
+        submission = browser_submission(response.body) do |form|
+          form.at_css('input[name="api_key[name]"]')["value"] = "Renamed Admin Key"
+        end
+        patch :update, params: submission.merge("id" => key.id)
+
+        assert_redirected_to keys_path
+        key.reload
+        assert_equal "Renamed Admin Key", key.name
+        assert_equal %w[admin], key.scopes
+        assert key.allows_scope?("admin")
+
+        # The form tells the owner which scopes it leaves alone.
+        get :edit, params: { id: key.id }
+        assert_select "small.api-keys-form-help", text: /This key also holds\s+admin,\s+which this form does not change/
+      end
+    end
+
+    test "clearing every box removes every offered scope and keeps the others" do
+      configure_secret_type(permissions: %w[read write admin])
+      with_owner_default_scopes(%w[read write]) do
+        key = @user.create_api_key!(name: "Wide Key", key_type: :secret, scopes: %w[read admin write])
+
+        get :edit, params: { id: key.id }
+        patch :update, params: browser_submission(response.body) { |form| uncheck_all_scopes(form) }.merge("id" => key.id)
+
+        assert_redirected_to keys_path
+        assert_equal %w[admin], key.reload.scopes
+        refute key.allows_scope?("read")
+        refute key.allows_scope?("write")
+      end
+    end
+
+    test "an update cannot grant a scope the form never offered" do
+      configure_secret_type(permissions: %w[read write admin])
+      with_owner_default_scopes(%w[read write]) do
+        key = @user.create_api_key!(name: "Reader", key_type: :secret, scopes: %w[read])
+
+        patch :update, params: { id: key.id, api_key: { name: "Reader", scopes: ["", "read", "admin"] } }
+
+        assert_redirected_to keys_path
+        assert_equal %w[read], key.reload.scopes
+      end
+    end
+
+    # =========================================================================
+    # 0.5.1: a stored malformed policy survives a rename only as a refusal
+    # =========================================================================
+
+    test "the edit form shows malformed stored entries and refuses a rename-only save" do
+      {
+        { "ips" => [nil] } => ["api_key[allowed_ips]", "null"],
+        { "ips" => nil } => ["api_key[allowed_ips]", "null"],
+        { "origins" => [""] } => ["api_key[allowed_origins]", '""'],
+        { "origins" => ["example.com", false] } => ["api_key[allowed_origins]", "example.com, false"]
+      }.each do |stored, (field, shown)|
+        key = @user.create_api_key!(name: "Damaged")
+        key.update_column(:restrictions, stored)
+
+        get :edit, params: { id: key.id }
+        edit_html = response.body
+        submission = browser_submission(edit_html) do |form|
+          form.at_css('input[name="api_key[name]"]')["value"] = "Renamed"
+        end
+        patch :update, params: submission.merge("id" => key.id)
+
+        assert_response :unprocessable_entity, stored.inspect
+        key.reload
+        assert_equal "Damaged", key.name, stored.inspect
+        assert_equal stored, key[:restrictions], "#{stored.inspect} must not be rewritten"
+        assert key.restrictions.malformed?, stored.inspect
+        # The owner sees what is stored instead of an empty, "unrestricted" field.
+        assert_equal shown, Nokogiri::HTML(edit_html).at_css("input[name=\"#{field}\"]")["value"], stored.inspect
+      end
+    end
+
+    test "correcting a malformed stored field saves the corrected policy" do
+      key = @user.create_api_key!(name: "Damaged")
+      key.update_column(:restrictions, { "ips" => [nil] })
+
+      get :edit, params: { id: key.id }
+      submission = browser_submission(response.body) do |form|
+        form.at_css('input[name="api_key[allowed_ips]"]')["value"] = "10.0.0.0/8"
+      end
+      patch :update, params: submission.merge("id" => key.id)
+
+      assert_redirected_to keys_path
+      assert_equal({ "ips" => ["10.0.0.0/8"] }, key.reload[:restrictions])
+    end
+
+    test "a rename keeps a valid stored policy as it is" do
+      key = @user.create_api_key!(name: "Locked", allowed_origins: "example.com, *.example.com", allowed_ips: "10.0.0.0/8")
+
+      get :edit, params: { id: key.id }
+      submission = browser_submission(response.body) do |form|
+        form.at_css('input[name="api_key[name]"]')["value"] = "Still Locked"
+      end
+      patch :update, params: submission.merge("id" => key.id)
+
+      assert_redirected_to keys_path
+      key.reload
+      assert_equal "Still Locked", key.name
+      assert_equal ["example.com", "*.example.com"], key.allowed_origins
+      assert_equal ["10.0.0.0/8"], key.allowed_ips
     end
 
     # =========================================================================

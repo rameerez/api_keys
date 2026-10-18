@@ -69,6 +69,27 @@ module ApiKeys
         new(origins: [], ips: [], extras: {}, malformed: true)
       end
 
+      # Reads a restrictions hash a caller passes in (`ApiKey#restrictions=`
+      # and `create_api_key!(restrictions:)`). A kind given as `nil` or blank
+      # text is cleared, exactly as the `allowed_origins=` / `allowed_ips=`
+      # writers clear it. Everything else passes through untouched, so
+      # `false`, wrong types, and malformed list members still fail
+      # validation. Stored rows never go through here: `wrap` reads them
+      # strictly, and a stored `null` refuses authentication.
+      #
+      # @param value [Hash, Object] Caller input; non-hashes are returned as is.
+      # @return [Hash, Object]
+      def normalize_input(value)
+        return value unless value.is_a?(Hash)
+
+        value.to_h do |kind, entries|
+          cleared = KIND_NAMES.include?(kind.to_s) && blank_input?(entries)
+          [kind, cleared ? [] : entries]
+        end
+      rescue StandardError
+        value
+      end
+
       # The shared empty instance: no origins, no IPs, no restrictions at all.
       # @return [ApiKeys::Restrictions]
       def none
@@ -224,6 +245,13 @@ module ApiKeys
         # A string with invalid encoding cannot be split; keep it as the
         # invalid entry it is.
         [value]
+      end
+
+      # @api private
+      def blank_input?(entries)
+        entries.nil? || (entries.is_a?(String) && entries.strip.empty?)
+      rescue ArgumentError
+        false
       end
 
       # @api private

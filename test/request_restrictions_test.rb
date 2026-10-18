@@ -670,17 +670,22 @@ class RequestRestrictionsTest < ApiKeys::Test
   # =============================================================================
   #
   # Before 0.5.1 the coercion dropped `false` and `nil` (filter_map), so these
-  # values read as an empty list and the key became unrestricted. Every one
-  # of them must now be refused at write time and at authentication time.
+  # values read as an empty list and the key became unrestricted. In a stored
+  # row every one of them must refuse authentication.
   MALFORMED_LIST_VALUES = [
     false, nil, true, 0, 42, 1.5, "", "   ", {},
     [false], [nil], [true], [42], [{}], [{ "host" => "example.com" }], [[]], [""], ["  "],
     ["example.com", false], ["10.0.0.1", nil]
   ].freeze
 
+  # As caller input, a kind given as `nil` or blank text clears that kind (the
+  # list writers' meaning, and what 0.5.0 did); everything else is refused.
+  CLEARING_INPUT_VALUES = [nil, "", "   "].freeze
+  MALFORMED_INPUT_VALUES = (MALFORMED_LIST_VALUES - CLEARING_INPUT_VALUES).freeze
+
   test "malformed list values in a restrictions hash fail validation" do
     %w[origins ips].each do |kind|
-      MALFORMED_LIST_VALUES.each do |value|
+      MALFORMED_INPUT_VALUES.each do |value|
         key = ApiKeys::ApiKey.new(owner: @user, name: "Bad Key", restrictions: { kind => value })
 
         refute key.valid?, "#{kind} => #{value.inspect} must be rejected"
@@ -738,6 +743,28 @@ class RequestRestrictionsTest < ApiKeys::Test
     assert_equal :ip_not_allowed, authenticate(token: token, remote_ip: "192.0.2.1").error_code
   end
 
+  test "nil or blank text for a kind in a restrictions hash clears it, as in 0.5.0" do
+    [{ ips: nil }, { "origins" => nil }, { "origins" => "" }, { "ips" => "   " }].each do |input|
+      created = @user.create_api_key!(name: "Open Key", restrictions: input)
+      refute created.restricted?, "create_api_key!(restrictions: #{input.inspect})"
+      assert_equal({}, ApiKeys::ApiKey.find(created.id)[:restrictions], input.inspect)
+
+      assigned, token = create_key(allowed_origins: "example.com", allowed_ips: "10.0.0.0/8")
+      assigned.restrictions = input
+      assert assigned.save, "restrictions = #{input.inspect}: #{assigned.errors.full_messages}"
+      refute ApiKeys::ApiKey.find(assigned.id).restricted?, "restrictions = #{input.inspect}"
+      assert authenticate(token: token, origin: "https://anywhere.example", remote_ip: "198.51.100.4").success?
+    end
+  end
+
+  test "a cleared kind in a restrictions hash leaves the other kind in force" do
+    key = @user.create_api_key!(name: "Half Locked", restrictions: { origins: ["example.com"], ips: nil })
+    assert_equal({ "origins" => ["example.com"] }, ApiKeys::ApiKey.find(key.id)[:restrictions])
+
+    key.update!(restrictions: { "origins" => "", "ips" => ["10.0.0.0/8"] })
+    assert_equal({ "ips" => ["10.0.0.0/8"] }, ApiKeys::ApiKey.find(key.id)[:restrictions])
+  end
+
   test "the list writers still clear a list with nil or blank text" do
     [nil, "", "  ", [], [""]].each do |value|
       key, _token = create_key(allowed_ips: "10.0.0.0/8")
@@ -751,9 +778,11 @@ class RequestRestrictionsTest < ApiKeys::Test
     [
       { allowed_ips: false },
       { allowed_origins: [nil] },
-      { restrictions: { ips: nil } },
       { restrictions: { "origins" => false } },
       { restrictions: { "ips" => [false] } },
+      { restrictions: { "ips" => [nil] } },
+      { restrictions: { "origins" => [""] } },
+      { restrictions: { ips: nil, origins: 42 } },
       { restrictions: ApiKeys::Restrictions.wrap("garbage") },
       { restrictions: ApiKeys::Restrictions.wrap("origins" => [nil]) }
     ].each do |options|

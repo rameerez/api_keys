@@ -1,6 +1,8 @@
 <%# Optional request restriction fields: where a key may be used from. %>
 <%# Locals: form (required), api_key (required) %>
 <%# Only rendered when the restrictions column exists and the key's type allows the kind. %>
+<%# Values come from restriction_field_text: unusable stored entries (null, false, numbers, %>
+<%# blanks) show as JSON, and an untouched field leaves the stored list as it is on save. %>
 
 <% if ApiKeys::ApiKey.restrictions_column? %>
   <% allowed_kinds = api_keys_allowed_restriction_kinds(api_key) %>
@@ -9,7 +11,7 @@
     <div data-api-keys-restriction-kind="origins">
       <%= form.label :allowed_origins, "Allowed web origins (optional)" %>
       <%= form.text_field :allowed_origins,
-                          value: api_key.allowed_origins.join(", "),
+                          value: restriction_field_text(api_key, :origins),
                           placeholder: "example.com, *.example.com" %>
       <small class="api-keys-form-help">
         Leave empty to allow any origin. Requests from a browser must come from one of these hosts.
@@ -22,7 +24,7 @@
     <div data-api-keys-restriction-kind="ips">
       <%= form.label :allowed_ips, "Allowed IP addresses (optional)" %>
       <%= form.text_field :allowed_ips,
-                          value: api_key.allowed_ips.join(", "),
+                          value: restriction_field_text(api_key, :ips),
                           placeholder: "203.0.113.7, 10.0.0.0/8" %>
       <small class="api-keys-form-help">
         Leave empty to allow any address. Accepts single IPv4/IPv6 addresses and CIDR ranges.

@@ -159,7 +159,7 @@ config.authenticate_owner_method = :ensure_team_access!
 Once configured, your users can:
 - self-issue new API keys
 - set expiration dates
-- attach scopes / permissions to individual keys
+- attach scopes / permissions to individual keys (the edit form changes only the scopes it shows, the owner's default scopes, and keeps any other scope a key holds)
 - add and edit the key names
 - lock a key to specific web origins or IP addresses
 - revoke instantly
@@ -480,8 +480,10 @@ So each handoff also carries a random ID inside its encrypted payload, and the f
 
 - **With a shared cache store** (Redis, Memcached, or any store that every application process uses and that implements `unless_exist:` atomically) the token is released at most once, across cookie replays and concurrent requests.
 - **`MemoryStore`** only covers the process that holds it. **`FileStore`** checks and then writes, so it stops a later replay on the same host but not two requests that arrive at the same instant.
+- **Solid Cache** (Rails 8's default production store) implements `unless_exist:` as a `SELECT … FOR UPDATE` followed by an upsert. On PostgreSQL that locks nothing while the key does not exist yet, so two simultaneous first retrievals can both succeed. Sequential replays are still stopped.
 - **With `ActiveSupport::Cache::NullStore`** (what Rails' generated development and test environments use unless you toggle caching on), or with no `Rails.cache` at all, nothing can be recorded. The gem keeps the pre-0.5.1 behaviour: the session deletion is the only protection, and a copy of the session taken before retrieval can show the token again during its ten-minute lifetime.
 - **If the cache raises or refuses the write**, the token is withheld. The owner sees the "shown only once" message and creates a new key, which is safer than risking a second release.
+- **With a shared cache, a second request for the token page with the same cookie gets nothing**, even if the first response never reached the browser. A client that drops the first response (a timeout or a cancelled load) sees "shown only once" and needs a new key. That is the intended trade-off: a token can be lost, never shown twice.
 
 None of this protects a session that has been stolen. Whoever holds a copy of the owner's session cookie can use the dashboard as that owner; the handoff is one-time, the session is not.
 
@@ -540,7 +542,9 @@ Renders a select dropdown with all expiration presets:
 
 #### `api_key_scopes_checkboxes`
 
-Renders scope checkboxes with a block for custom markup. Before the boxes it renders one empty `api_key[scopes][]` field: browsers omit unchecked boxes, so without it a form with every box cleared would send no scopes at all, and a new key would silently get the default scopes while an edited key would keep its old ones. With it, clearing every box submits `[""]`, which `create_api_key!` and `ApiKey#scopes=` read as "no scopes". The field is rendered only when there is at least one box and the form's key enforces its scopes (`@api_key.scopes_enforced?`, true for typed keys and whenever `default_scopes` or `key_types` are configured). In an app that configures no scopes, an empty list still means "unrestricted", so there clearing the boxes leaves the key's scopes as they were rather than widening it. Pass `include_hidden: false` only if you render that field yourself. When you iterate the returned data without a block, render `hidden_field_tag "api_key[scopes][]", "", id: nil` before the boxes under the same conditions.
+Renders scope checkboxes with a block for custom markup. Before the boxes it can render one empty `api_key[scopes][]` field: browsers omit unchecked boxes, so without it a form with every box cleared would send no scopes at all, and a new key would silently get the default scopes while an edited key would keep its old ones. With it, clearing every box submits `[""]`, which `create_api_key!` and `ApiKey#scopes=` read as "no scopes". The submitted list replaces the key's scopes, so render a box for every scope the key may hold.
+
+By default the field is rendered only when there is at least one box and the form's key enforces its scopes (`@api_key.scopes_enforced?`). That is true for typed keys, whenever `key_types` or the global `config.default_scopes` are configured, and when the owner model's `has_api_keys` declares `default_scopes`. The key reads that last setting through its owner, so build it from the owner (`current_organization.api_keys.build`). A form with no object (`form_with scope: :api_key`) or on a bare `ApiKeys::ApiKey.new` cannot see per-owner defaults and renders no field: pass `include_hidden: true` there to render it whenever there is at least one box. Where scopes are not enforced at all, an empty list still means "unrestricted", so the default leaves the key's scopes as they were rather than widening it. Pass `include_hidden: false` only if you render the field yourself. When you iterate the returned data without a block, render `hidden_field_tag "api_key[scopes][]", "", id: nil` before the boxes under the same conditions.
 
 ```erb
 <%# With block - you control the HTML, gem handles the logic %>
@@ -828,6 +832,8 @@ You can check if an API key is allowed to do actions by checking its scopes:
 @api_key.allows_scope?("read")
 # => true
 ```
+
+An empty scope list grants nothing whenever scopes are enforced: on typed keys, and when `key_types` or `default_scopes` are configured. On an untyped key in an app that configures neither, an empty list keeps its legacy meaning and allows every scope. So a key saved from the dashboard with every permission cleared becomes unrestricted if you later remove the owner's `default_scopes` (and the global ones) without using key types.
 
 ## Controllers: secure your API endpoints
 
@@ -1376,8 +1382,8 @@ Origin input is deliberately forgiving: full URLs, trailing slashes, ports, comm
 |---|---|
 | Within one list | **OR** — any entry that matches admits the request |
 | Across both lists | **AND** — every list that has entries must pass |
-| Empty (or absent) lists | **Unrestricted** — presence is the toggle, so existing keys are unaffected. In a stored policy the only empty spellings are `[]` and leaving the kind out; the `allowed_origins=` / `allowed_ips=` writers also clear a list with `nil` or blank text |
-| Malformed values | `false`, `null`, numbers, objects, or blank entries in a list fail validation, and a stored one refuses every request with `restriction_misconfigured`. Malformed never means unrestricted |
+| Empty (or absent) lists | **Unrestricted** — presence is the toggle, so existing keys are unaffected. A kind given as `nil` or blank text (to `allowed_origins=` / `allowed_ips=`, `restrictions=`, or `create_api_key!(restrictions:)`) clears that list. In a stored row only `[]` or an absent kind means empty: a stored `null` is malformed |
+| Malformed values | A kind given as `false`, a number, or an object, and `null`, `false`, numbers, objects, or blank strings inside a list fail validation. A stored row holding any of these, or a `null` or blank kind, refuses every request with `restriction_misconfigured`, and the dashboard shows the stored entries so a save is refused until they are corrected. Malformed never means unrestricted |
 | `example.com` | Matches that exact host. Case-insensitive, port-blind, scheme-blind |
 | `*.example.com` | Matches `a.example.com` and `a.b.example.com`, but **not** the apex `example.com`. List both to cover both |
 | `*` alone | Invalid. An empty list already means "anywhere" |

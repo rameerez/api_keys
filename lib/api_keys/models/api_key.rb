@@ -64,16 +64,18 @@ module ApiKeys
     end
 
     # Accepts a Restrictions instance, a hash of lists, or nil. Hashes are
-    # normalized into the storage shape; anything else is stored untouched so
-    # the validation, rather than a silent coercion, is what reports it.
+    # normalized into the storage shape; a kind given as `nil` or blank text
+    # is cleared, as the list writers do. Anything malformed is stored
+    # untouched so the validation, rather than a silent coercion, reports it.
     def restrictions=(value)
       ensure_restrictions_column!
 
       normalized = if value.nil?
                      {}
                    elsif value.is_a?(Hash)
-                     wrapped = ApiKeys::Restrictions.wrap(value)
-                     wrapped.malformed? ? value : wrapped.to_h
+                     input = ApiKeys::Restrictions.normalize_input(value)
+                     wrapped = ApiKeys::Restrictions.wrap(input)
+                     wrapped.malformed? ? input : wrapped.to_h
                    elsif value.is_a?(ApiKeys::Restrictions)
                      value.malformed? ? { "__malformed__" => true } : value.to_h
                    else
@@ -372,11 +374,14 @@ module ApiKeys
     end
 
     # Whether this key's scope list is enforced, so an empty list grants no
-    # permissions. True for typed keys and whenever scopes are configured
-    # (`default_scopes` or `key_types`). False only for an untyped key in an
-    # app that configures no scopes at all, where an empty list keeps its
-    # legacy meaning: unrestricted. Forms use it to decide whether "every box
-    # cleared" can be submitted as an empty list without widening the key.
+    # permissions. True for typed keys, whenever `key_types` or the global
+    # `default_scopes` are configured, and when the owner model's
+    # `has_api_keys` declares `default_scopes`. The last case is read through
+    # `owner`, so a key that does not know its owner yet (a bare `ApiKey.new`)
+    # cannot see it: build keys from their owner (`owner.api_keys.build`).
+    # False otherwise, where an empty list keeps its legacy meaning:
+    # unrestricted. Forms use it to decide whether "every box cleared" can be
+    # submitted as an empty list without widening the key.
     #
     # @return [Boolean]
     def scopes_enforced?

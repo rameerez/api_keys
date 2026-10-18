@@ -45,7 +45,7 @@ Configuring `trusted_proxies` alone is not a boundary: it tells Rails which hops
 
 The dashboard shows a new secret key once, through an encrypted session handoff that expires after ten minutes and is deleted on first retrieval. Deletion covers only the session that retrieved it. From 0.5.1 the first retrieval also records the handoff's random ID in `Rails.cache` with an atomic `write(..., unless_exist: true)`, so a copy of the session taken before retrieval (a copied cookie, or concurrent requests) gets nothing.
 
-- That holds when every application process shares a cache store that implements `unless_exist:` atomically, such as Redis or Memcached. `MemoryStore` covers one process; `FileStore` stops later replays on one host but not simultaneous requests.
+- That holds when every application process shares a cache store that implements `unless_exist:` atomically, such as Redis or Memcached. `MemoryStore` covers one process; `FileStore` stops later replays on one host but not simultaneous requests. Solid Cache (Rails 8's default production store) implements `unless_exist:` as `SELECT … FOR UPDATE` then an upsert, which on PostgreSQL locks nothing while the key is absent, so two simultaneous first retrievals can both succeed; sequential replays are still stopped.
 - With `ActiveSupport::Cache::NullStore`, or no `Rails.cache`, the gem cannot record anything and the session deletion is the only protection, as before 0.5.1.
 - If the cache raises or refuses the write, the token is withheld rather than risk a second release.
 - It does not protect a stolen session: whoever holds the owner's session cookie can use the dashboard as that owner.
