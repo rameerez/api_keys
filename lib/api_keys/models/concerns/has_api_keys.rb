@@ -386,10 +386,16 @@ module ApiKeys
             raise ArgumentError, "restrictions must be a Hash or ApiKeys::Restrictions"
           end
 
-          attributes = ApiKeys::Restrictions.wrap(restrictions).to_h
+          # A malformed policy goes to the model as it came, so validation
+          # rejects it. Normalizing it first could reduce it to `{}`, which
+          # would create the key unrestricted.
+          wrapped = ApiKeys::Restrictions.wrap(restrictions)
+          return restrictions if wrapped.malformed?
+
+          attributes = wrapped.to_h
           attributes["origins"] = ApiKeys::Restrictions.normalize_origins(allowed_origins) unless allowed_origins.nil?
           attributes["ips"] = ApiKeys::Restrictions.normalize_ips(allowed_ips) unless allowed_ips.nil?
-          ApiKeys::Restrictions.wrap(attributes).to_h
+          attributes
         end
 
         # True when any configured key type declares a restriction ceiling.

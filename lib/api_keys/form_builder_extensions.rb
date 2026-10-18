@@ -21,6 +21,8 @@ module ApiKeys
   #       <%= scope %>
   #     </label>
   #   <% end %>
+  #   (The helper prepends an empty `api_key[scopes][]` sentinel so that
+  #   clearing every box submits "no scopes" instead of nothing.)
   #
   module FormBuilderExtensions
     # Renders a select field for API key expiration presets.
@@ -62,6 +64,16 @@ module ApiKeys
     #   - :none - no scopes checked
     #   - Array - specific scopes to check
     #   - nil - uses the object's current scopes
+    # @param include_hidden [Boolean] With a block, render an empty
+    #   `name="api_key[scopes][]" value=""` sentinel before the boxes (default
+    #   true). Browsers omit unchecked boxes, so without it clearing every box
+    #   submits no scopes parameter at all, and a create would silently get the
+    #   default scopes while an update would keep the old ones. With the
+    #   sentinel the server receives `[""]`, which `ApiKey#scopes=` and
+    #   `create_api_key!` read as "no scopes". It is rendered only when there
+    #   is at least one box and the form's key enforces its scopes
+    #   (`ApiKey#scopes_enforced?`); otherwise an empty list would mean
+    #   "unrestricted" and clearing the boxes would widen the key.
     # @return [String, Array] HTML if block given, otherwise array of scope data
     #
     # @example With block (recommended for custom styling)
@@ -72,27 +84,30 @@ module ApiKeys
     #     </label>
     #   <% end %>
     #
-    # @example Simple rendering without block
+    # @example Simple rendering without block (render the sentinel yourself)
+    #   <%= hidden_field_tag "api_key[scopes][]", "", id: nil %>
     #   <% form.api_key_scopes_checkboxes(@scopes).each do |scope_data| %>
     #     <%= check_box_tag "api_key[scopes][]", scope_data[:value], scope_data[:checked] %>
     #     <%= scope_data[:value] %>
     #   <% end %>
     #
-    def api_key_scopes_checkboxes(scopes, checked: nil, &block)
+    def api_key_scopes_checkboxes(scopes, checked: nil, include_hidden: true, &block)
       # Determine which scopes should be checked
       checked_scopes = resolve_checked_scopes(scopes, checked)
+      field_name = "#{object_name}[scopes][]"
 
       scope_data = scopes.map do |scope|
         {
           value: scope,
           checked: checked_scopes.include?(scope),
-          field_name: "#{object_name}[scopes][]"
+          field_name: field_name
         }
       end
 
       if block_given?
         # Yield each scope for custom rendering
         safe_buffer = ActiveSupport::SafeBuffer.new
+        safe_buffer << @template.hidden_field_tag(field_name, "", id: nil) if include_hidden && scope_sentinel_safe?(scopes)
         scope_data.each do |data|
           safe_buffer << @template.capture { yield(data[:value], data[:checked]) }
         end
@@ -134,6 +149,14 @@ module ApiKeys
     end
 
     private
+
+    # The sentinel is only safe where an empty list grants nothing. With no
+    # boxes there is nothing to clear, and where the key does not enforce its
+    # scopes an empty list would mean "unrestricted". In both cases the
+    # parameter is left out, so the key keeps the scopes it has.
+    def scope_sentinel_safe?(scopes)
+      scopes.any? && object.respond_to?(:scopes_enforced?) && object.scopes_enforced?
+    end
 
     def safe_key_type(value)
       case value.to_s

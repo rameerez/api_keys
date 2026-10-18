@@ -72,12 +72,20 @@
     <% if defined?(@available_scopes) && @available_scopes.present? %>
       <div>
         <%= form.label :scopes, "Permissions" %>
+        <%# Browsers omit unchecked boxes, so clearing every box would send no scopes %>
+        <%# parameter at all and the key would silently get the defaults. This empty %>
+        <%# sentinel makes "none" explicit; blank values are stripped server-side. %>
+        <%# (Scopes are configured here, so an empty list grants nothing.) %>
+        <%= hidden_field_tag "#{form.object_name}[scopes][]", "", id: nil if api_key.scopes_enforced? %>
+        <%# A fresh form starts with every scope checked; after a failed submission %>
+        <%# it shows exactly what was submitted, so a cleared box stays cleared. %>
+        <% submitted_scopes = @submitted_scopes %>
         <% @available_scopes.each do |scope| %>
           <div class="form-check">
             <%= form.check_box :scopes,
                                { multiple: true, # Submits as an array
                                  class: "form-check-input",
-                                 checked: true,
+                                 checked: submitted_scopes.nil? || submitted_scopes.include?(scope),
                                  id: "api_key_scopes_#{scope.parameterize}" }, # Unique ID
                                scope, # Value submitted when checked
                                nil # Value submitted when unchecked (not needed here)
@@ -106,6 +114,8 @@
     <% if defined?(@available_scopes) && @available_scopes.present? %>
       <div>
         <%= form.label :scopes, "Permissions / Scopes" %>
+        <%# Empty sentinel: clearing every box must remove every scope, not keep the old ones. %>
+        <%= hidden_field_tag "#{form.object_name}[scopes][]", "", id: nil if api_key.scopes_enforced? %>
         <% @available_scopes.each do |scope| %>
           <div class="form-check">
             <%= form.check_box :scopes,

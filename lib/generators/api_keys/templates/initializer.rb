@@ -300,14 +300,22 @@ ApiKeys.configure do |config|
   #   rails generate api_keys:add_restrictions && rails db:migrate
   # ============================================================================
 
-  # How the client IP is resolved for `allowed_ips` checks.
-  # The default trusts Rails' own resolution, which honors
-  # config.action_dispatch.trusted_proxies. Behind a CDN that terminates the
-  # connection, configure trusted_proxies whenever possible. Trust a vendor
-  # header directly only when your network ingress rejects requests that
-  # bypass that vendor; otherwise callers can spoof the address being checked.
-  # Default: ->(request) { request.remote_ip }
+  # How the client IP is resolved for `allowed_ips` checks. Pick the line that
+  # matches how clients reach this Rails server:
   #
+  # Behind a load balancer, reverse proxy, or CDN that is the ONLY way in and
+  # that overwrites or appends X-Forwarded-For, with its addresses covered by
+  # config.action_dispatch.trusted_proxies: keep the default.
+  # config.client_ip_resolver = ->(request) { request.remote_ip } # default
+  #
+  # Directly reachable (no proxy, or a proxy that can be bypassed): check the
+  # socket peer. With remote_ip, a client could send
+  # `X-Forwarded-For: <an allowed address>` and pass the check.
+  # config.client_ip_resolver = ->(request) { request.remote_addr }
+  #
+  # trusted_proxies alone is not a boundary: it does not stop a client that
+  # bypasses the proxy from sending the header. Trust a vendor header only
+  # when your network ingress rejects requests that bypass that vendor:
   # config.client_ip_resolver = ->(request) { request.headers.fetch("CF-Connecting-IP") }
 
   # ============================================================================

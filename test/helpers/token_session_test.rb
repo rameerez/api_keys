@@ -18,6 +18,14 @@ module ApiKeys
         TokenSession.stubs(:token_encryptor).returns(@encryptor)
       end
 
+      def use_cache(cache)
+        Rails.stubs(:cache).returns(cache)
+      end
+
+      def bound_key(token, id)
+        Struct.new(:token, :id).new(token, id)
+      end
+
       test "stores token from api_key object with token method" do
         api_key = mock("api_key")
         api_key.stubs(:respond_to?).with(:token).returns(true)
@@ -198,6 +206,154 @@ module ApiKeys
 
         assert_raises(ArgumentError) { TokenSession.store(@session, api_key) }
         assert_empty @session
+      end
+
+      # =======================================================================
+      # 0.5.1: one-time retrieval across copies of the session
+      # =======================================================================
+
+      test "a copied pre-consumption session cannot recover the token again" do
+        use_cache(ActiveSupport::Cache::MemoryStore.new)
+        TokenSession.store(@session, bound_key("copied_cookie_token", 7))
+        copied_cookie = @session.deep_dup
+
+        assert_equal "copied_cookie_token", TokenSession.retrieve_once(@session, api_key_id: 7)
+        assert_nil TokenSession.retrieve_once(copied_cookie, api_key_id: 7)
+        assert_nil copied_cookie[:api_keys_new_token], "the replayed copy is cleared as well"
+      end
+
+      test "concurrent retrievals with the same session release the token once" do
+        use_cache(ActiveSupport::Cache::MemoryStore.new)
+        TokenSession.store(@session, bound_key("raced_token", 9))
+        copies = Array.new(16) { @session.deep_dup }
+        gate = Queue.new
+
+        threads = copies.map do |copy|
+          Thread.new do
+            gate.pop
+            TokenSession.retrieve_once(copy, api_key_id: 9)
+          end
+        end
+        copies.size.times { gate << true }
+        results = threads.map(&:value)
+
+        assert_equal ["raced_token"], results.compact
+      end
+
+      test "available? reports a handoff consumed through another copy as gone" do
+        use_cache(ActiveSupport::Cache::MemoryStore.new)
+        TokenSession.store(@session, bound_key("visible_token", 3))
+        copied_cookie = @session.deep_dup
+
+        assert TokenSession.available?(copied_cookie, api_key_id: 3)
+        TokenSession.retrieve_once(@session, api_key_id: 3)
+
+        refute TokenSession.available?(copied_cookie, api_key_id: 3)
+      end
+
+      test "any authentic retrieval attempt consumes the handoff, even a mismatched one" do
+        use_cache(ActiveSupport::Cache::MemoryStore.new)
+        TokenSession.store(@session, bound_key("probed_token", 5))
+        copied_cookie = @session.deep_dup
+
+        assert_nil TokenSession.retrieve_once(@session, api_key_id: 6)
+        assert_nil TokenSession.retrieve_once(copied_cookie, api_key_id: 5)
+      end
+
+      test "the consumption marker is atomic and outlives the handoff" do
+        cache = ActiveSupport::Cache::MemoryStore.new
+        use_cache(cache)
+        TokenSession.store(@session, bound_key("marked_token", 4))
+        cache.expects(:write)
+             .with(regexp_matches(/\Aapi_keys:v1:token_handoff_consumed:[A-Za-z0-9_-]{32}\z/), true,
+                   unless_exist: true, expires_in: TokenSession::HANDOFF_TTL)
+             .returns(true)
+
+        assert_equal "marked_token", TokenSession.retrieve_once(@session, api_key_id: 4)
+      end
+
+      test "each handoff carries its own random ID" do
+        TokenSession.store(@session, bound_key("first_token", 1))
+        first = @encryptor.decrypt_and_verify(@session[:api_keys_new_token]["ciphertext"],
+                                              purpose: TokenSession::ENCRYPTION_PURPOSE)
+        TokenSession.store(@session, bound_key("second_token", 2))
+        second = @encryptor.decrypt_and_verify(@session[:api_keys_new_token]["ciphertext"],
+                                               purpose: TokenSession::ENCRYPTION_PURPOSE)
+
+        assert_match TokenSession::HANDOFF_ID_PATTERN, first["handoff_id"]
+        refute_equal first["handoff_id"], second["handoff_id"]
+        refute_includes @session.inspect, second["handoff_id"]
+      end
+
+      test "a cache failure withholds the token instead of risking a second release" do
+        cache = ActiveSupport::Cache::MemoryStore.new
+        cache.stubs(:write).raises(IOError, "cache unavailable")
+        use_cache(cache)
+        TokenSession.store(@session, bound_key("withheld_token", 8))
+
+        assert_nil TokenSession.retrieve_once(@session, api_key_id: 8)
+      end
+
+      test "a cache that refuses the marker withholds the token" do
+        cache = ActiveSupport::Cache::MemoryStore.new
+        cache.stubs(:write).returns(false) # what Redis and Memcached answer on error, too
+        use_cache(cache)
+        TokenSession.store(@session, bound_key("refused_token", 8))
+
+        assert_nil TokenSession.retrieve_once(@session, api_key_id: 8)
+      end
+
+      test "handoffs written before 0.5.1 are also one-time" do
+        use_cache(ActiveSupport::Cache::MemoryStore.new)
+        @session[:api_keys_new_token] = {
+          "version" => TokenSession::HANDOFF_VERSION,
+          "ciphertext" => @encryptor.encrypt_and_sign({ "token" => "pre_051_token", "api_key_id" => "12" },
+                                                      expires_in: TokenSession::HANDOFF_TTL,
+                                                      purpose: TokenSession::ENCRYPTION_PURPOSE),
+          "api_key_id" => "12"
+        }
+        copied_cookie = @session.deep_dup
+
+        assert_equal "pre_051_token", TokenSession.retrieve_once(@session, api_key_id: 12)
+        assert_nil TokenSession.retrieve_once(copied_cookie, api_key_id: 12)
+      end
+
+      test "an authentic payload with a malformed handoff ID fails closed" do
+        use_cache(ActiveSupport::Cache::MemoryStore.new)
+        ["short", "../../escape-the-namespace-0123456789", 42, ""].each do |handoff_id|
+          @session[:api_keys_new_token] = {
+            "version" => TokenSession::HANDOFF_VERSION,
+            "ciphertext" => @encryptor.encrypt_and_sign(
+              { "token" => "odd_id_token", "api_key_id" => "1", "handoff_id" => handoff_id },
+              expires_in: TokenSession::HANDOFF_TTL,
+              purpose: TokenSession::ENCRYPTION_PURPOSE
+            ),
+            "api_key_id" => "1"
+          }
+
+          refute TokenSession.available?(@session, api_key_id: 1), handoff_id.inspect
+          assert_nil TokenSession.retrieve_once(@session, api_key_id: 1), handoff_id.inspect
+        end
+      end
+
+      test "with NullStore the session deletion is the only protection" do
+        use_cache(ActiveSupport::Cache::NullStore.new)
+        TokenSession.store(@session, bound_key("null_store_token", 2))
+        copied_cookie = @session.deep_dup
+
+        assert_equal "null_store_token", TokenSession.retrieve_once(@session, api_key_id: 2)
+        assert_nil TokenSession.retrieve_once(@session, api_key_id: 2), "the same session is still one-time"
+        # The documented limitation: NullStore remembers nothing, so a copy
+        # taken before retrieval still carries the handoff.
+        assert_equal "null_store_token", TokenSession.retrieve_once(copied_cookie, api_key_id: 2)
+      end
+
+      test "without any Rails cache the session deletion is the only protection" do
+        use_cache(nil)
+        TokenSession.store(@session, bound_key("no_cache_token", 2))
+
+        assert_equal "no_cache_token", TokenSession.retrieve_once(@session, api_key_id: 2)
+        assert_nil TokenSession.retrieve_once(@session, api_key_id: 2)
       end
 
       test "session token payloads are structurally bounded" do

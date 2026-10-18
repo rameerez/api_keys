@@ -15,6 +15,12 @@ module ApiKeys
       extend ApiKeys::Logging
 
       MAX_TOKEN_BYTESIZE = 512
+      # The longest authentication header that can still carry a valid token:
+      # the token plus the "Bearer" scheme and generous separator whitespace.
+      MAX_CREDENTIAL_HEADER_BYTESIZE = MAX_TOKEN_BYTESIZE + 64
+      # Stands in for a header refused before parsing. It is not a String, so
+      # it can never match a key and always yields :invalid_token.
+      MALFORMED_CREDENTIAL = Object.new.freeze
       MAX_BCRYPT_CANDIDATES = 32
       MAX_KNOWN_PREFIXES = 1_024
       TOKEN_CACHE_NAMESPACE = "api_keys:v2:token"
@@ -124,6 +130,15 @@ module ApiKeys
           log_debug "[ApiKeys Auth] Checked configured authentication header. Present: #{!header_value.nil?}"
           unless header_value.nil?
             return header_value unless header_value.is_a?(String)
+
+            # Check the raw header before parsing it: a regular expression over
+            # invalid UTF-8 raises, and an oversized value should never be
+            # scanned. A refused header is not a String, so valid_token?
+            # answers with the ordinary invalid_token failure.
+            unless acceptable_raw_credential?(header_value)
+              log_debug "[ApiKeys Auth] Rejected a malformed authentication header before parsing it."
+              return MALFORMED_CREDENTIAL
+            end
 
             # Handle "Bearer <token>" scheme
             match = header_value.match(/\ABearer[ \t]+(.+)\z/i)
@@ -342,6 +357,12 @@ module ApiKeys
         end.uniq
       end
 
+      # Encoding and size of the raw header, checked without any regular
+      # expression so that hostile bytes cannot raise or cost a scan.
+      def self.acceptable_raw_credential?(value)
+        value.bytesize <= MAX_CREDENTIAL_HEADER_BYTESIZE && value.valid_encoding?
+      end
+
       def self.valid_token?(token)
         return false unless token.is_a?(String)
         return false if token.empty? || token.bytesize > MAX_TOKEN_BYTESIZE || !token.valid_encoding?
@@ -464,7 +485,7 @@ module ApiKeys
           )
         end
 
-        if restrictions.origins.any?
+        unless restrictions.origins.empty?
           origin_host = ApiKeys::Restrictions.extract_origin_host(request)
           unless restrictions.origin_allowed?(origin_host)
             log_warn "[ApiKeys Security] Rejected API key ID #{api_key.id} because the request origin is not allowed."
@@ -476,7 +497,7 @@ module ApiKeys
           end
         end
 
-        if restrictions.ips.any?
+        unless restrictions.ips.empty?
           unless restrictions.ip_allowed?(resolve_client_ip(request, config))
             log_warn "[ApiKeys Security] Rejected API key ID #{api_key.id} because the request IP address is not allowed."
             return Result.failure(
@@ -510,6 +531,7 @@ module ApiKeys
                            :safe_cache_read, :safe_cache_write,
                            :normalized_cache_ttl, :cache_identifier?,
                            :safe_find_by_id, :sanitize_prefixes, :valid_token?,
+                           :acceptable_raw_credential?,
                            :production_environment?, :secure_request?,
                            :check_key_type_configuration, :check_environment_configuration,
                            :check_environment_isolation, :check_request_restrictions,

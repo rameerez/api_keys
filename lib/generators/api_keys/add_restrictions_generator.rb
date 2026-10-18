@@ -41,8 +41,11 @@ module ApiKeys
         say "                        restrictions: [:origins] },"
         say "         secret:      { prefix: 'sk', permissions: :all, restrictions: [:ips] }"
         say "       }"
-        say "\n  4. Behind a CDN or proxy, make sure the client IP is truthful:"
+        say "\n  4. Make sure the client IP is truthful before relying on allowed_ips:"
+        say "       # Behind a proxy that is the only way in: list it in trusted_proxies, keep the default."
         say "       config.action_dispatch.trusted_proxies = ..."
+        say "       # Rails directly reachable: check the socket peer, or X-Forwarded-For can be forged."
+        say "       config.client_ip_resolver = ->(request) { request.remote_addr }"
         say "       # Trust a vendor header only when ingress blocks requests that bypass that vendor."
         say "\nSee the api_keys README for detailed usage and examples.", :cyan
       end

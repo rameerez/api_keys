@@ -1,3 +1,19 @@
+## [0.5.1] - Unreleased
+
+### Security
+
+- Clearing every permission in the dashboard now removes the key's scopes. With every box unchecked the form submitted no `scopes` parameter, so an update kept the old scopes and a create applied the default scopes. Both checkbox groups, and `FormBuilderExtensions#api_key_scopes_checkboxes` (opt out with `include_hidden: false`), now render an empty `api_key[scopes][]` sentinel: an empty selection means "no scopes" and the model's validations decide, while defaults still apply when the parameter is absent. The sentinel is rendered only when there is at least one box and the key enforces its scopes (new `ApiKey#scopes_enforced?`), because in an app that configures no scopes an empty list still means "unrestricted". A failed create re-renders the boxes as submitted instead of re-checking all of them.
+- `ApiKey#revoke!` no longer depends on unrelated validations. A key issued before its type's permission or restriction ceiling was narrowed kept authenticating but could not be revoked. Revocation keeps the revocability guard and the save callbacks, writes only `revoked_at` (and `updated_at`), and still validates any other unsaved edits on the same instance. The next request is refused as `revoked_key`, including through the token cache.
+- Malformed restriction values fail closed. Coercion dropped `false`, `nil`, and blank entries, so stored `{"ips": false}`, `{"ips": [false]}`, or `{"ips": [null]}` read as unrestricted and `update!(allowed_ips: false)` stored `{}`; the same applied to origins. Such values are now kept, rejected by validation, and refuse authentication with `restriction_misconfigured` when found in the database. In a stored policy `[]` or an absent kind is the only spelling of "unrestricted"; the `allowed_origins=` / `allowed_ips=` writers still clear a list with `nil` or blank text. A malformed `restrictions:` argument to `create_api_key!` now reaches validation instead of being normalized to `{}`.
+- The authentication header is checked for encoding and size before it is parsed. An invalid UTF-8 header raised `ArgumentError` from the Bearer match; it now answers `invalid_token`, and a header longer than the token limit plus 64 bytes is refused without being scanned.
+- The one-time token handoff is now one-time across copies of the session. Retrieval deleted the payload only from the session it was given, so a copied pre-retrieval cookie, or two concurrent requests, could recover the token twice within its ten-minute lifetime. Each handoff now carries a random ID, and the first retrieval records it with an atomic `Rails.cache.write(..., unless_exist: true)`; later retrievals get `nil`, and a cache error withholds the token. With `ActiveSupport::Cache::NullStore` or no cache, the session deletion remains the only protection. The handoff format is unchanged, so 0.5.0 and 0.5.1 processes can read each other's handoffs during a rolling deploy.
+- IP restrictions: the README, SECURITY.md, the generated initializer, and the `add_restrictions` generator now state that the default `request.remote_ip` resolver trusts `X-Forwarded-For`. Behind a proxy that is the only way in, keep it; when the Rails server is directly reachable, use `->(request) { request.remote_addr }`. `trusted_proxies` alone is not a boundary. The suite covers both shapes through Rails' `ActionDispatch::RemoteIp`. The default is unchanged.
+
+### Fixed
+
+- The dashboard's security page no longer says publishable keys cannot be revoked individually; since 0.5.0 they can, unless their key type sets `revocable: false`.
+- The README's prefix table no longer says a key can be created without a type when key types are configured. Such a key takes `default_key_type`, or creation raises.
+
 ## [0.5.0] - 2026-08-25
 
 ### Added

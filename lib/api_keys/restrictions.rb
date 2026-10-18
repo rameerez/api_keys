@@ -55,9 +55,11 @@ module ApiKeys
         known, extras = value.partition { |key, _entries| KIND_NAMES.include?(key.to_s) }
         known = known.to_h { |key, entries| [key.to_s, entries] }
 
+        # Only an absent kind means "no list". A kind that is present must
+        # hold a list; `"ips" => nil` is as malformed as `"ips" => false`.
         new(
-          origins: coerce_list(known["origins"]),
-          ips: coerce_list(known["ips"]),
+          origins: known.key?("origins") ? coerce_list(known["origins"]) : [],
+          ips: known.key?("ips") ? coerce_list(known["ips"]) : [],
           extras: extras.to_h
         )
       rescue StandardError
@@ -128,6 +130,11 @@ module ApiKeys
       end
 
       # Splits raw input into candidate entries without interpreting them.
+      #
+      # `nil` and blank text are the raw-input spellings of an empty list (a
+      # cleared dashboard field). Every other non-string value, including
+      # `false` and a `nil` inside an array, is kept as an entry so that
+      # validation rejects it: malformed input must never read as "unrestricted".
       # @api private
       def tokenize(value)
         entries = case value
@@ -137,11 +144,14 @@ module ApiKeys
                   else [value]
                   end
 
-        entries.filter_map do |entry|
-          next entry unless entry.is_a?(String)
+        entries.each_with_object([]) do |entry, tokens|
+          unless entry.is_a?(String)
+            tokens << entry
+            next
+          end
 
           trimmed = entry.strip
-          trimmed unless trimmed.empty?
+          tokens << trimmed unless trimmed.empty?
         end
       end
 
@@ -190,26 +200,39 @@ module ApiKeys
         nil
       end
 
-      # Coerces one stored list into an array of entries, preserving anything
-      # that is not a string so validations can report it instead of the value
-      # disappearing silently.
+      # Coerces one present list (storage shape) into an array of entries.
+      #
+      # Nothing is ever dropped: `false`, `nil`, numbers, hashes, and blank
+      # strings inside an array stay as entries, and a scalar that is not a
+      # string (`false`, `nil`, `42`) becomes a single entry, so validation
+      # rejects them at write time and authentication refuses them at read
+      # time. The only spelling of an intentionally empty list is `[]` (or
+      # leaving the kind out). A string is accepted as a raw list
+      # ("a.com, b.com"), but it must contain at least one entry.
       # @api private
       def coerce_list(value)
-        entries = case value
-                  when nil then []
-                  when String then value.split(ENTRY_SEPARATOR)
-                  when Array then value
-                  else [value]
-                  end
-
-        entries.filter_map do |entry|
-          next entry unless entry.is_a?(String)
-
-          trimmed = entry.strip.downcase
-          trimmed unless trimmed.empty?
-        rescue ArgumentError
-          entry
+        case value
+        when Array
+          value.map { |entry| coerce_entry(entry) }
+        when String
+          entries = value.split(ENTRY_SEPARATOR).reject(&:empty?).map { |entry| coerce_entry(entry) }
+          entries.empty? ? [value] : entries
+        else
+          [value]
         end
+      rescue ArgumentError
+        # A string with invalid encoding cannot be split; keep it as the
+        # invalid entry it is.
+        [value]
+      end
+
+      # @api private
+      def coerce_entry(entry)
+        return entry unless entry.is_a?(String)
+
+        entry.strip.downcase
+      rescue ArgumentError
+        entry
       end
 
       # Whether a stored origin entry is shaped like a host or `*.host`.
@@ -278,7 +301,7 @@ module ApiKeys
 
     # @return [Array<Symbol>] The restriction kinds actually in use.
     def kinds
-      KINDS.select { |kind| public_send(kind).any? }
+      KINDS.reject { |kind| public_send(kind).empty? }
     end
 
     # The storage shape: known lists that have entries, plus any unrecognized
@@ -286,8 +309,8 @@ module ApiKeys
     # @return [Hash]
     def to_h
       hash = {}
-      hash["origins"] = deep_copy(origins) if origins.any?
-      hash["ips"] = deep_copy(ips) if ips.any?
+      hash["origins"] = deep_copy(origins) unless origins.empty?
+      hash["ips"] = deep_copy(ips) unless ips.empty?
       hash.merge(deep_copy(extras))
     end
 

@@ -212,9 +212,30 @@ module ApiKeys
 
     # == Instance Methods ==
 
+    # Revocation is the emergency control, so it must not hinge on whether the
+    # rest of the row still satisfies today's policy. A key issued before its
+    # type's permission or restriction ceiling was narrowed keeps
+    # authenticating within the narrower ceiling; refusing to revoke it would
+    # leave a credential nobody can switch off.
+    #
+    # The revocability guard always applies. When the revocation is the only
+    # pending change, the row is saved without validations: only `revoked_at`
+    # (and `updated_at`) are written, and save callbacks run as before. Other
+    # unsaved edits on the same instance are never written unvalidated: in
+    # that case the whole save is validated, exactly as before 0.5.1.
+    #
+    # The authenticator's token cache holds only a key ID and reloads the row
+    # on every hit, so the next request is refused as revoked with no cache
+    # invalidation needed.
     def revoke!
       raise ApiKeys::Errors::KeyNotRevocableError unless revocable?
-      update!(revoked_at: Time.current)
+
+      self.revoked_at = Time.current
+      if persisted? && (changes_to_save.keys - %w[revoked_at]).empty?
+        save!(validate: false)
+      else
+        save!
+      end
     end
 
     def revoked?
@@ -348,6 +369,18 @@ module ApiKeys
 
       ceiling = permission_ceiling
       ceiling == :all || ceiling.include?(required)
+    end
+
+    # Whether this key's scope list is enforced, so an empty list grants no
+    # permissions. True for typed keys and whenever scopes are configured
+    # (`default_scopes` or `key_types`). False only for an untyped key in an
+    # app that configures no scopes at all, where an empty list keeps its
+    # legacy meaning: unrestricted. Forms use it to decide whether "every box
+    # cleared" can be submitted as an empty list without widening the key.
+    #
+    # @return [Boolean]
+    def scopes_enforced?
+      scope_policy_enabled?
     end
 
     # Alias for scopes - provides a more user-friendly API that matches
@@ -590,8 +623,6 @@ module ApiKeys
         return
       end
 
-      errors.add(:restrictions, "must contain valid restriction data") if restrictions.malformed? && raw.keys.empty?
-
       unknown_kinds = raw.keys.map(&:to_s) - ApiKeys::Restrictions::KIND_NAMES
       if unknown_kinds.any?
         errors.add(:restrictions, "contains unknown restriction kinds: #{unknown_kinds.sort.join(', ')}")
@@ -599,6 +630,12 @@ module ApiKeys
 
       validate_restriction_list(:origins) { |entry| ApiKeys::Restrictions.valid_origin_entry?(entry) }
       validate_restriction_list(:ips) { |entry| ApiKeys::Restrictions.valid_ip_entry?(entry) }
+
+      # Whatever made the policy malformed, it never saves: a policy that
+      # authentication would refuse must not be written in the first place.
+      if restrictions.malformed? && errors[:restrictions].empty?
+        errors.add(:restrictions, "must contain valid restriction data")
+      end
     end
 
     def validate_restriction_list(kind)

@@ -2,6 +2,8 @@
 
 require "test_helper"
 require "active_job"
+require "action_dispatch"
+require "rack/mock"
 
 # End-to-end coverage for request restrictions: the authenticator enforcement
 # point, the 403 the controller concern renders, and the model/configuration
@@ -661,6 +663,195 @@ class RequestRestrictionsTest < ApiKeys::Test
                               restrictions: { "origins" => ["example.com"], "ips" => ["10.0.0.0/8"] })
 
     assert key.valid?, key.errors.full_messages.join(", ")
+  end
+
+  # =============================================================================
+  # 0.5.1: malformed restriction values fail closed
+  # =============================================================================
+  #
+  # Before 0.5.1 the coercion dropped `false` and `nil` (filter_map), so these
+  # values read as an empty list and the key became unrestricted. Every one
+  # of them must now be refused at write time and at authentication time.
+  MALFORMED_LIST_VALUES = [
+    false, nil, true, 0, 42, 1.5, "", "   ", {},
+    [false], [nil], [true], [42], [{}], [{ "host" => "example.com" }], [[]], [""], ["  "],
+    ["example.com", false], ["10.0.0.1", nil]
+  ].freeze
+
+  test "malformed list values in a restrictions hash fail validation" do
+    %w[origins ips].each do |kind|
+      MALFORMED_LIST_VALUES.each do |value|
+        key = ApiKeys::ApiKey.new(owner: @user, name: "Bad Key", restrictions: { kind => value })
+
+        refute key.valid?, "#{kind} => #{value.inspect} must be rejected"
+        assert key.errors[:restrictions].any?, "#{kind} => #{value.inspect} must name restrictions"
+        refute key.restrictions.unrestricted?, "#{kind} => #{value.inspect} must never read as unrestricted"
+      end
+    end
+  end
+
+  test "malformed stored list values refuse authentication" do
+    key, token = create_key
+
+    %w[origins ips].each do |kind|
+      MALFORMED_LIST_VALUES.each do |value|
+        key.update_column(:restrictions, { kind => value })
+
+        result = authenticate(token: token, origin: "https://example.com", remote_ip: "10.0.0.1")
+        assert_equal :restriction_misconfigured, result.error_code, "#{kind} => #{value.inspect}"
+        assert_equal key.id, result.api_key&.id
+      end
+    end
+  end
+
+  test "an intentionally empty list stays unrestricted" do
+    key, token = create_key
+
+    [{}, { "origins" => [] }, { "ips" => [] }, { "origins" => [], "ips" => [] }].each do |stored|
+      assert ApiKeys::ApiKey.new(owner: @user, name: "Open Key", restrictions: stored).valid?, stored.inspect
+
+      key.update_column(:restrictions, stored)
+      assert authenticate(token: token, origin: "https://anywhere.example", remote_ip: "198.51.100.4").success?,
+             stored.inspect
+    end
+  end
+
+  test "the list writers reject non-text values instead of clearing the list" do
+    %i[allowed_origins allowed_ips].each do |writer|
+      [false, true, 0, 42, [false], [nil], [42], [{}], ["10.0.0.1", nil]].each do |value|
+        key, _token = create_key(allowed_origins: "example.com", allowed_ips: "10.0.0.0/8")
+
+        refute key.update(writer => value), "#{writer} = #{value.inspect} must be rejected"
+        reloaded = ApiKeys::ApiKey.find(key.id)
+        assert_equal ["example.com"], reloaded.allowed_origins, "#{writer} = #{value.inspect}"
+        assert_equal ["10.0.0.0/8"], reloaded.allowed_ips, "#{writer} = #{value.inspect}"
+      end
+    end
+  end
+
+  test "update! with allowed_ips: false raises instead of persisting an empty policy" do
+    key, token = create_key(allowed_ips: "10.0.0.0/8")
+
+    assert_raises(ActiveRecord::RecordInvalid) { key.update!(allowed_ips: false) }
+
+    assert_equal ["10.0.0.0/8"], ApiKeys::ApiKey.find(key.id).allowed_ips
+    assert_equal :ip_not_allowed, authenticate(token: token, remote_ip: "192.0.2.1").error_code
+  end
+
+  test "the list writers still clear a list with nil or blank text" do
+    [nil, "", "  ", [], [""]].each do |value|
+      key, _token = create_key(allowed_ips: "10.0.0.0/8")
+
+      assert key.update(allowed_ips: value), "#{value.inspect}: #{key.errors.full_messages}"
+      refute ApiKeys::ApiKey.find(key.id).restricted?, value.inspect
+    end
+  end
+
+  test "create_api_key! refuses malformed restriction input" do
+    [
+      { allowed_ips: false },
+      { allowed_origins: [nil] },
+      { restrictions: { ips: nil } },
+      { restrictions: { "origins" => false } },
+      { restrictions: { "ips" => [false] } },
+      { restrictions: ApiKeys::Restrictions.wrap("garbage") },
+      { restrictions: ApiKeys::Restrictions.wrap("origins" => [nil]) }
+    ].each do |options|
+      assert_raises(ActiveRecord::RecordInvalid, options.inspect) do
+        @user.create_api_key!(name: "Bad Key", **options)
+      end
+    end
+
+    assert_empty @user.api_keys.reload
+  end
+
+  test "editing one list keeps a malformed entry in the other list visible to validation" do
+    key, _token = create_key
+    key.update_column(:restrictions, { "origins" => [nil] })
+    key = ApiKeys::ApiKey.find(key.id)
+
+    key.allowed_ips = "10.0.0.0/8"
+
+    refute key.valid?, "setting ips must not silently drop the malformed origins list"
+  end
+
+  # =============================================================================
+  # 0.5.1: malformed request headers
+  # =============================================================================
+
+  test "an invalid UTF-8 authorization header answers 401 invalid_token" do
+    controller = render_authentication(token: nil, headers: { "Authorization" => "Bearer \xFF\xFE".dup.force_encoding(Encoding::UTF_8) })
+
+    assert_equal :unauthorized, controller.rendered[:status]
+    assert_equal :invalid_token, controller.rendered[:json][:error]
+  end
+
+  test "an invalid UTF-8 Origin header is an unreadable origin" do
+    _key, token = create_key(allowed_origins: "example.com")
+
+    result = authenticate(token: token, origin: "https://example.com\xFF".dup.force_encoding(Encoding::UTF_8))
+
+    assert_equal :origin_not_allowed, result.error_code
+  end
+
+  # =============================================================================
+  # 0.5.1: client IP resolution through Rails' real RemoteIp middleware
+  # =============================================================================
+  #
+  # These document the deployment boundary rather than a code change: the
+  # default resolver is request.remote_ip, which Rails derives from
+  # X-Forwarded-For. It is only as truthful as the network in front of Rails.
+
+  ALLOWED_IP = "203.0.113.7"
+  ATTACKER_IP = "198.51.100.20"
+  PROXY_IP = "10.0.0.5"
+
+  def authenticate_through_rails(token:, remote_addr:, forwarded_for: nil)
+    result = nil
+    app = lambda do |env|
+      result = ApiKeys::Services::Authenticator.call(ActionDispatch::Request.new(env))
+      [200, {}, []]
+    end
+    env = Rack::MockRequest.env_for("https://api.example.com/v1/widgets",
+                                    "REMOTE_ADDR" => remote_addr,
+                                    "HTTP_AUTHORIZATION" => "Bearer #{token}")
+    env["HTTP_X_FORWARDED_FOR"] = forwarded_for if forwarded_for
+    ActionDispatch::RemoteIp.new(app).call(env)
+    result
+  end
+
+  test "directly reachable: a forged X-Forwarded-For passes request.remote_ip" do
+    _key, token = create_key(allowed_ips: ALLOWED_IP)
+
+    refused = authenticate_through_rails(token: token, remote_addr: ATTACKER_IP)
+    spoofed = authenticate_through_rails(token: token, remote_addr: ATTACKER_IP, forwarded_for: ALLOWED_IP)
+
+    assert_equal :ip_not_allowed, refused.error_code
+    assert spoofed.success?, "documents the deployment risk: remote_ip believes the forged header"
+  end
+
+  test "directly reachable: the socket-peer resolver refuses the forged header" do
+    ApiKeys.configure { |config| config.client_ip_resolver = ->(request) { request.remote_addr } }
+    _key, token = create_key(allowed_ips: ALLOWED_IP)
+
+    spoofed = authenticate_through_rails(token: token, remote_addr: ATTACKER_IP, forwarded_for: ALLOWED_IP)
+    genuine = authenticate_through_rails(token: token, remote_addr: ALLOWED_IP, forwarded_for: ATTACKER_IP)
+
+    assert_equal :ip_not_allowed, spoofed.error_code
+    assert genuine.success?
+  end
+
+  test "behind a trusted proxy that appends: remote_ip ignores the client's forged entry" do
+    _key, token = create_key(allowed_ips: ALLOWED_IP)
+
+    # The client sent X-Forwarded-For: ALLOWED_IP; the proxy appended the
+    # address it actually saw.
+    spoofed = authenticate_through_rails(token: token, remote_addr: PROXY_IP,
+                                         forwarded_for: "#{ALLOWED_IP}, #{ATTACKER_IP}")
+    genuine = authenticate_through_rails(token: token, remote_addr: PROXY_IP, forwarded_for: ALLOWED_IP)
+
+    assert_equal :ip_not_allowed, spoofed.error_code
+    assert genuine.success?
   end
 
   # =============================================================================

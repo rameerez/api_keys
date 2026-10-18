@@ -54,6 +54,9 @@ module ApiKeys
     # POST /keys
     def create
       submitted_params = api_key_params
+      # If creation fails, the re-rendered form shows these instead of
+      # re-checking every scope the owner had cleared.
+      @submitted_scopes = submitted_params[:scopes]
 
       # Use the HasApiKeys helper method to create the key
       begin
@@ -139,7 +142,17 @@ module ApiKeys
 
       permitted_params = submitted.permit(:name, :expires_at_preset, :key_type,
                                           :allowed_origins, :allowed_ips, scopes: [])
-      permitted_params[:scopes]&.reject!(&:blank?) # Filter out blank strings
+      normalize_submitted_scopes!(permitted_params)
+    end
+
+    # Each scope checkbox group renders an empty sentinel (`scopes[]=""`), so a
+    # submitted form always carries the parameter. Stripping blanks turns the
+    # sentinel alone into `[]`: the owner cleared every box and means "none",
+    # and the model's validations decide whether that is allowed. Only an
+    # absent parameter (`nil`) means "not specified": create_api_key! then
+    # applies the default scopes and update leaves the current ones alone.
+    def normalize_submitted_scopes!(permitted_params)
+      permitted_params[:scopes]&.reject!(&:blank?)
       permitted_params
     end
 
@@ -151,7 +164,7 @@ module ApiKeys
       raise ActionController::ParameterMissing, :api_key unless submitted.respond_to?(:permit)
 
       permitted_params = submitted.permit(:name, :allowed_origins, :allowed_ips, scopes: [])
-      permitted_params[:scopes]&.reject!(&:blank?) # Filter out blank strings
+      normalize_submitted_scopes!(permitted_params)
       permitted_params.delete(:allowed_origins) unless ApiKeys::ApiKey.restrictions_column?
       permitted_params.delete(:allowed_ips) unless ApiKeys::ApiKey.restrictions_column?
       permitted_params

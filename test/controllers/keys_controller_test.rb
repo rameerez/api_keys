@@ -337,7 +337,261 @@ module ApiKeys
       assert_equal "API key not found.", flash[:alert]
     end
 
+    # =========================================================================
+    # 0.5.1: clearing every scope checkbox must clear the scopes
+    # =========================================================================
+
+    test "both scope checkbox groups render one empty sentinel" do
+      with_owner_default_scopes(%w[read write]) do
+        get :new
+        assert_select 'input[type="hidden"][name="api_key[scopes][]"][value=""]', count: 1
+        assert_select 'input[type="checkbox"][name="api_key[scopes][]"]', count: 2
+
+        key = @user.create_api_key!(name: "Existing", scopes: %w[read])
+        get :edit, params: { id: key.id }
+        assert_select 'input[type="hidden"][name="api_key[scopes][]"][value=""]', count: 1
+        assert_select 'input[type="checkbox"][name="api_key[scopes][]"]', count: 2
+      end
+    end
+
+    test "creating a key with every scope unchecked creates a key with no scopes" do
+      with_owner_default_scopes(%w[read write]) do
+        get :new
+        submission = browser_submission(response.body) { |form| uncheck_all_scopes(form) }
+
+        post :create, params: submission
+
+        key = @user.api_keys.order(:created_at).last
+        assert_redirected_to key_path(key)
+        assert_equal [], key.reload.scopes, "a permissionless key must not receive the default scopes"
+        refute key.allows_scope?("read")
+        refute key.allows_scope?("write")
+        # What makes it work: the browser sends the sentinel and nothing else.
+        assert_equal [""], submission.dig("api_key", "scopes")
+      end
+    end
+
+    test "updating a key with every scope unchecked removes its scopes" do
+      with_owner_default_scopes(%w[read write]) do
+        key = @user.create_api_key!(name: "Reader", scopes: %w[read])
+        assert key.allows_scope?("read")
+
+        get :edit, params: { id: key.id }
+        submission = browser_submission(response.body) { |form| uncheck_all_scopes(form) }
+
+        patch :update, params: submission.merge("id" => key.id)
+
+        assert_redirected_to keys_path
+        assert_equal [], key.reload.scopes, "clearing every box must not keep the old scopes"
+        refute key.allows_scope?("read")
+        assert_equal [""], submission.dig("api_key", "scopes")
+      end
+    end
+
+    test "the rendered forms still submit exactly the boxes that stay checked" do
+      with_owner_default_scopes(%w[read write]) do
+        get :new
+        submission = browser_submission(response.body) do |form|
+          form.css('input[type="checkbox"][value="read"]').each { |box| box.remove_attribute("checked") }
+        end
+        post :create, params: submission
+        assert_equal %w[write], @user.api_keys.order(:created_at).last.scopes
+
+        key = @user.create_api_key!(name: "Writer", scopes: %w[write])
+        get :edit, params: { id: key.id }
+        submission = browser_submission(response.body) do |form|
+          form.at_css('input[type="checkbox"][value="read"]')["checked"] = "checked"
+        end
+        patch :update, params: submission.merge("id" => key.id)
+        assert_equal %w[read write], key.reload.scopes
+      end
+    end
+
+    test "a request without the scopes parameter keeps the programmatic defaults" do
+      with_owner_default_scopes(%w[read write]) do
+        post :create, params: { api_key: { name: "No Scope Field" } }
+        assert_equal %w[read write], @user.api_keys.order(:created_at).last.scopes
+
+        key = @user.create_api_key!(name: "Reader", scopes: %w[read])
+        patch :update, params: { id: key.id, api_key: { name: "Renamed" } }
+        assert_equal %w[read], key.reload.scopes
+      end
+    end
+
+    test "a failed creation re-renders cleared scope boxes as cleared" do
+      with_owner_default_scopes(%w[read write]) do
+        get :new
+        submission = browser_submission(response.body) do |form|
+          uncheck_all_scopes(form)
+          form.at_css('input[name="api_key[allowed_origins]"]')["value"] = "*"
+        end
+
+        post :create, params: submission
+
+        assert_response :unprocessable_entity
+        assert_select 'input[type="checkbox"][name="api_key[scopes][]"]', count: 2
+        assert_select 'input[type="checkbox"][name="api_key[scopes][]"][checked]', count: 0
+
+        resubmission = browser_submission(response.body) do |form|
+          form.at_css('input[name="api_key[allowed_origins]"]')["value"] = ""
+        end
+        post :create, params: resubmission
+        assert_equal [], @user.api_keys.order(:created_at).last.scopes
+      end
+    end
+
+    # =========================================================================
+    # 0.5.1: CSRF, cross-owner writes, and revocation after a policy change
+    # =========================================================================
+
+    test "state-changing dashboard actions refuse requests without a CSRF token" do
+      @controller.class.allow_forgery_protection = true
+      key = @user.create_api_key!(name: "Protected")
+
+      assert_raises(ActionController::InvalidAuthenticityToken) do
+        post :create, params: { api_key: { name: "Forged" } }
+      end
+      assert_raises(ActionController::InvalidAuthenticityToken) do
+        post :revoke, params: { id: key.id }
+      end
+      assert_raises(ActionController::InvalidAuthenticityToken) do
+        patch :update, params: { id: key.id, api_key: { name: "Forged" } }
+      end
+
+      assert_equal ["Protected"], @user.api_keys.pluck(:name)
+      refute key.reload.revoked?
+    ensure
+      @controller.class.allow_forgery_protection = false
+    end
+
+    test "the rendered form's CSRF token is accepted" do
+      @controller.class.allow_forgery_protection = true
+
+      get :new
+      submission = browser_submission(response.body)
+      assert submission["authenticity_token"].present?
+
+      post :create, params: submission
+
+      assert_redirected_to key_path(@user.api_keys.order(:created_at).last)
+    ensure
+      @controller.class.allow_forgery_protection = false
+    end
+
+    test "keys belonging to another owner cannot be updated" do
+      other = User.create!(name: "Other Owner")
+      other_key = other.create_api_key!(name: "Other Key", scopes: %w[read])
+
+      patch :update, params: { id: other_key.id, api_key: { name: "Hijacked", scopes: [""], allowed_ips: "192.0.2.1" } }
+
+      assert_redirected_to keys_path
+      assert_equal "API key not found.", flash[:alert]
+      other_key.reload
+      assert_equal "Other Key", other_key.name
+      assert_equal %w[read], other_key.scopes
+      refute other_key.restricted?
+    end
+
+    test "keys belonging to another owner cannot be revoked" do
+      other = User.create!(name: "Other Owner")
+      other_key = other.create_api_key!(name: "Other Key")
+
+      post :revoke, params: { id: other_key.id }
+
+      assert_redirected_to keys_path
+      assert_equal "API key not found.", flash[:alert]
+      refute other_key.reload.revoked?
+    end
+
+    test "the dashboard revokes a key whose type ceiling was narrowed after issue" do
+      configure_secret_type(permissions: %w[read write])
+      key = @user.create_api_key!(name: "Wide", key_type: :secret, scopes: %w[read write])
+      configure_secret_type(permissions: %w[read])
+      refute key.reload.valid?, "precondition: the stored scopes now exceed the ceiling"
+
+      post :revoke, params: { id: key.id }
+
+      assert_redirected_to keys_path
+      assert_equal "API key revoked successfully.", flash[:notice]
+      assert key.reload.revoked?
+    end
+
+    # =========================================================================
+    # 0.5.1: the one-time token page cannot be replayed with a copied session
+    # =========================================================================
+
+    test "a copied pre-consumption session cannot show the token a second time" do
+      Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
+      post :create, params: { api_key: { name: "Replay Target" } }
+      key = @user.api_keys.order(:created_at).last
+      copied_payload = @request.session[ApiKeys::TokenSession::DEFAULT_SESSION_KEY].deep_dup
+
+      get :show, params: { id: key.id }
+      assert_response :success
+      assert @controller.instance_variable_get(:@plaintext_token).present?
+
+      # Replay the cookie as it was before the token page consumed it.
+      @request.session[ApiKeys::TokenSession::DEFAULT_SESSION_KEY] = copied_payload
+      get :show, params: { id: key.id }
+
+      assert_redirected_to keys_path
+      assert_nil @controller.instance_variable_get(:@plaintext_token)
+    end
+
     private
+
+    def with_owner_default_scopes(scopes)
+      settings = User.api_keys_settings.merge(default_scopes: scopes.map(&:freeze).freeze).freeze
+      User.stubs(:api_keys_settings).returns(settings)
+      yield
+    end
+
+    def configure_secret_type(permissions:)
+      ApiKeys.configure do |config|
+        config.key_types = { secret: { prefix: "sk", permissions: permissions } }
+        config.environments = { test: { prefix_segment: "test" } }
+        config.current_environment = :test
+      end
+    end
+
+    def uncheck_all_scopes(form)
+      form.css('input[type="checkbox"][name="api_key[scopes][]"]').each { |box| box.remove_attribute("checked") }
+    end
+
+    # Serializes the dashboard form the way a browser does (successful
+    # controls only: enabled fields, checked boxes, each select's selected
+    # option) and parses the body the way Rack does. The block may edit the
+    # parsed form first, as a person would before pressing submit.
+    def browser_submission(html)
+      document = Nokogiri::HTML(html)
+      form = document.at_css("form#api-keys-key-form")
+      raise "key form not rendered" unless form
+
+      yield form if block_given?
+
+      pairs = form.css("input, select, textarea").filter_map do |field|
+        name = field["name"]
+        next if name.nil? || field.has_attribute?("disabled")
+
+        case field.name
+        when "select"
+          option = field.at_css("option[selected]") || field.at_css("option")
+          [name, option ? (option["value"] || option.text) : ""]
+        when "textarea"
+          [name, field.text]
+        else
+          type = (field["type"] || "text").downcase
+          next if %w[submit button image reset file].include?(type)
+          next if %w[checkbox radio].include?(type) && !field.has_attribute?("checked")
+
+          [name, field["value"] || (type == "checkbox" ? "on" : "")]
+        end
+      end
+
+      parsed = Rack::Utils.parse_nested_query(URI.encode_www_form(pairs))
+      parsed.delete("_method")
+      parsed
+    end
 
     # Functional tests bypass the CSP middleware, so build the header the way the
     # middleware would from whatever policy the controller declared.
