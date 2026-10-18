@@ -45,6 +45,18 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       # Optional counter cache for total requests made with this key.
       t.bigint   :requests_count, default: 0, null: false
 
+      # Refused-but-identified traffic: requests that presented this key's real
+      # token and were refused by a policy (origin/IP lock, environment, scope,
+      # revoked, expired...). Kept apart from last_used_at, which a refusal never moves.
+      t.datetime :last_refused_at
+      t.bigint   :refusals_count, default: 0, null: false
+      t.string   :last_refusal_code, limit: 64
+
+      # When this key's token was released through the one-time dashboard
+      # handoff. The first retrieval claims it with a conditional UPDATE, so a
+      # copied session can never show the token twice.
+      t.datetime :token_shown_at
+
       # Timestamp when the key was revoked (null means active)
       t.datetime :revoked_at
 

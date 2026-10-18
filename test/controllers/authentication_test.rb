@@ -76,7 +76,7 @@ module ApiKeys
       assert_includes job_classes, ApiKeys::Jobs::UpdateStatsJob
     end
 
-      test "authenticate_api_key! missing scope renders error and does not enqueue stats" do
+      test "authenticate_api_key! missing scope renders error and does not enqueue a usage update" do
       user = User.create!(name: "Scoped User")
       key = ApiKeys::ApiKey.create!(owner: user, name: "Scoped Key", scopes: ["read"]) # no 'write'
       token = key.instance_variable_get(:@token)
@@ -99,10 +99,15 @@ module ApiKeys
       assert_equal "write", resp[:json][:required_scope]
       assert_nil controller.send(:current_api_key), "a scope-denied key must not remain in controller state"
 
-      # Stats job not enqueued
+      # No usage update: the only stats job is the refusal half, which can
+      # never move last_used_at or requests_count.
       jobs = ActiveJob::Base.queue_adapter.enqueued_jobs
       job_classes = jobs.map { |j| j[:job] }
-      refute_includes job_classes, ApiKeys::Jobs::UpdateStatsJob
+      stats_jobs = jobs.select { |job| job[:job] == ApiKeys::Jobs::UpdateStatsJob }
+      assert_equal 1, stats_jobs.length
+      stats_arguments = ActiveJob::Arguments.deserialize(stats_jobs.first[:args])
+      assert_equal key.id, stats_arguments.first
+      assert_equal({ refusal_code: "missing_scope" }, stats_arguments.last)
       # But callbacks are still enqueued exactly once each (before and after)
       assert_equal 2, (job_classes.count { |jc| jc == ApiKeys::Jobs::CallbacksJob })
 

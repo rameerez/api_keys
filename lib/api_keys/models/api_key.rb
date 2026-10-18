@@ -15,6 +15,21 @@ module ApiKeys
     MAX_RESTRICTION_ENTRIES = 100
     MAX_RESTRICTION_ENTRY_BYTESIZE = 255
     RESTRICTIONS_COLUMN = "restrictions"
+    # Refused-but-identified traffic (0.6.0). Kept apart from last_used_at and
+    # requests_count, which only ever describe successful authentications.
+    REFUSAL_STATS_COLUMNS = %w[last_refused_at refusals_count last_refusal_code].freeze
+    # Durable one-time token handoff (0.6.0): stamped by the first retrieval
+    # of the key's token through ApiKeys::TokenSession, and never cleared.
+    TOKEN_SHOWN_AT_COLUMN = "token_shown_at"
+    # Every refusal that happens after the presented token was verified, so the
+    # key is known: lifecycle, type/environment configuration, isolation,
+    # request restrictions, and scopes. Lookup failures (missing or invalid
+    # token, insecure transport) name no key and are never stamped on one.
+    REFUSAL_CODES = %w[
+      revoked_key expired_key unknown_key_type unknown_environment
+      environment_misconfigured environment_mismatch
+      origin_not_allowed ip_not_allowed restriction_misconfigured missing_scope
+    ].freeze
     # Deliberately excludes `restrictions`: owners must be able to tighten a
     # request policy even when the key itself is non-revocable.
     IMMUTABLE_IDENTITY_ATTRIBUTES = %w[
@@ -32,6 +47,11 @@ module ApiKeys
     # == Attributes & Serialization ==
     # Expose the plaintext token only immediately after creation
     attr_reader :token
+
+    # Written only by the atomic claim in `claim_token_handoff!`. Ordinary
+    # saves can never set or clear it, so no update path (a form, mass
+    # assignment, a stray `update`) can reopen a handoff that was claimed.
+    attr_readonly :token_shown_at
     attr_accessor :expires_at_preset
 
     # JSON attributes (:scopes, :metadata) are defined in the engine initializer
@@ -356,10 +376,22 @@ module ApiKeys
     # - Key types mode: blank scopes means "no permissions". When you've configured
     #   key types with permission ceilings, an empty scope list should deny access,
     #   not silently bypass the entire permission system.
+    #
+    # Key types configured with `scopes: :ceiling` skip the stored list: the
+    # type's live permission ceiling is the contract, so a widened ceiling
+    # reaches existing keys and a narrowed one takes effect on the next request.
     def allows_scope?(required_scope)
       return false unless respond_to?(:scopes)
       return false unless required_scope.present?
       return false unless scopes.is_a?(Array)
+
+      if scopes_follow_ceiling?
+        # Stored scopes are metadata here, but a damaged list still means
+        # something wrote around validation: refuse rather than guess.
+        return false unless scopes.all? { |scope| valid_scope_value?(scope) }
+
+        return followed_ceiling.include?(required_scope.to_s)
+      end
 
       if scopes.blank?
         return !scope_policy_enabled?
@@ -401,6 +433,50 @@ module ApiKeys
       ceiling == :all || ceiling.include?(scope.to_s)
     end
 
+    # The scopes to save after a form that offered only some scopes as
+    # checkboxes was submitted: the rule the dashboard's edit form uses, for
+    # host forms built with `api_key_scopes_checkboxes`.
+    #
+    # - Offered scopes are set from the boxes: checked ones are granted,
+    #   unchecked ones removed.
+    # - Every other scope the key holds is kept, in its current order.
+    # - A checked value that was never offered is ignored, so a crafted
+    #   request cannot grant it.
+    # - A held scope outside the key's current ceiling is dropped, offered or
+    #   not. Authentication already denies it, and keeping it would make every
+    #   save of the key fail the ceiling validation. A newly checked scope
+    #   outside the ceiling is kept, so the validation reports it.
+    # - `checked: nil` means the form submitted no scopes at all (no boxes and
+    #   no sentinel): nothing is granted or removed except held scopes outside
+    #   the ceiling.
+    # - A `scopes: :ceiling` key returns its stored scopes unchanged: they are
+    #   metadata there, and the type's live ceiling authorizes the key.
+    #
+    # It only computes the list; assign it (`key.update(scopes: ...)`) to save.
+    #
+    # @param offered [Array<String, Symbol>] The scopes the form rendered as boxes.
+    # @param checked [Array<String, Symbol>, nil] The submitted values; blank
+    #   entries (the sentinel) are ignored.
+    # @return [Array<String>]
+    # @raise [ArgumentError] when +offered+ or +checked+ is not an Array (or nil for +checked+).
+    def scopes_after_form_edit(offered:, checked:)
+      raise ArgumentError, "offered must be an Array of scope names" unless offered.is_a?(Array)
+      unless checked.nil? || checked.is_a?(Array)
+        raise ArgumentError, "checked must be an Array of scope names, or nil when no scopes were submitted"
+      end
+      return scopes.deep_dup if scopes_follow_ceiling?
+
+      offered = checked.nil? ? [] : offered.map(&:to_s)
+      checked = Array(checked).reject { |scope| scope.respond_to?(:blank?) && scope.blank? }.map(&:to_s)
+      held = Array(scopes)
+
+      kept = held.select do |scope|
+        scope_within_ceiling?(scope) && (!offered.include?(scope) || checked.include?(scope))
+      end
+      added = offered.select { |scope| checked.include?(scope) && !held.include?(scope) }
+      kept + added
+    end
+
     # Alias for scopes - provides a more user-friendly API that matches
     # the configuration DSL where key types use `permissions` for scope ceiling.
     # Note: We use a method instead of alias_method because `scopes` is defined
@@ -415,6 +491,52 @@ module ApiKeys
     # @return [Boolean] true if the key has this permission or has no restrictions
     def allows_permission?(required_permission)
       allows_scope?(required_permission)
+    end
+
+    # Whether scope checks for this key read its type's live permission ceiling
+    # instead of the scopes stored at creation (`scopes: :ceiling` key types).
+    # Untyped keys, keys whose type is no longer configured, and every other
+    # type answer false and keep the stored-scope behavior.
+    # @return [Boolean]
+    def scopes_follow_ceiling?
+      return false if key_type.blank?
+
+      self.class.scopes_follow_ceiling_for?(key_type_config)
+    end
+
+    # == Refused-but-identified traffic ==
+    # Stamped asynchronously when a request presents this key's real token and a
+    # policy refuses it. Installations that have not run
+    # `rails generate api_keys:add_key_activity` read nil / 0 instead of raising.
+
+    # @return [Time, nil] When the most recently recorded refusal happened.
+    def last_refused_at
+      self.class.refusal_stats_columns? ? self[:last_refused_at] : nil
+    end
+
+    # @return [Integer] Refusals counted while `track_requests_count` is on.
+    def refusals_count
+      self.class.refusal_stats_columns? ? self[:refusals_count].to_i : 0
+    end
+
+    # @return [String, nil] The error code of the most recently recorded refusal.
+    def last_refusal_code
+      self.class.refusal_stats_columns? ? self[:last_refusal_code] : nil
+    end
+
+    # == One-time token handoff ==
+
+    # When this key's token was released through the one-time handoff
+    # (ApiKeys::TokenSession). Nil when it never was, and on installations that
+    # have not run `rails generate api_keys:add_key_activity` yet.
+    # @return [Time, nil]
+    def token_shown_at
+      self.class.token_shown_at_column? ? self[:token_shown_at] : nil
+    end
+
+    # @return [Boolean] Whether the one-time handoff already released this key's token.
+    def token_shown?
+      !token_shown_at.nil?
     end
 
     # Provides a masked version of the token for display (e.g., ak_live_••••rj4p)
@@ -440,6 +562,105 @@ module ApiKeys
       column_names.include?(RESTRICTIONS_COLUMN)
     rescue StandardError
       false
+    end
+
+    # Whether the refused-traffic columns exist. Installations that predate
+    # v0.6.0 keep authenticating untouched until they run the generator.
+    # @return [Boolean]
+    def self.refusal_stats_columns?
+      (REFUSAL_STATS_COLUMNS - column_names).empty?
+    rescue StandardError
+      false
+    end
+
+    # Whether the `token_shown_at` column exists. Without it the one-time
+    # handoff falls back to the cache marker alone, as in 0.5.1.
+    # @return [Boolean]
+    def self.token_shown_at_column?
+      column_names.include?(TOKEN_SHOWN_AT_COLUMN)
+    rescue StandardError
+      false
+    end
+
+    # Durably claims the one-time token handoff of the key with +id+ in one
+    # conditional statement:
+    #
+    #   UPDATE api_keys SET token_shown_at = now WHERE id = ? AND token_shown_at IS NULL
+    #
+    # The database applies it atomically, so exactly one caller ever gets true
+    # for a key: across processes, across copies of a session, and after the
+    # cache is flushed. Zero rows changed means the token was already shown or
+    # the key no longer exists, and answers false (fail closed).
+    #
+    # Answers nil when the column does not exist yet (nothing can be recorded
+    # durably). Database errors are raised, not rescued: the caller withholds
+    # the token.
+    #
+    # @param id [Integer, String] The key's primary key.
+    # @return [Boolean, nil]
+    def self.claim_token_handoff!(id)
+      return nil unless column_names.include?(TOKEN_SHOWN_AT_COLUMN)
+      return false if id.nil?
+
+      where(primary_key => id, TOKEN_SHOWN_AT_COLUMN => nil)
+        .update_all(TOKEN_SHOWN_AT_COLUMN => Time.current) == 1
+    end
+
+    # Read-only companion of `claim_token_handoff!`: whether a claim for +id+
+    # could still succeed. Nil without the column. Raises on database errors.
+    #
+    # @param id [Integer, String] The key's primary key.
+    # @return [Boolean, nil]
+    def self.token_handoff_claimable?(id)
+      return nil unless column_names.include?(TOKEN_SHOWN_AT_COLUMN)
+      return false if id.nil?
+
+      where(primary_key => id, TOKEN_SHOWN_AT_COLUMN => nil).exists?
+    end
+
+    # Single source of truth for `scopes: :ceiling`. The finite-ceiling check
+    # repeats the configuration validation on purpose: a ceiling of `:all` must
+    # never become the contract, however the configuration was produced.
+    def self.scopes_follow_ceiling_for?(type_config)
+      return false unless type_config.is_a?(Hash) && type_config[:scopes].to_s == "ceiling"
+
+      permissions = type_config[:permissions]
+      permissions.is_a?(Array) && permissions.any?
+    end
+
+    # Add-only merge of a key type's current permission ceiling into the stored
+    # scopes of every non-revoked key of that type: the backfill for types that
+    # keep stored scopes after their ceiling was widened. It only ever adds
+    # permissions the type already allows, and it re-adds any a user removed
+    # by hand, so run it only for types whose users do not curate scopes.
+    #
+    # @param key_type [Symbol, String] A configured type with a finite ceiling.
+    # @return [Integer] How many keys gained scopes.
+    def self.reconcile_scopes!(key_type:)
+      type_name, type_config = ApiKeys.configuration.key_types.find { |name, _settings| name.to_s == key_type.to_s }
+      raise ArgumentError, "Unknown key type '#{key_type}'" unless type_config
+
+      ceiling = type_config[:permissions]
+      unless ceiling.is_a?(Array) && ceiling.any?
+        raise ArgumentError, "Key type '#{key_type}' has no finite permission ceiling to reconcile"
+      end
+
+      ceiling = ceiling.map(&:to_s)
+      where(key_type: type_name.to_s, revoked_at: nil).find_each.count do |api_key|
+        api_key.with_lock do
+          # with_lock reloads the row: a key revoked (or retyped) after it was
+          # selected is skipped, so a revoked key never gains scopes.
+          next false if api_key.revoked_at.present? || api_key.key_type.to_s != type_name.to_s
+
+          stored = api_key.scopes
+          next false unless stored.is_a?(Array) && stored.all? { |scope| api_key.send(:valid_scope_value?, scope) }
+
+          merged = stored | ceiling
+          next false if merged == stored || merged.length > MAX_SCOPES
+
+          api_key.update_columns(scopes: merged, updated_at: Time.current)
+        end
+      end
     end
 
     # Single source of truth for a key type's request-restriction ceiling.
@@ -706,6 +927,11 @@ module ApiKeys
 
     def scopes_respect_permission_ceiling
       return unless scopes.is_a?(Array)
+      # On a `scopes: :ceiling` key the stored list authorizes nothing. Narrowing
+      # the ceiling must not leave every existing key of the type unsaveable
+      # (which would also block tightening its request restrictions), so only
+      # writes to the scopes themselves are held to the current ceiling.
+      return if persisted? && scopes_follow_ceiling? && !will_save_change_to_attribute?(:scopes)
 
       ceiling = permission_ceiling
       return if ceiling == :all
@@ -752,6 +978,11 @@ module ApiKeys
         value.each_codepoint.none? { |codepoint| codepoint <= 0x20 || codepoint == 0x7f }
     rescue ArgumentError
       false
+    end
+
+    # The live ceiling a `scopes: :ceiling` key is authorized for.
+    def followed_ceiling
+      Array(key_type_config&.[](:permissions)).map(&:to_s)
     end
 
     def permission_ceiling

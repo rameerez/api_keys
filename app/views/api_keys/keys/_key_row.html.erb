@@ -40,11 +40,13 @@
     <% else %>
       <em>Never used</em>
     <% end %>
+    <%= render partial: 'api_keys/keys/refusal_notice', locals: { key: key, compact: true } %>
   </td>
 
   <td class="api-keys-cell-scopes">
-    <% if key.scopes.present? %>
-      <% key.scopes.each do |scope| %>
+    <% displayed_scopes = api_keys_displayed_scopes(key) %>
+    <% if displayed_scopes.present? %>
+      <% displayed_scopes.each do |scope| %>
         <kbd class="api-keys-scope-tag tag is-small"><%= scope %></kbd>
       <% end %>
     <% else %>

@@ -73,6 +73,10 @@ ActiveRecord::Schema.define do
     t.datetime :expires_at
     t.datetime :last_used_at
     t.bigint   :requests_count, default: 0, null: false
+    t.datetime :last_refused_at  # Refused-but-identified traffic (0.6.0)
+    t.bigint   :refusals_count, default: 0, null: false
+    t.string   :last_refusal_code, limit: 64
+    t.datetime :token_shown_at   # Durable one-time token handoff (0.6.0)
     t.datetime :revoked_at
     t.string   :last4, null: false, default: ""
     t.string   :key_type       # New: key type identifier (e.g., "publishable", "secret")
@@ -99,6 +103,63 @@ ApiKeys::ApiKey.attribute :metadata, json_col_type, default: {}
 ApiKeys::ApiKey.attribute :restrictions, json_col_type, default: {}
 
 puts "Database schema loaded."
+
+# Simulates an installation that has not run
+# `rails generate api_keys:add_key_activity` yet by really dropping columns
+# (not stubbing a predicate), so any code path that touches them without
+# checking first fails the test. Restores the schema afterwards.
+module OptionalColumnsSchema
+  module_function
+
+  def without(columns)
+    connection = ApiKeys::ApiKey.connection
+    columns.each_key do |column|
+      connection.remove_column(:api_keys, column) if connection.column_exists?(:api_keys, column)
+    end
+    ApiKeys::ApiKey.reset_column_information
+    yield
+  ensure
+    restore!(columns)
+  end
+
+  def restore!(columns)
+    connection = ApiKeys::ApiKey.connection
+    columns.each do |column, (type, options)|
+      connection.add_column(:api_keys, column, type, **options) unless connection.column_exists?(:api_keys, column)
+    end
+    ApiKeys::ApiKey.reset_column_information
+  end
+end
+
+# The refused-traffic statistics columns.
+module RefusalStatsSchema
+  COLUMNS = {
+    last_refused_at: [:datetime, {}],
+    refusals_count: [:bigint, { default: 0, null: false }],
+    last_refusal_code: [:string, { limit: 64 }]
+  }.freeze
+
+  module_function
+
+  def without_columns(&block)
+    OptionalColumnsSchema.without(COLUMNS, &block)
+  end
+
+  def restore!
+    OptionalColumnsSchema.restore!(COLUMNS)
+  end
+end
+
+# The durable one-time token handoff column.
+module TokenShownAtSchema
+  COLUMNS = { token_shown_at: [:datetime, {}] }.freeze
+
+  module_function
+
+  def without_column(&block)
+    OptionalColumnsSchema.without(COLUMNS, &block)
+  end
+end
 
 # Simple User model for testing associations
 class User < ActiveRecord::Base

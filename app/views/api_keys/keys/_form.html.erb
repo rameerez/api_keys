@@ -33,7 +33,11 @@
           <% if config[:permissions] != :all %>
             <small class="api-keys-form-help">
               <strong><%= type.to_s.humanize %>:</strong>
-              Limited to <%= config[:permissions]&.join(", ") || "no" %> permissions
+              <% if ApiKeys::ApiKey.scopes_follow_ceiling_for?(config) %>
+                Always has exactly the <%= config[:permissions].join(", ") %> permissions
+              <% else %>
+                Limited to <%= config[:permissions]&.join(", ") || "no" %> permissions
+              <% end %>
               <% unless config.fetch(:revocable, true) %>
                 <em>(cannot be revoked)</em>
               <% end %>
@@ -65,10 +69,13 @@
     </div>
 
     <%# The offered scopes are the owner's default scopes. The controller reads %>
-    <%# the same list (dashboard_scope_choices) when it saves the form. %>
+    <%# the same list (dashboard_scope_choices) when it saves the form. A key type %>
+    <%# with `scopes: :ceiling` has no scopes to choose: the script below hides and %>
+    <%# disables these boxes and shows that type's live permissions instead, and %>
+    <%# the controller ignores scopes submitted for it. %>
     <% @available_scopes = dashboard_scope_choices %>
     <% if @available_scopes.present? %>
-      <div>
+      <%= tag.div data: { api_keys_scope_choices: "" }, hidden: api_key.scopes_follow_ceiling? do %>
         <%= form.label :scopes, "Permissions" %>
         <%# Browsers omit unchecked boxes, so clearing every box would send no scopes %>
         <%# parameter at all and the key would silently get the defaults. This empty %>
@@ -91,7 +98,21 @@
             <%= form.label "scopes_#{scope.parameterize}", class: "form-check-label" do %><code><%= scope %></code><% end %>
           </div>
         <% end %>
-      </div>
+      <% end %>
+    <% end %>
+
+    <% ApiKeys.configuration.key_types.to_h.each do |type, config| %>
+      <% next unless ApiKeys::ApiKey.scopes_follow_ceiling_for?(config) %>
+      <%= tag.div class: "api-keys-ceiling-scopes", data: { api_keys_ceiling_contract: type.to_s },
+                  hidden: api_key.key_type.to_s != type.to_s do %>
+        <p><strong>Permissions</strong></p>
+        <% config[:permissions].each do |scope| %>
+          <kbd class="tag is-small"><%= scope %></kbd>
+        <% end %>
+        <small class="api-keys-form-help">
+          <%= type.to_s.humanize %> keys always have exactly these permissions, and follow the key type when it changes.
+        </small>
+      <% end %>
     <% end %>
 
     <%= render "api_keys/keys/restriction_fields", form: form, api_key: api_key %>
@@ -105,18 +126,31 @@
       <%= form.text_field :name %>
     </div>
 
-    <%# The edit form offers the owner's default scopes and edits only those: %>
-    <%# saving keeps every other scope the key holds, except scopes its type no %>
-    <%# longer allows (see the controller's scopes_after_editing_offered_choices). %>
+    <%# A `scopes: :ceiling` key is authorized by its type's live permissions and %>
+    <%# its stored scopes are metadata, so the form shows the live ceiling and %>
+    <%# offers nothing to edit; the controller ignores scopes submitted for it. %>
+    <%# Any other key gets the owner's default scopes as boxes, and a save edits %>
+    <%# only those: it keeps every other scope the key holds, except scopes its %>
+    <%# type no longer allows (ApiKey#scopes_after_form_edit). %>
     <% @available_scopes = dashboard_scope_choices %>
-    <% dropped_scopes = Array(api_key.scopes).reject { |scope| api_key.scope_within_ceiling?(scope) } %>
+    <% dropped_scopes = api_key.scopes_follow_ceiling? ? [] : Array(api_key.scopes).reject { |scope| api_key.scope_within_ceiling?(scope) } %>
     <% if dropped_scopes.any? %>
       <small class="api-keys-form-help">
         <%= safe_join(dropped_scopes.map { |scope| content_tag(:code, scope) }, ", ") %>
         <%= dropped_scopes.one? ? "is" : "are" %> no longer allowed for this key and will be removed when you save.
       </small>
     <% end %>
-    <% if @available_scopes.present? %>
+    <% if api_key.scopes_follow_ceiling? %>
+      <div class="api-keys-ceiling-scopes">
+        <p><strong>Permissions / Scopes</strong></p>
+        <% api_keys_displayed_scopes(api_key).each do |scope| %>
+          <kbd class="tag is-small"><%= scope %></kbd>
+        <% end %>
+        <small class="api-keys-form-help">
+          Permissions follow the <%= api_key.key_type.humanize.downcase %> key type and update automatically when it changes.
+        </small>
+      </div>
+    <% elsif @available_scopes.present? %>
       <div>
         <%= form.label :scopes, "Permissions / Scopes" %>
         <%# Empty sentinel: clearing every box must remove every offered scope, not keep the old ones. %>
@@ -165,7 +199,8 @@
   <% key_type_policies = ApiKeys.configuration.key_types.to_h do |type, config| %>
     <% [type.to_s, {
       restrictions: ApiKeys::ApiKey.restriction_kinds_for(config).map(&:to_s),
-      expirable: ApiKeys::ApiKey.revocable_for(config)
+      expirable: ApiKeys::ApiKey.revocable_for(config),
+      ceiling: ApiKeys::ApiKey.scopes_follow_ceiling_for?(config)
     }] %>
   <% end %>
   <script nonce="<%= content_security_policy_nonce %>">
@@ -188,6 +223,17 @@
           const enabled = policy && policy.expirable;
           container.hidden = !enabled;
           container.querySelectorAll("input, select, textarea").forEach((input) => { input.disabled = !enabled; });
+        });
+
+        // A scopes: :ceiling type has no scopes to choose: hide and disable the
+        // boxes (so none are submitted) and show that type's live permissions.
+        const ceiling = Boolean(policy && policy.ceiling);
+        form.querySelectorAll("[data-api-keys-scope-choices]").forEach((container) => {
+          container.hidden = ceiling;
+          container.querySelectorAll("input, select, textarea").forEach((input) => { input.disabled = ceiling; });
+        });
+        form.querySelectorAll("[data-api-keys-ceiling-contract]").forEach((container) => {
+          container.hidden = !(ceiling && container.dataset.apiKeysCeilingContract === keyType.value);
         });
       };
 

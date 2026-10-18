@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "active_support/cache"
 require "active_support/concern"
 require_relative "services/authenticator"
 require_relative "logging"
@@ -17,6 +18,9 @@ module ApiKeys
     # The key itself is fine, so these answer 403 rather than 401 — the same
     # distinction `:missing_scope` already makes.
     FORBIDDEN_ERROR_CODES = %i[origin_not_allowed ip_not_allowed restriction_misconfigured].freeze
+    # Names the per-key reservation that lets one stats job per kind be
+    # enqueued within a debounce interval (see reserve_stats_enqueue?).
+    STATS_ENQUEUE_NAMESPACE = "api_keys:v1:stats_enqueue"
 
     included do
       # Helper methods to access the authenticated key and its owner
@@ -78,6 +82,7 @@ module ApiKeys
           after_auth_context[:required_scope_check] = { required: scope, passed: false }
           after_auth_context[:success] = false
           after_auth_context[:error_code] = :missing_scope
+          refused_key = @current_api_key
           @current_api_key = nil
           render_unauthorized(
             error_code: :missing_scope,
@@ -85,6 +90,7 @@ module ApiKeys
             status: :forbidden,
             required_scope: scope
           )
+          record_key_refusal(refused_key, :missing_scope)
         else
           after_auth_context[:required_scope_check] = { required: scope, passed: true } if scope
           # Authentication and scope check successful, enqueue stats update
@@ -95,6 +101,8 @@ module ApiKeys
         log_debug "[ApiKeys Auth] Authentication failed. Error: #{result.error_code}, Message: #{result.message}"
         status = FORBIDDEN_ERROR_CODES.include?(result.error_code) ? :forbidden : :unauthorized
         render_unauthorized(error_code: result.error_code, message: result.message, status: status)
+        # Only identified refusals carry a key; lookup failures have none to stamp.
+        record_key_refusal(result.api_key, result.error_code) if result.api_key
       end
 
       # Enqueue after_authentication callback asynchronously regardless of success/failure
@@ -129,8 +137,12 @@ module ApiKeys
       return unless ApiKeys.configuration.enable_async_operations
       return unless current_api_key
 
-      if stats_update_debounced?
+      if stats_update_debounced?(current_api_key.last_used_at)
         log_debug "[ApiKeys Auth] Skipping a recently recorded last-used update for ApiKey ID: #{current_api_key.id}"
+        return
+      end
+      unless reserve_stats_enqueue?(:used, current_api_key.id)
+        log_debug "[ApiKeys Auth] Skipping a last-used update already enqueued for ApiKey ID: #{current_api_key.id}"
         return
       end
 
@@ -145,22 +157,126 @@ module ApiKeys
       begin
         timestamp = Time.current # Capture time once for the job
         log_debug "[ApiKeys Auth] Enqueuing UpdateStatsJob for ApiKey ID: #{current_api_key.id} at #{timestamp}"
-        ApiKeys::Jobs::UpdateStatsJob.perform_later(current_api_key.id, timestamp)
+        # Active Job answers false (instead of raising) when the adapter
+        # failed to enqueue; either way the reservation is freed.
+        unless ApiKeys::Jobs::UpdateStatsJob.perform_later(current_api_key.id, timestamp)
+          release_stats_enqueue(:used, current_api_key.id)
+          log_error "[ApiKeys Auth] UpdateStatsJob was not enqueued for key #{current_api_key.id}."
+        end
       rescue StandardError => error
+        release_stats_enqueue(:used, current_api_key.id)
         log_error "[ApiKeys Auth] Failed to enqueue UpdateStatsJob for key #{current_api_key.id} (#{error.class})."
       end
     end
 
-    def stats_update_debounced?
+    # Enqueues the refusal half of UpdateStatsJob for a key that presented its
+    # real token and was refused by a policy. It moves only last_refused_at,
+    # last_refusal_code and (with track_requests_count) refusals_count; a
+    # refusal never counts as a use. Debounced exactly like last_used_at, so a
+    # client hammering a refused key costs no more writes than a working one.
+    # Never raises: the refusal response has already been rendered.
+    def record_key_refusal(api_key, error_code)
+      return unless ApiKeys.configuration.enable_async_operations
+      return unless api_key&.id
+
+      code = error_code.to_s
+      return unless ApiKeys::ApiKey::REFUSAL_CODES.include?(code)
+      return unless ApiKeys::ApiKey.refusal_stats_columns?
+
+      if stats_update_debounced?(api_key.last_refused_at)
+        log_debug "[ApiKeys Auth] Skipping a recently recorded refusal update for ApiKey ID: #{api_key.id}"
+        return
+      end
+      unless reserve_stats_enqueue?(:refused, api_key.id)
+        log_debug "[ApiKeys Auth] Skipping a refusal update already enqueued for ApiKey ID: #{api_key.id}"
+        return
+      end
+
+      begin
+        # Active Job answers false (instead of raising) when the adapter
+        # failed to enqueue; either way the reservation is freed.
+        unless ApiKeys::Jobs::UpdateStatsJob.perform_later(api_key.id, Time.current, refusal_code: code)
+          release_stats_enqueue(:refused, api_key.id)
+          log_error "[ApiKeys Auth] A refusal stats update was not enqueued for key #{api_key.id}."
+        end
+      rescue StandardError
+        release_stats_enqueue(:refused, api_key.id)
+        raise
+      end
+    rescue StandardError => error
+      log_error "[ApiKeys Auth] Failed to enqueue a refusal stats update for key #{api_key&.id} (#{error.class})."
+    end
+
+    def stats_update_debounced?(last_recorded_at)
+      seconds = stats_debounce_seconds
+      return false unless seconds && last_recorded_at
+
+      last_recorded_at >= Time.current - seconds
+    end
+
+    # The debounce interval in seconds, or nil when every request must be
+    # recorded (exact counting with track_requests_count, or no interval).
+    def stats_debounce_seconds
       config = ApiKeys.configuration
-      return false if config.track_requests_count
+      return nil if config.track_requests_count
 
       interval = config.stats_update_interval
       seconds = interval.to_f if interval.respond_to?(:to_f)
-      return false unless seconds&.finite? && seconds.positive?
-      return false unless current_api_key.last_used_at
+      seconds&.finite? && seconds.positive? ? seconds : nil
+    end
 
-      current_api_key.last_used_at >= Time.current - seconds
+    # The persisted timestamp only debounces once a worker has written it, so
+    # a burst of requests arriving before that would each enqueue a job. With
+    # a shared cache, the first request in an interval reserves the enqueue
+    # for its key and kind (:used or :refused) atomically, with
+    # `write(..., unless_exist: true, expires_in: interval)`, and the rest of
+    # the burst is skipped.
+    #
+    # A request is skipped only when the reservation is confirmed to exist:
+    # the write answered false (not stored) and the key is then present.
+    # Stores also answer false or nil when the write itself failed (Redis
+    # returns nil on a handled error, Memcached false), and suppressing the
+    # job then would lose statistics silently. So a nil answer, an absent
+    # key, or any error enqueues. It also enqueues when debouncing does not
+    # apply or there is no shared cache (`NullStore`, or no Rails.cache):
+    # the persisted timestamp is then the only debounce, as before 0.6.0.
+    def reserve_stats_enqueue?(kind, api_key_id)
+      seconds = stats_debounce_seconds
+      return true unless seconds
+
+      cache = stats_enqueue_cache
+      return true unless cache
+
+      key = stats_enqueue_key(kind, api_key_id)
+      written = cache.write(key, true, unless_exist: true, expires_in: seconds)
+      return true unless written == false
+
+      cache.exist?(key) ? false : true
+    rescue StandardError => error
+      log_debug "[ApiKeys Auth] Stats enqueue reservation unavailable (#{error.class}); relying on the persisted timestamp."
+      true
+    end
+
+    # Frees a reservation whose job could not be enqueued, so the next
+    # request can try again.
+    def release_stats_enqueue(kind, api_key_id)
+      return unless stats_debounce_seconds
+
+      stats_enqueue_cache&.delete(stats_enqueue_key(kind, api_key_id))
+    rescue StandardError
+      nil
+    end
+
+    def stats_enqueue_key(kind, api_key_id)
+      "#{STATS_ENQUEUE_NAMESPACE}:#{kind}:#{api_key_id}"
+    end
+
+    # A cache every process shares can deduplicate; NullStore remembers nothing.
+    def stats_enqueue_cache
+      cache = Rails.cache if defined?(Rails) && Rails.respond_to?(:cache)
+      return nil if cache.nil? || cache.is_a?(ActiveSupport::Cache::NullStore)
+
+      cache
     end
 
     # Helper to safely enqueue callback jobs.

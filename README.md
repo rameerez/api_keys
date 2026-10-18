@@ -50,6 +50,15 @@ rails db:migrate
 
 New installations get this column from the start, so this is only for upgrades.
 
+To record refused requests on each key (see [Refused requests](#refused-requests-why-a-key-is-not-working)) and make the one-time token page durable (see [What "one-time" guarantees](#what-one-time-guarantees)), add the 0.6.0 columns in one migration:
+
+```bash
+rails generate api_keys:add_key_activity
+rails db:migrate
+```
+
+New installations get these columns from the start too. Until an existing app runs the migration, authentication keeps working exactly as before, refusals are simply not recorded, and the one-time token page relies on the cache marker alone, as in 0.5.1.
+
 ## Quick Start
 
 Just add `has_api_keys` to your desired model. For example, if you want your `User` records to have API keys, you'd have:
@@ -159,11 +168,12 @@ config.authenticate_owner_method = :ensure_team_access!
 Once configured, your users can:
 - self-issue new API keys
 - set expiration dates
-- attach scopes / permissions to individual keys (the edit form changes only the scopes it shows, the owner's default scopes, and keeps any other scope a key holds)
+- attach scopes / permissions to individual keys (the edit form changes only the scopes it shows, the owner's default scopes, keeps any other scope a key holds, and drops a held scope its type no longer allows; keys of a `scopes: :ceiling` type show their live permissions instead, on the creation form as soon as such a type is selected, and the dashboard never takes scopes for them)
 - add and edit the key names
 - lock a key to specific web origins or IP addresses
 - revoke instantly
 - see the status of all their keys
+- see when a key's requests are arriving but being refused, and why
 
 It provides an UI with everything you'd expect from an API keys dashboard, working right out of the box:
 
@@ -433,6 +443,7 @@ Methods available on `ApiKeys::ApiKey` instances:
 # Scopes
 @api_key.scopes                   # => ["read", "write"]
 @api_key.allows_scope?("read")    # => true
+@api_key.scopes_follow_ceiling?   # => true for `scopes: :ceiling` key types
 
 # Request restrictions (where the key may be used from)
 @api_key.allowed_origins          # => ["example.com", "*.example.com"]
@@ -446,6 +457,11 @@ Methods available on `ApiKeys::ApiKey` instances:
 @api_key.expires_at
 @api_key.last_used_at
 @api_key.requests_count           # If tracking enabled
+
+# Refused requests (the key's real token, refused by a policy)
+@api_key.last_refused_at          # => 2026-10-18 12:00:00 UTC, or nil
+@api_key.last_refusal_code        # => "origin_not_allowed", or nil
+@api_key.refusals_count           # If tracking enabled
 ```
 
 ---
@@ -470,21 +486,40 @@ ApiKeys::TokenSession.store(session, @api_key, key: :my_custom_key)
 )
 ```
 
-Treat the session payload as private implementation detail; use `store`, `available?`, and `retrieve_once` rather than reading it directly. A failed, expired, tampered, mismatched, or reused handoff returns `nil` and fails closed. Any retrieval attempt uses the handoff up, including one bound to the wrong key.
+Treat the session payload as private implementation detail; use `store`, `available?`, and `retrieve_once` rather than reading it directly. A failed, expired, tampered, mismatched, or reused handoff returns `nil` and fails closed. Every retrieval attempt outside a database transaction uses the handoff up, including one bound to the wrong key; an attempt refused inside a transaction (`:inside_transaction`, below) leaves it in the session for a retry outside it.
+
+To tell the owner *why* no token came back, use `retrieve_once_with_status`. It consumes the handoff exactly like `retrieve_once` and also returns a status: `:retrieved`, `:already_shown` (an earlier retrieval released this key's token, for example a replayed copy of the session), `:withheld` (the database or cache could not record the retrieval), `:inside_transaction` (see below), or `:missing`:
+
+```ruby
+retrieval = ApiKeys::TokenSession.retrieve_once_with_status(session, api_key: @api_key)
+if retrieval.retrieved?
+  @token = retrieval.token
+elsif retrieval.already_shown? || @api_key.token_shown?
+  redirect_to keys_path, alert: "This key's token was already shown."
+else
+  redirect_to keys_path, alert: "The token can only be shown right after creation."
+end
+```
 
 #### What "one-time" guarantees
 
 Deleting the payload makes the handoff one-time within that session: a refresh, or a second visit with the same session, shows nothing. A copy of the session taken *before* the token was shown is a different session. That is what a copied `CookieStore` cookie is, and what two requests racing with the same cookie are. Deleting the payload from one copy does nothing to the other.
 
-So each handoff also carries a random ID inside its encrypted payload, and the first retrieval records that ID in `Rails.cache` with `write(key, true, unless_exist: true, expires_in: 10.minutes)`. While the cache still holds that record, any later retrieval of the same handoff, from any copy of the session, finds it and returns `nil`.
+So from 0.6.0 the first retrieval also claims the key's `token_shown_at` column with one conditional statement:
 
-- **The token is released at most once only when both conditions hold:** every application process shares a store that implements `unless_exist:` atomically (Redis, Memcached), and that store keeps the record for the whole ten-minute handoff lifetime.
-- **The record lives only in the cache.** If the cache is flushed, restarted without persistence, or evicts the record within those ten minutes, a copy of the session taken before retrieval can recover the token again for the rest of that window. Recording consumption durably, in a database column, is the stronger design and is planned for 0.6.0.
-- **`MemoryStore`** only covers the process that holds it. **`FileStore`** checks and then writes, so it stops a later replay on the same host but not two requests that arrive at the same instant.
-- **Solid Cache** (Rails 8's default production store) implements `unless_exist:` as a `SELECT … FOR UPDATE` followed by an upsert. On PostgreSQL that locks nothing while the key does not exist yet, so two simultaneous first retrievals can both succeed. Sequential replays are still stopped.
-- **With `ActiveSupport::Cache::NullStore`** (what Rails' generated development and test environments use unless you toggle caching on), or with no `Rails.cache` at all, nothing can be recorded. The gem keeps the pre-0.5.1 behaviour: the session deletion is the only protection, and a copy of the session taken before retrieval can show the token again during its ten-minute lifetime.
-- **If the cache raises or refuses the write**, the token is withheld. The owner sees the "shown only once" message and creates a new key, which is safer than risking a second release.
-- **With a shared cache, a second request for the token page with the same cookie gets nothing**, even if the first response never reached the browser. A client that drops the first response (a timeout or a cancelled load) sees "shown only once" and needs a new key. That is the intended trade-off: a token can be lost, never shown twice.
+```sql
+UPDATE api_keys SET token_shown_at = <now> WHERE id = <key id> AND token_shown_at IS NULL
+```
+
+The database applies it atomically, and the claim commits before the token is returned, so exactly one retrieval of a key's handoff ever succeeds, across processes and across copies of the session, whatever happens to the cache. A later retrieval from any copy changes no row and returns `nil` (the dashboard says the token was already shown).
+
+- **With the column, the token is released at most once per key.** A cache flush, a restart, or an eviction changes nothing, and two simultaneous first retrievals are serialized by the database: one wins. `ApiKey#token_shown_at` and `#token_shown?` report it. A key whose row no longer exists gets nothing: zero rows claimed fails closed.
+- **A retrieval attempted inside a database transaction is refused, and can be retried outside it.** Inside a transaction the claim would commit only with it, after the token had been returned, and a rollback would undo it. No cache can stand in for that (a process-local store protects one process), so whatever the cache, the token is withheld with `:inside_transaction`, nothing is recorded, and the handoff stays in the session for a retrieval outside the transaction. The check is Active Record's transaction manager on the `ApiKey` connection: a transaction opened with raw SQL (`BEGIN`) is not detected, and one on another database's connection does not matter. The dashboard opens no transaction itself, but its controller inherits from your `ApplicationController` (or the configured parent): a host `around_action` that wraps requests in a transaction will see the refusal and must exclude the token page.
+- **The column is written only by that claim.** The model marks it read-only, so no form, mass assignment, or `update` can clear it and reopen a handoff.
+- **The cache marker from 0.5.1 stays as a second layer.** Each handoff carries a random ID inside its encrypted payload, and retrieval records it in `Rails.cache` with `write(key, true, unless_exist: true, expires_in: 10.minutes)`. With the column it refuses a release the claim did not see (a 0.5.1 process that served the token during a rolling deploy), and it is the only cross-copy layer for a handoff that names no key (`TokenSession.store(session, "a token string")`).
+- **Without the column** (an existing install that has not run `rails generate api_keys:add_key_activity`), the gem behaves as 0.5.1 and the marker is the only cross-copy layer. The token is then released at most once only when every application process shares a store that implements `unless_exist:` atomically (Redis, Memcached), and that store keeps the marker for the whole ten-minute handoff lifetime. If the cache is flushed, restarted without persistence, or evicts the marker within those ten minutes, a copy of the session taken before retrieval can recover the token again for the rest of that window. **`MemoryStore`** only covers the process that holds it. **`FileStore`** checks and then writes, so it stops a later replay on the same host but not two requests that arrive at the same instant. **Solid Cache** (Rails 8's default production store) implements `unless_exist:` as a `SELECT … FOR UPDATE` followed by an upsert; on PostgreSQL that locks nothing while the key does not exist yet, so two simultaneous first retrievals can both succeed. **`ActiveSupport::Cache::NullStore`** (Rails' generated development and test default), or no `Rails.cache` at all, records nothing, so the session deletion is the only protection.
+- **If the database or the cache raises or refuses the write**, the token is withheld. The owner sees the "shown only once" message and creates a new key, which is safer than risking a second release.
+- **A second request for the token page with the same cookie gets nothing**, even if the first response never reached the browser. A client that drops the first response (a timeout or a cancelled load) sees the "already shown" message and needs a new key. That is the intended trade-off: a token can be lost, never shown twice.
 
 None of this protects a session that has been stolen. Whoever holds a copy of the owner's session cookie can use the dashboard as that owner; the handoff is one-time, the session is not.
 
@@ -543,7 +578,7 @@ Renders a select dropdown with all expiration presets:
 
 #### `api_key_scopes_checkboxes`
 
-Renders scope checkboxes with a block for custom markup. Before the boxes it can render one empty `api_key[scopes][]` field: browsers omit unchecked boxes, so without it a form with every box cleared would send no scopes at all, and a new key would silently get the default scopes while an edited key would keep its old ones. With it, clearing every box submits `[""]`, which `create_api_key!` and `ApiKey#scopes=` read as "no scopes". The submitted list replaces the key's scopes, so render a box for every scope the key may hold.
+Renders scope checkboxes with a block for custom markup. Before the boxes it can render one empty `api_key[scopes][]` field: browsers omit unchecked boxes, so without it a form with every box cleared would send no scopes at all, and a new key would silently get the default scopes while an edited key would keep its old ones. With it, clearing every box submits `[""]`, which `create_api_key!` and `ApiKey#scopes=` read as "no scopes". The submitted list replaces the key's scopes, so render a box for every scope the key may hold, or save it through `ApiKey#scopes_after_form_edit` (below).
 
 By default the field is rendered only when there is at least one box and the form's key enforces its scopes (`@api_key.scopes_enforced?`). That is true for typed keys, whenever `key_types` or the global `config.default_scopes` are configured, and when the owner model's `has_api_keys` declares `default_scopes`. The key reads that last setting through its owner, so build it from the owner (`current_organization.api_keys.build`). A form with no object (`form_with scope: :api_key`) or on a bare `ApiKeys::ApiKey.new` cannot see per-owner defaults and renders no field: pass `include_hidden: true` there to render it whenever there is at least one box. Where scopes are not enforced at all, an empty list still means "unrestricted", so the default leaves the key's scopes as they were rather than widening it. Pass `include_hidden: false` only if you render the field yourself. When you iterate the returned data without a block, render `hidden_field_tag "api_key[scopes][]", "", id: nil` before the boxes under the same conditions.
 
@@ -565,6 +600,16 @@ By default the field is rendered only when there is at least one box and the for
 <% end %>
 
 <%# checked options: :all, :none, or an array of specific scopes %>
+```
+
+If your edit form offers only some scopes, saving the submitted list as is would strip every scope the form did not show. Save `ApiKey#scopes_after_form_edit(offered:, checked:)` instead, the rule the built-in dashboard uses: offered scopes follow their boxes, every other scope the key holds is kept, a submitted value that was never offered is ignored, and held scopes outside the key's current ceiling are dropped. Pass `checked: nil` when the request carried no scopes parameter at all. A `scopes: :ceiling` key gets its stored scopes back unchanged.
+
+```ruby
+def update
+  submitted = params.require(:api_key).permit(:name, scopes: [])
+  scopes = @api_key.scopes_after_form_edit(offered: @available_scopes, checked: submitted[:scopes])
+  @api_key.update(name: submitted[:name], scopes: scopes)
+end
 ```
 
 #### `api_key_token_data`
@@ -635,6 +680,14 @@ end
 
 <%= api_key_environment_label_from_token(@token) %>
 <%# => "Test mode", "Live mode", or "Default" %>
+```
+
+#### Refusal Helper
+
+```erb
+<%# Why the key's latest recorded refusal happened (nil if none) %>
+<%= api_key_refusal_reason(@key) %>
+<%# => "the request came from a web origin the key does not allow" %>
 ```
 
 ---
@@ -834,7 +887,7 @@ You can check if an API key is allowed to do actions by checking its scopes:
 # => true
 ```
 
-An empty scope list grants nothing whenever scopes are enforced: on typed keys, and when `key_types` or `default_scopes` are configured. On an untyped key in an app that configures neither, an empty list keeps its legacy meaning and allows every scope. So a key saved from the dashboard with every permission cleared becomes unrestricted if you later remove the owner's `default_scopes` (and the global ones) without using key types.
+An empty scope list grants nothing whenever scopes are enforced: on typed keys, and when `key_types` or `default_scopes` are configured. The exception is a key whose type uses `scopes: :ceiling`: its stored scopes are not consulted, so even with `scopes: []` it has exactly its type's live `permissions:` (see [Widening a ceiling does not reach existing keys](#widening-a-ceiling-does-not-reach-existing-keys)). On an untyped key in an app that configures neither, an empty list keeps its legacy meaning and allows every scope. So a key saved from the dashboard with every permission cleared becomes unrestricted if you later remove the owner's `default_scopes` (and the global ones) without using key types.
 
 ## Controllers: secure your API endpoints
 
@@ -1106,6 +1159,27 @@ config.stats_update_interval = 0         # record every successful request
 
 Enabling `track_requests_count` bypasses this debounce because every successful request must be counted. Set `enable_async_operations = false` if the application handles statistics and callbacks elsewhere and wants the gem to enqueue no background jobs.
 
+The debounce reads the stored `last_used_at`, which only moves once a worker has run the job. So that a burst of requests arriving before then does not enqueue one job each, the first request in an interval also reserves the enqueue for its key in `Rails.cache` with a conditional `write(..., unless_exist: true, expires_in: stats_update_interval)`, and the rest of the burst is skipped. That needs a cache every process shares whose `unless_exist:` is atomic, such as Redis or Memcached. Solid Cache implements `unless_exist:` as a `SELECT … FOR UPDATE` followed by an upsert, which on PostgreSQL locks nothing while the entry is absent (see [What "one-time" guarantees](#what-one-time-guarantees)), so requests that arrive at the same instant can each reserve and enqueue a job there. That costs a few extra stats jobs and nothing else: the rest of the interval is still deduplicated. A request is skipped only when its reservation is confirmed to exist, so a write that fails quietly (Redis answers `nil` on a handled error, Memcached `false`) never suppresses statistics. With `NullStore`, no `Rails.cache`, or a cache that fails, the stored timestamp is the only debounce, and a burst that arrives before the worker runs still enqueues one job per request.
+
+### Refused requests: why a key is not working
+
+A key can be perfectly valid and still be refused: an origin or IP lock, the wrong environment, a missing scope, a revoked or expired key. Refusals never touch `last_used_at` or `requests_count` (a refused request must not look like a working integration), so without anything else a key that is being used and refused would look exactly like a key nobody ever tried.
+
+The gem therefore records them separately, through the same background stats job as `last_used_at`:
+
+| Column | Meaning |
+|---|---|
+| `last_refused_at` | When the most recently recorded refusal happened |
+| `last_refusal_code` | Why: the `error_code` the client received, such as `origin_not_allowed`, `ip_not_allowed`, `environment_mismatch`, `missing_scope`, `revoked_key`, or `expired_key` |
+| `refusals_count` | How many refusals. Like `requests_count`, it is only kept with `track_requests_count = true` |
+
+The dashboard's key page then says *"Requests are arriving but refused: last at X, because Y"*, and the key list shows the latest refusal under "Last Used".
+
+- Only refusals of an identified key are recorded: the request presented the key's real token and a policy said no. A missing, malformed, or unknown token names no key and is never recorded, so nobody can write to a key's statistics without holding its token.
+- Refusal updates are debounced by `stats_update_interval` exactly like `last_used_at` (so within one interval you see the first refusal's code), including the cache reservation that stops a burst from enqueueing one job per request before the worker runs, and every refusal is recorded when `track_requests_count` is on. A client hammering a refused key costs no more writes than a working one; without a shared cache it can still queue one job per request until the first job has run.
+- `enable_async_operations = false` turns them off with every other job.
+- New installs get the columns from the start. Existing installs run `rails generate api_keys:add_key_activity`; until then, authentication is unchanged and refusals are not recorded.
+
 ## Key Types: Stripe-style Publishable & Secret Keys
 
 For applications that distribute software with embedded API keys (desktop apps, mobile apps, CLI tools), you may want to differentiate between key types with different permission levels. The `api_keys` gem supports Stripe-style publishable/secret key types with optional test/live environment isolation.
@@ -1131,6 +1205,7 @@ ApiKeys.configure do |config|
     publishable: {
       prefix: "pk",                    # Token prefix → pk_test_, pk_live_
       permissions: %w[read validate],  # Scope ceiling (max permissions allowed)
+      # scopes: :ceiling,              # Optional: see "Widening a ceiling" below
       public: true,                    # Store token so it remains viewable
       limit: 1,                        # Max 1 per owner per environment
       restrictions: [:origins]         # May be locked to domains, not to IPs
@@ -1199,6 +1274,45 @@ sk = user.create_api_key!(
 )
 sk.scopes  # => ["read", "validate", "issue_license", "admin"]
 ```
+
+### Widening a ceiling does not reach existing keys
+
+> [!WARNING]
+> Each key stores its `scopes` when it is created. **Widening a key type's `permissions:` later does not touch the keys that already exist.** Add `heartbeat` to your publishable keys and every existing publishable key keeps its old list: it answers `403 missing_scope` on the new endpoint while freshly created keys work. Nothing fails loudly, and the key itself is valid, so it looks like a bug in your client. (Narrowing is safe either way: a scope above the current ceiling is denied at request time.)
+
+There are two ways out.
+
+**Make the ceiling the contract.** For key types whose users do not pick scopes (auto-created keys, `limit: 1`, the publishable-key pattern), opt the type into ceiling-authoritative scopes:
+
+```ruby
+config.key_types = {
+  publishable: {
+    prefix: "pk",
+    permissions: %w[read validate heartbeat],
+    scopes: :ceiling,    # every pk key has exactly these permissions, now and after you edit them
+    public: true,
+    limit: 1
+  },
+  secret: { prefix: "sk", permissions: :all }   # stored scopes, as before
+}
+```
+
+With `scopes: :ceiling`, every scope check for keys of that type (`authenticate_api_key!(scope:)`, `allows_scope?`, `allows_permission?`) reads the live `permissions:` list instead of the key's stored scopes:
+
+- Widening `permissions:` reaches every existing key on its next request, and narrowing it takes effect just as fast.
+- Every key of the type has exactly the ceiling, including a key created with an empty or narrower scope list. Do not opt in a type whose users choose scopes per key: their choices would stop mattering.
+- Stored `scopes` stay on the row as metadata and are still validated against the ceiling whenever they are written. The dashboard shows the live permissions for these keys and stops offering scope checkboxes, both on the edit form and on the creation form once such a type is selected. It never takes scopes for them: on create, submitted scopes are ignored and the key stores the type's current ceiling; on edit, submitted scopes are ignored and stored scopes above a narrowed ceiling stay as they are (other types drop them on the next save). Renaming such a key or tightening its restrictions still saves.
+- `scopes: :ceiling` requires a finite, non-empty `permissions` list. `permissions: :all` raises when the configuration loads.
+- Removing `scopes: :ceiling` later can only narrow: keys go back to their stored scopes, still capped by the ceiling.
+- Every other key type, untyped legacy keys, and keys whose type is no longer configured behave exactly as before.
+
+**Or backfill the stored scopes** right after widening a type that keeps stored scopes, for example in the same deploy:
+
+```ruby
+ApiKeys.reconcile_scopes!(key_type: :publishable) # => number of keys that gained scopes
+```
+
+It adds the type's current `permissions:` to the stored scopes of every non-revoked key of that type and never removes anything. Because it also re-adds permissions a user removed on purpose, only run it for types whose users do not curate scopes. It raises for an unknown type or a `permissions: :all` ceiling, and skips any row whose stored scopes are malformed.
 
 ### Non-Revocable Keys
 
