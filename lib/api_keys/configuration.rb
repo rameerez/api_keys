@@ -46,12 +46,17 @@ module ApiKeys
     #
     # @!attribute [rw] client_ip_resolver
     #   @return [#call] Callable receiving the request and returning the client
-    #     IP address used to evaluate a key's `allowed_ips` list. The default
-    #     honors Rails' trusted-proxy handling via `request.remote_ip`; behind a
-    #     CDN, configure `config.action_dispatch.trusted_proxies` whenever
-    #     possible. A resolver that trusts a vendor header is safe only when
-    #     network ingress rejects requests that bypass that vendor.
-    #   @example
+    #     IP address used to evaluate a key's `allowed_ips` list. The default,
+    #     `request.remote_ip`, is right only behind a proxy that is the sole way
+    #     in, rewrites `X-Forwarded-For`, and is covered by
+    #     `config.action_dispatch.trusted_proxies`. When the Rails server is
+    #     directly reachable, a client can forge `X-Forwarded-For`; resolve the
+    #     socket peer with `request.remote_addr` instead. A resolver that trusts
+    #     a vendor header is safe only when network ingress rejects requests
+    #     that bypass that vendor.
+    #   @example Directly reachable server
+    #     config.client_ip_resolver = ->(request) { request.remote_addr }
+    #   @example Behind Cloudflare, with direct origin access blocked
     #     config.client_ip_resolver = ->(request) { request.headers.fetch("CF-Connecting-IP") }
     attr_reader :client_ip_resolver
 

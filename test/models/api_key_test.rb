@@ -28,6 +28,14 @@ module ApiKeys
         assert api_key.active?
       end
 
+      def configure_typed_keys(types)
+        ApiKeys.configure do |config|
+          config.key_types = types
+          config.environments = { test: { prefix_segment: "test" } }
+          config.current_environment = :test
+        end
+      end
+
       test "token is only available immediately after create" do
         api_key = ApiKeys::ApiKey.create!(owner: @user, name: "Mask Test")
         token = api_key.token
@@ -492,6 +500,96 @@ module ApiKeys
         end
         assert api_key.revoked?
         assert_not api_key.active?
+      end
+
+      # 0.5.1: revocation must not depend on unrelated validations. Narrowing a
+      # key type's ceiling leaves already-issued keys with scopes or
+      # restrictions the new policy would reject; those keys keep
+      # authenticating (within the narrower ceiling), so they must stay
+      # revocable.
+      test "revoke! succeeds after the key type's permission ceiling is narrowed" do
+        configure_typed_keys(secret: { prefix: "sk", permissions: %w[read write] })
+        key = @user.create_api_key!(name: "Wide", key_type: :secret, scopes: %w[read write])
+        configure_typed_keys(secret: { prefix: "sk", permissions: %w[read] })
+        key = ApiKeys::ApiKey.find(key.id)
+        refute key.valid?, "precondition: the stored scopes now exceed the ceiling"
+        assert key.allows_scope?("read"), "precondition: the key still works within the ceiling"
+
+        key.revoke!
+
+        assert ApiKeys::ApiKey.find(key.id).revoked?
+      end
+
+      test "revoke! succeeds after the key type's restriction ceiling is narrowed" do
+        configure_typed_keys(secret: { prefix: "sk", permissions: :all, restrictions: [:ips] })
+        key = @user.create_api_key!(name: "Locked", key_type: :secret, allowed_ips: "10.0.0.0/8")
+        configure_typed_keys(secret: { prefix: "sk", permissions: :all, restrictions: [] })
+        key = ApiKeys::ApiKey.find(key.id)
+        refute key.valid?, "precondition: the stored restriction kind is now forbidden"
+
+        key.revoke!
+
+        assert ApiKeys::ApiKey.find(key.id).revoked?
+      end
+
+      test "revoke! writes only the revocation and still runs save callbacks" do
+        key = ApiKeys::ApiKey.create!(owner: @user, name: "Audited", scopes: %w[read])
+        key.update_column(:scopes, %w[read bad\ scope]) # stored data a validation would reject now
+        key = ApiKeys::ApiKey.find(key.id)
+        seen = []
+        callback = ->(record) { seen << record.saved_changes.keys.sort }
+        ApiKeys::ApiKey.after_save(callback)
+
+        freeze_time do
+          key.revoke!
+          assert_equal Time.current, key.reload.revoked_at
+        end
+
+        assert_equal [%w[revoked_at updated_at]], seen
+        assert_equal ["read", "bad scope"], key.scopes
+      ensure
+        ApiKeys::ApiKey.skip_callback(:save, :after, callback) if callback
+      end
+
+      test "revoke! never writes other pending edits without validating them" do
+        configure_typed_keys(secret: { prefix: "sk", permissions: %w[read] })
+        key = @user.create_api_key!(name: "Reader", key_type: :secret, scopes: %w[read])
+        key = ApiKeys::ApiKey.find(key.id)
+        key.scopes = %w[read admin] # an unsaved widening the ceiling forbids
+
+        assert_raises(ActiveRecord::RecordInvalid) { key.revoke! }
+
+        stored = ApiKeys::ApiKey.find(key.id)
+        assert_equal %w[read], stored.scopes
+        refute stored.revoked?
+      end
+
+      test "revoke! keeps the revocability guard" do
+        configure_typed_keys(permanent: { prefix: "pk", permissions: %w[read], revocable: false })
+        key = @user.create_api_key!(name: "Permanent", key_type: :permanent)
+
+        assert_raises(ApiKeys::Errors::KeyNotRevocableError) { key.revoke! }
+        refute ApiKeys::ApiKey.find(key.id).revoked?
+      end
+
+      test "scopes_enforced? is false only where an empty scope list means unrestricted" do
+        unscoped = ApiKeys::ApiKey.create!(owner: @user, name: "Unscoped")
+        refute unscoped.scopes_enforced?
+        assert unscoped.allows_scope?("anything"), "legacy meaning of an empty list without configured scopes"
+
+        ApiKeys.configuration.default_scopes = %w[read]
+        assert ApiKeys::ApiKey.find(unscoped.id).scopes_enforced?
+
+        ApiKeys.reset_configuration!
+        settings = User.api_keys_settings.merge(default_scopes: %w[read].freeze).freeze
+        User.stubs(:api_keys_settings).returns(settings)
+        assert ApiKeys::ApiKey.find(unscoped.id).scopes_enforced?
+        User.unstub(:api_keys_settings)
+
+        configure_typed_keys(secret: { prefix: "sk", permissions: :all })
+        typed = @user.create_api_key!(name: "Typed", key_type: :secret, scopes: [])
+        assert typed.scopes_enforced?
+        refute typed.allows_scope?("anything")
       end
 
       test "expired? and active? check expiry date" do

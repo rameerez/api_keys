@@ -316,6 +316,79 @@ module ApiKeys
         assert_equal :revoked_key, result.error_code
       end
 
+      test "a key revoked after its type ceiling narrowed is refused, including through a warm token cache" do
+        configure = lambda do |permissions|
+          ApiKeys.configure do |config|
+            config.key_types = { secret: { prefix: "sk", permissions: permissions } }
+            config.environments = { test: { prefix_segment: "test" } }
+            config.current_environment = :test
+          end
+        end
+        configure.call(%w[read write])
+        key = @user.create_api_key!(name: "Wide", key_type: :secret, scopes: %w[read write])
+        token = key.token
+        Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
+        request = mock_request(headers: { "Authorization" => "Bearer #{token}" })
+        assert Authenticator.call(request).success?, "warms the token cache"
+        assert Rails.cache.read("api_keys:v2:token:#{Digest::SHA256.hexdigest(token)}"), "cache is warm"
+
+        configure.call(%w[read])
+        stored = ApiKeys::ApiKey.find(key.id)
+        assert Authenticator.call(request).success?, "precondition: the key still authenticates"
+        refute stored.valid?, "precondition: the stored scopes exceed the narrowed ceiling"
+
+        stored.revoke!
+        result = Authenticator.call(request)
+
+        refute result.success?
+        assert_equal :revoked_key, result.error_code
+        assert_equal key.id, result.api_key&.id
+      end
+
+      # 0.5.1: the raw header is checked for encoding and size before any
+      # parsing, so hostile bytes answer the ordinary credential failure.
+      test "an invalid UTF-8 authorization header is an invalid token, not an exception" do
+        mock_cache
+        ["Bearer \xFF\xFEabc", "\xC3\x28", "Bearer #{@token}\xFF"].each do |raw|
+          header = raw.dup.force_encoding(Encoding::UTF_8)
+          refute header.valid_encoding?, "precondition: #{raw.inspect} is invalid UTF-8"
+
+          result = Authenticator.call(mock_request(headers: { "Authorization" => header }))
+
+          refute result.success?
+          assert_equal :invalid_token, result.error_code
+          assert_nil result.api_key
+        end
+      end
+
+      test "an oversized authorization header is refused without being parsed" do
+        header = "Bearer #{"a" * 4096}"
+        header.expects(:match).never
+        ApiKeys::ApiKey.expects(:find_by).never
+
+        result = Authenticator.call(mock_request(headers: { "Authorization" => header }))
+
+        refute result.success?
+        assert_equal :invalid_token, result.error_code
+      end
+
+      test "a header at the size limit is still parsed" do
+        padded = "Bearer#{' ' * (Authenticator::MAX_CREDENTIAL_HEADER_BYTESIZE - 'Bearer'.bytesize - @token.bytesize)}#{@token}"
+        assert_equal Authenticator::MAX_CREDENTIAL_HEADER_BYTESIZE, padded.bytesize
+
+        assert Authenticator.call(mock_request(headers: { "Authorization" => padded })).success?
+      end
+
+      test "a whitespace-only authorization header is an invalid token" do
+        mock_cache
+        ["", " ", "   ", "\t", "Bearer", "Bearer ", "Bearer \t  "].each do |header|
+          result = Authenticator.call(mock_request(headers: { "Authorization" => header }))
+
+          refute result.success?, header.inspect
+          assert_equal :invalid_token, result.error_code, header.inspect
+        end
+      end
+
       test "returns failure for expired key" do
         @api_key.update_column(:expires_at, 1.hour.ago)
         request = mock_request(headers: { "Authorization" => "Bearer #{@token}" })

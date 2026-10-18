@@ -159,7 +159,7 @@ config.authenticate_owner_method = :ensure_team_access!
 Once configured, your users can:
 - self-issue new API keys
 - set expiration dates
-- attach scopes / permissions to individual keys
+- attach scopes / permissions to individual keys (the edit form changes only the scopes it shows, the owner's default scopes, and keeps any other scope a key holds)
 - add and edit the key names
 - lock a key to specific web origins or IP addresses
 - revoke instantly
@@ -392,7 +392,7 @@ current_org.can_create_api_key?(key_type: :publishable)
 @api_key = current_org.create_api_key!(
   name: "My Key",
   key_type: :secret,                    # or :publishable
-  scopes: ["read", "write"],            # Blank values auto-removed
+  scopes: ["read", "write"],            # Blank values auto-removed; [] means none, omit for defaults
   expires_at: 30.days.from_now,         # Explicit date
   expires_at_preset: "30_days",         # OR use preset (takes precedence)
   environment: :live,                   # Defaults to current_environment
@@ -470,7 +470,23 @@ ApiKeys::TokenSession.store(session, @api_key, key: :my_custom_key)
 )
 ```
 
-Treat the session payload as private implementation detail; use `store`, `available?`, and `retrieve_once` rather than reading it directly. A failed, expired, tampered, mismatched, or reused handoff returns `nil` and fails closed.
+Treat the session payload as private implementation detail; use `store`, `available?`, and `retrieve_once` rather than reading it directly. A failed, expired, tampered, mismatched, or reused handoff returns `nil` and fails closed. Any retrieval attempt uses the handoff up, including one bound to the wrong key.
+
+#### What "one-time" guarantees
+
+Deleting the payload makes the handoff one-time within that session: a refresh, or a second visit with the same session, shows nothing. A copy of the session taken *before* the token was shown is a different session. That is what a copied `CookieStore` cookie is, and what two requests racing with the same cookie are. Deleting the payload from one copy does nothing to the other.
+
+So each handoff also carries a random ID inside its encrypted payload, and the first retrieval records that ID in `Rails.cache` with `write(key, true, unless_exist: true, expires_in: 10.minutes)`. While the cache still holds that record, any later retrieval of the same handoff, from any copy of the session, finds it and returns `nil`.
+
+- **The token is released at most once only when both conditions hold:** every application process shares a store that implements `unless_exist:` atomically (Redis, Memcached), and that store keeps the record for the whole ten-minute handoff lifetime.
+- **The record lives only in the cache.** If the cache is flushed, restarted without persistence, or evicts the record within those ten minutes, a copy of the session taken before retrieval can recover the token again for the rest of that window. Recording consumption durably, in a database column, is the stronger design and is planned for 0.6.0.
+- **`MemoryStore`** only covers the process that holds it. **`FileStore`** checks and then writes, so it stops a later replay on the same host but not two requests that arrive at the same instant.
+- **Solid Cache** (Rails 8's default production store) implements `unless_exist:` as a `SELECT … FOR UPDATE` followed by an upsert. On PostgreSQL that locks nothing while the key does not exist yet, so two simultaneous first retrievals can both succeed. Sequential replays are still stopped.
+- **With `ActiveSupport::Cache::NullStore`** (what Rails' generated development and test environments use unless you toggle caching on), or with no `Rails.cache` at all, nothing can be recorded. The gem keeps the pre-0.5.1 behaviour: the session deletion is the only protection, and a copy of the session taken before retrieval can show the token again during its ten-minute lifetime.
+- **If the cache raises or refuses the write**, the token is withheld. The owner sees the "shown only once" message and creates a new key, which is safer than risking a second release.
+- **With a shared cache, a second request for the token page with the same cookie gets nothing**, even if the first response never reached the browser. A client that drops the first response (a timeout or a cancelled load) sees "shown only once" and needs a new key. That is the intended trade-off: a token can be lost, never shown twice.
+
+None of this protects a session that has been stolen. Whoever holds a copy of the owner's session cookie can use the dashboard as that owner; the handoff is one-time, the session is not.
 
 ---
 
@@ -527,7 +543,9 @@ Renders a select dropdown with all expiration presets:
 
 #### `api_key_scopes_checkboxes`
 
-Renders scope checkboxes with a block for custom markup:
+Renders scope checkboxes with a block for custom markup. Before the boxes it can render one empty `api_key[scopes][]` field: browsers omit unchecked boxes, so without it a form with every box cleared would send no scopes at all, and a new key would silently get the default scopes while an edited key would keep its old ones. With it, clearing every box submits `[""]`, which `create_api_key!` and `ApiKey#scopes=` read as "no scopes". The submitted list replaces the key's scopes, so render a box for every scope the key may hold.
+
+By default the field is rendered only when there is at least one box and the form's key enforces its scopes (`@api_key.scopes_enforced?`). That is true for typed keys, whenever `key_types` or the global `config.default_scopes` are configured, and when the owner model's `has_api_keys` declares `default_scopes`. The key reads that last setting through its owner, so build it from the owner (`current_organization.api_keys.build`). A form with no object (`form_with scope: :api_key`) or on a bare `ApiKeys::ApiKey.new` cannot see per-owner defaults and renders no field: pass `include_hidden: true` there to render it whenever there is at least one box. Where scopes are not enforced at all, an empty list still means "unrestricted", so the default leaves the key's scopes as they were rather than widening it. Pass `include_hidden: false` only if you render the field yourself. When you iterate the returned data without a block, render `hidden_field_tag "api_key[scopes][]", "", id: nil` before the boxes under the same conditions.
 
 ```erb
 <%# With block - you control the HTML, gem handles the logic %>
@@ -816,6 +834,8 @@ You can check if an API key is allowed to do actions by checking its scopes:
 # => true
 ```
 
+An empty scope list grants nothing whenever scopes are enforced: on typed keys, and when `key_types` or `default_scopes` are configured. On an untyped key in an app that configures neither, an empty list keeps its legacy meaning and allows every scope. So a key saved from the dashboard with every permission cleared becomes unrestricted if you later remove the owner's `default_scopes` (and the global ones) without using key types.
+
 ## Controllers: secure your API endpoints
 
 To add the `api_keys` functionality to your controllers, just use the `ApiKeys::Controller` concern and you'll have all controller methods available:
@@ -939,11 +959,12 @@ When using key types, here's how the prefix is determined:
 | `key_types` Config | `key_type` Param | Resulting Prefix |
 |-------------------|------------------|------------------|
 | `{}` (disabled) | any | Uses `token_prefix` → `"ak_..."` |
-| Configured | `nil` | Uses `token_prefix` → `"ak_..."` |
+| Configured | `nil`, with `default_key_type` set | Uses the default type's config → e.g. `"sk_live_..."` |
+| Configured | `nil`, no `default_key_type` | Not created: `create_api_key!` raises `ArgumentError` ("key_type is required when key types are configured") |
 | Configured | `:publishable` | Uses type config → `"pk_test_..."` |
 | Configured | `:secret` | Uses type config → `"sk_live_..."` |
 
-In short: `token_prefix` is only used when key types are not configured OR when creating a key without specifying a `key_type`. When you specify both `key_types` config and a `key_type` parameter, the prefix comes entirely from the key type configuration.
+In short: `token_prefix` is only used when key types are not configured. Once you configure `key_types`, every new key needs a type, either passed as `key_type` or taken from `config.default_key_type`, and its prefix comes entirely from that type's configuration. Untyped keys issued before you configured key types keep the prefix they were issued with and keep authenticating.
 
 See the [Key Types](#key-types-stripe-style-publishable--secret-keys) section below for full details.
 
@@ -1362,7 +1383,8 @@ Origin input is deliberately forgiving: full URLs, trailing slashes, ports, comm
 |---|---|
 | Within one list | **OR** — any entry that matches admits the request |
 | Across both lists | **AND** — every list that has entries must pass |
-| Empty (or absent) lists | **Unrestricted** — presence is the toggle, so existing keys are unaffected |
+| Empty (or absent) lists | **Unrestricted** — presence is the toggle, so existing keys are unaffected. A kind given as `nil` or blank text (to `allowed_origins=` / `allowed_ips=`, `restrictions=`, or `create_api_key!(restrictions:)`) clears that list. In a stored row only `[]` or an absent kind means empty: a stored `null` is malformed |
+| Malformed values | It depends on the path. The `allowed_origins=` / `allowed_ips=` writers parse raw text, so `nil`, blank text, and blank members such as `[""]` clear the list, while `false`, numbers, objects, and `nil` members fail validation. A restrictions hash (`restrictions=`, `create_api_key!(restrictions:)`) clears a kind given as `nil` or blank text, and refuses a kind given as `false`, a number, or an object, and `null`, `false`, numbers, objects, or blank strings inside a list. Stored rows are read strictly: a row holding any of these, or a `null` or blank kind, refuses every request with `restriction_misconfigured`, and the dashboard shows the stored entries so a save is refused until they are corrected. Malformed never means unrestricted |
 | `example.com` | Matches that exact host. Case-insensitive, port-blind, scheme-blind |
 | `*.example.com` | Matches `a.example.com` and `a.b.example.com`, but **not** the apex `example.com`. List both to cover both |
 | `*` alone | Invalid. An empty list already means "anywhere" |
@@ -1389,7 +1411,20 @@ Omitting `restrictions:` allows both kinds. `restrictions: []` forbids restricti
 
 ### Resolving the client IP
 
-IP checks use `request.remote_ip`, which honors Rails' `config.action_dispatch.trusted_proxies`. Configure that Rails setting for your reverse proxy or CDN and keep the default resolver whenever possible.
+An IP allowlist is only as truthful as the address it is checked against, and the gem cannot see how your servers are deployed. The default resolver is `request.remote_ip`. Rails computes it from the `X-Forwarded-For` header whenever that header is present, so it is right in one deployment shape and spoofable in the other.
+
+**Behind a proxy (keep the default).** Your load balancer, reverse proxy, or CDN is the only way to reach Rails. It overwrites `X-Forwarded-For`, or appends the address it actually saw, and its addresses are covered by `config.action_dispatch.trusted_proxies` (Rails already trusts private and loopback ranges). Rails then skips the trusted hops and resolves the real client, and an entry the client forged ends up behind the one your proxy added.
+
+**Directly reachable (use the socket peer).** Clients connect straight to Puma or another Rails server, or your proxy can be bypassed. Then a client can send `X-Forwarded-For: 203.0.113.7` and `request.remote_ip` answers `203.0.113.7`, passing an allowlist that contains it. Resolve the TCP peer instead, which a client cannot choose:
+
+```ruby
+# config/initializers/api_keys.rb
+config.client_ip_resolver = ->(request) { request.remote_addr }
+```
+
+**`trusted_proxies` alone is not a boundary.** It tells Rails which hops to skip; it does not stop a client that reaches Rails directly from sending the header. If your proxy can be bypassed, close that path at the network layer (firewall or security group) or use the socket-peer resolver.
+
+The test suite exercises both shapes through Rails' real `ActionDispatch::RemoteIp` middleware.
 
 Only read a vendor header directly when your network ingress rejects requests that did not come through that vendor. Otherwise a client can send the same header and choose the address your allowlist sees:
 
@@ -1407,7 +1442,7 @@ The mounted dashboard renders only the expiration and request-restriction fields
 ### Security notes
 
 - `Origin` and `Referer` are **browser-enforced** headers. They are trustworthy coming from a real browser and trivially forged by `curl`. Origin restrictions are a browser-context control: they stop a lifted public key from working on someone else's *website*. They are not secrecy. Pair them with keys that cannot spend anything dangerous.
-- IP restrictions inherit the truthfulness of their resolver. Configure Rails' `trusted_proxies`; only trust a CDN-supplied header when direct access to the origin is blocked, or callers can spoof the address being checked.
+- IP restrictions inherit the truthfulness of their resolver. Behind a proxy that is the only way in, keep `request.remote_ip` and list the proxy in `trusted_proxies`. If Rails is reachable directly, resolve `request.remote_addr`, or callers can choose the address being checked with `X-Forwarded-For` (see [Resolving the client IP](#resolving-the-client-ip)). Only trust a CDN-supplied header when direct access to the origin is blocked.
 - Everything fails closed: a locked list plus an unreadable request context, an unknown policy kind, or malformed stored policy data is a refusal, never a pass.
 - Refusals never echo the configured allowlist back to the caller. Reflecting your domains to an unauthenticated attacker would be a reconnaissance gift. If you want a more explicit message, override it through i18n (`api_keys.errors.origin_not_allowed`).
 - Restriction checks read the current database row on every request, cache or no cache. Tightening the origins of a leaked publishable key takes effect on the very next call.

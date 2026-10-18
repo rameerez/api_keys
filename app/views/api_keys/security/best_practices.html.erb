@@ -24,7 +24,7 @@
         <li><strong>Assume anyone can copy and abuse them</strong> from browser JavaScript, mobile apps, or public code</li>
         <li><strong>Grant only public-safe operations</strong> and enforce authorization server-side for every permission</li>
         <li><strong>Always visible</strong> &mdash; you can view the full key anytime in your dashboard</li>
-        <li><strong>Cannot be revoked individually</strong> &mdash; maintain an application-level disable/replacement procedure</li>
+        <li><strong>Revoke and replace a leaked key</strong> &mdash; publishable keys can be revoked like any other key, unless their key type is configured with <code>revocable: false</code>; keep an application-level disable/replacement procedure for those</li>
       </ul>
     </section>
   <% end %>

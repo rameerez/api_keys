@@ -4,7 +4,8 @@ module ApiKeys
   # Controller for managing API keys belonging to the current owner.
   class KeysController < ApplicationController
     before_action :set_api_key, only: [:show, :edit, :update, :revoke]
-    helper_method :key_types_feature_enabled?, :api_keys_allowed_restriction_kinds
+    helper_method :key_types_feature_enabled?, :api_keys_allowed_restriction_kinds,
+                  :dashboard_scope_choices, :restriction_field_text
 
     # GET /keys
     def index
@@ -54,6 +55,9 @@ module ApiKeys
     # POST /keys
     def create
       submitted_params = api_key_params
+      # If creation fails, the re-rendered form shows these instead of
+      # re-checking every scope the owner had cleared.
+      @submitted_scopes = submitted_params[:scopes]
 
       # Use the HasApiKeys helper method to create the key
       begin
@@ -100,7 +104,17 @@ module ApiKeys
 
     # PATCH/PUT /keys/:id
     def update
-      if @api_key.update(api_key_update_params)
+      attributes = api_key_update_params
+      if attributes.key?(:scopes)
+        attributes[:scopes] = scopes_after_editing_offered_choices(attributes[:scopes])
+      elsif held_scopes_within_ceiling != Array(@api_key.scopes)
+        # No scope boxes were shown, but the key still holds a scope its type
+        # no longer allows; without dropping it no edit could ever be saved.
+        attributes[:scopes] = held_scopes_within_ceiling
+      end
+      skip_untouched_restriction_fields!(attributes)
+
+      if @api_key.update(attributes)
         redirect_to keys_path, notice: "API key updated successfully."
       else
         flash.now[:alert] = "Failed to update API key: #{@api_key.errors.full_messages.join(', ')}"
@@ -139,8 +153,89 @@ module ApiKeys
 
       permitted_params = submitted.permit(:name, :expires_at_preset, :key_type,
                                           :allowed_origins, :allowed_ips, scopes: [])
-      permitted_params[:scopes]&.reject!(&:blank?) # Filter out blank strings
+      normalize_submitted_scopes!(permitted_params)
+    end
+
+    # Each scope checkbox group renders an empty sentinel (`scopes[]=""`), so a
+    # submitted form always carries the parameter. Stripping blanks turns the
+    # sentinel alone into `[]`: the owner cleared every box and means "none",
+    # and the model's validations decide whether that is allowed. Only an
+    # absent parameter (`nil`) means "not specified": create_api_key! then
+    # applies the default scopes and update leaves the current ones alone.
+    def normalize_submitted_scopes!(permitted_params)
+      permitted_params[:scopes]&.reject!(&:blank?)
       permitted_params
+    end
+
+    # The scopes the dashboard offers as checkboxes: the owner's configured
+    # default scopes. The form renders exactly this list, and an update edits
+    # only scopes in it.
+    #
+    # @return [Array<String>]
+    def dashboard_scope_choices
+      Array(current_api_keys_owner.class.api_keys_settings.dig(:default_scopes))
+    end
+
+    # The edit form can only speak for the scopes it showed. Checked choices
+    # are granted and unchecked ones removed; any other scope the key holds
+    # (for example one granted programmatically, or a type permission outside
+    # the owner's defaults) is kept, in its current order. A submitted value
+    # that was never offered is ignored.
+    #
+    # A held scope outside the key's current ceiling is dropped, whether
+    # offered or not: authentication already denies it, so no access changes,
+    # and keeping it would make every save of the key (a rename, or tightening
+    # a non-revocable key's origins) fail the ceiling validation. A newly
+    # checked scope outside the ceiling is kept, so validation reports it.
+    #
+    # @param submitted [Array<String>] Checked boxes, sentinel already stripped.
+    # @return [Array<String>]
+    def scopes_after_editing_offered_choices(submitted)
+      offered = dashboard_scope_choices
+      held = Array(@api_key.scopes)
+      kept = held_scopes_within_ceiling.select { |scope| !offered.include?(scope) || submitted.include?(scope) }
+      added = offered.select { |scope| submitted.include?(scope) && !held.include?(scope) }
+      kept + added
+    end
+
+    # The key's scopes without those its current ceiling excludes.
+    #
+    # @return [Array<String>]
+    def held_scopes_within_ceiling
+      Array(@api_key.scopes).select { |scope| @api_key.scope_within_ceiling?(scope) }
+    end
+
+    # The text the form puts in a restriction field. Usable entries appear as
+    # they are stored; anything else a stored policy holds (null, false, a
+    # number, a blank string) is shown as JSON, so the owner can see it.
+    #
+    # @return [String]
+    def restriction_field_text(api_key, kind)
+      api_key.restrictions.public_send(kind).map do |entry|
+        if entry.is_a?(String) && entry.valid_encoding? && !entry.strip.empty?
+          entry
+        else
+          begin
+            JSON.generate(entry)
+          rescue StandardError
+            entry.inspect
+          end
+        end
+      end.join(", ")
+    end
+
+    # A restriction field submitted exactly as it was rendered was not
+    # touched, so its kind is left alone. Re-parsing the text would rewrite
+    # the stored list, and a malformed stored entry could come back as an
+    # empty (unrestricted) list or as a different, valid one. Left alone, a
+    # malformed stored policy keeps failing validation, so the save is refused
+    # until the owner corrects the field.
+    def skip_untouched_restriction_fields!(attributes)
+      { allowed_origins: :origins, allowed_ips: :ips }.each do |field, kind|
+        next unless attributes.key?(field)
+
+        attributes.delete(field) if attributes[field] == restriction_field_text(@api_key, kind)
+      end
     end
 
     # Only allow updating name, scopes, and request restrictions.
@@ -151,7 +246,7 @@ module ApiKeys
       raise ActionController::ParameterMissing, :api_key unless submitted.respond_to?(:permit)
 
       permitted_params = submitted.permit(:name, :allowed_origins, :allowed_ips, scopes: [])
-      permitted_params[:scopes]&.reject!(&:blank?) # Filter out blank strings
+      normalize_submitted_scopes!(permitted_params)
       permitted_params.delete(:allowed_origins) unless ApiKeys::ApiKey.restrictions_column?
       permitted_params.delete(:allowed_ips) unless ApiKeys::ApiKey.restrictions_column?
       permitted_params

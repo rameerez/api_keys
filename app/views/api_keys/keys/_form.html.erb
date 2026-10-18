@@ -64,20 +64,26 @@
       %>
     </div>
 
-    <%# This assumes a variable `@available_scopes` is passed to the view, %>
-    <%# containing an array of scope strings allowed for this context. %>
-    <%# This list might come from global configuration or owner-specific settings. %>
-    <%# Example: @available_scopes = ["read", "write", "admin"] %>
-    <% @available_scopes = current_api_keys_owner.class.api_keys_settings.dig(:default_scopes) %>
-    <% if defined?(@available_scopes) && @available_scopes.present? %>
+    <%# The offered scopes are the owner's default scopes. The controller reads %>
+    <%# the same list (dashboard_scope_choices) when it saves the form. %>
+    <% @available_scopes = dashboard_scope_choices %>
+    <% if @available_scopes.present? %>
       <div>
         <%= form.label :scopes, "Permissions" %>
+        <%# Browsers omit unchecked boxes, so clearing every box would send no scopes %>
+        <%# parameter at all and the key would silently get the defaults. This empty %>
+        <%# sentinel makes "none" explicit; blank values are stripped server-side. %>
+        <%# (Scopes are configured here, so an empty list grants nothing.) %>
+        <%= hidden_field_tag "#{form.object_name}[scopes][]", "", id: nil if api_key.scopes_enforced? %>
+        <%# A fresh form starts with every scope checked; after a failed submission %>
+        <%# it shows exactly what was submitted, so a cleared box stays cleared. %>
+        <% submitted_scopes = @submitted_scopes %>
         <% @available_scopes.each do |scope| %>
           <div class="form-check">
             <%= form.check_box :scopes,
                                { multiple: true, # Submits as an array
                                  class: "form-check-input",
-                                 checked: true,
+                                 checked: submitted_scopes.nil? || submitted_scopes.include?(scope),
                                  id: "api_key_scopes_#{scope.parameterize}" }, # Unique ID
                                scope, # Value submitted when checked
                                nil # Value submitted when unchecked (not needed here)
@@ -99,19 +105,35 @@
       <%= form.text_field :name %>
     </div>
 
-    <%# Define available scopes for the edit form context %>
-    <%# This assumes the available scopes are the same as the default ones. %>
-    <%# Consider passing @available_scopes from the controller if logic is more complex. %>
-    <% @available_scopes = current_api_keys_owner.class.api_keys_settings.dig(:default_scopes) %>
-    <% if defined?(@available_scopes) && @available_scopes.present? %>
+    <%# The edit form offers the owner's default scopes and edits only those: %>
+    <%# saving keeps every other scope the key holds, except scopes its type no %>
+    <%# longer allows (see the controller's scopes_after_editing_offered_choices). %>
+    <% @available_scopes = dashboard_scope_choices %>
+    <% dropped_scopes = Array(api_key.scopes).reject { |scope| api_key.scope_within_ceiling?(scope) } %>
+    <% if dropped_scopes.any? %>
+      <small class="api-keys-form-help">
+        <%= safe_join(dropped_scopes.map { |scope| content_tag(:code, scope) }, ", ") %>
+        <%= dropped_scopes.one? ? "is" : "are" %> no longer allowed for this key and will be removed when you save.
+      </small>
+    <% end %>
+    <% if @available_scopes.present? %>
       <div>
         <%= form.label :scopes, "Permissions / Scopes" %>
+        <%# Empty sentinel: clearing every box must remove every offered scope, not keep the old ones. %>
+        <%= hidden_field_tag "#{form.object_name}[scopes][]", "", id: nil if api_key.scopes_enforced? %>
+        <% kept_scopes = Array(api_key.scopes) - @available_scopes - dropped_scopes %>
+        <% if kept_scopes.any? %>
+          <small class="api-keys-form-help">
+            This key also holds <%= safe_join(kept_scopes.map { |scope| content_tag(:code, scope) }, ", ") %>,
+            which this form does not change.
+          </small>
+        <% end %>
         <% @available_scopes.each do |scope| %>
           <div class="form-check">
             <%= form.check_box :scopes,
                                { multiple: true, # Submits as an array
                                  class: "form-check-input",
-                                 checked: api_key.scopes&.include?(scope), # Check if scope is already assigned
+                                 checked: api_key.scopes&.include?(scope) && !dropped_scopes.include?(scope),
                                  id: "api_key_scopes_#{scope.parameterize}_edit" }, # Unique ID for edit form
                                scope, # Value submitted when checked
                                nil # Value submitted when unchecked (not needed here)
