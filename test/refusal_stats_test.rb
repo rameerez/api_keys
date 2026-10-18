@@ -297,6 +297,32 @@ class RefusalStatsTest < ApiKeys::Test
     assert_equal 2, refusal_jobs.length
   end
 
+  # A write that answers nil or false without storing anything is a failed
+  # write, not an existing reservation: suppressing the job would lose the
+  # statistics silently.
+  test "a cache whose writes fail quietly never suppresses stats" do
+    {
+      "nil (RedisCacheStore on a handled error)" => ->(cache) { cache.stubs(:write).returns(nil) },
+      "false with nothing stored (MemCacheStore on an error)" => ->(cache) { cache.stubs(:write).returns(false) },
+      "false, and the existence check raises" => lambda do |cache|
+        cache.stubs(:write).returns(false)
+        cache.stubs(:exist?).raises(IOError, "cache unavailable")
+      end
+    }.each_with_index do |(label, break_cache), index|
+      clear_enqueued_jobs
+      cache = ActiveSupport::Cache::MemoryStore.new
+      break_cache.call(cache)
+      debounce_with_cache(cache)
+      key = @user.create_api_key!(name: "Quiet failure #{index}", allowed_origins: "example.com")
+
+      3.times { authenticate(key.token, origin: "https://elsewhere.example") }
+      3.times { authenticate(key.token, origin: "https://example.com") }
+
+      assert_equal 3, refusal_jobs.length, label
+      assert_equal 3, usage_jobs.length, label
+    end
+  end
+
   test "exact counting is never deduplicated" do
     Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
     ApiKeys.configuration.stats_update_interval = 1.hour # track_requests_count stays on

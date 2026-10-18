@@ -220,10 +220,16 @@ module ApiKeys
     # a shared cache, the first request in an interval reserves the enqueue
     # for its key and kind (:used or :refused) atomically, with
     # `write(..., unless_exist: true, expires_in: interval)`, and the rest of
-    # the burst is skipped. Answers true (enqueue) when debouncing does not
-    # apply, when there is no shared cache (`NullStore`, or no Rails.cache),
-    # or when the cache raises: the persisted timestamp is then the only
-    # debounce, as before 0.6.0.
+    # the burst is skipped.
+    #
+    # A request is skipped only when the reservation is confirmed to exist:
+    # the write answered false (not stored) and the key is then present.
+    # Stores also answer false or nil when the write itself failed (Redis
+    # returns nil on a handled error, Memcached false), and suppressing the
+    # job then would lose statistics silently. So a nil answer, an absent
+    # key, or any error enqueues. It also enqueues when debouncing does not
+    # apply or there is no shared cache (`NullStore`, or no Rails.cache):
+    # the persisted timestamp is then the only debounce, as before 0.6.0.
     def reserve_stats_enqueue?(kind, api_key_id)
       seconds = stats_debounce_seconds
       return true unless seconds
@@ -231,7 +237,11 @@ module ApiKeys
       cache = stats_enqueue_cache
       return true unless cache
 
-      cache.write(stats_enqueue_key(kind, api_key_id), true, unless_exist: true, expires_in: seconds) ? true : false
+      key = stats_enqueue_key(kind, api_key_id)
+      written = cache.write(key, true, unless_exist: true, expires_in: seconds)
+      return true unless written == false
+
+      cache.exist?(key) ? false : true
     rescue StandardError => error
       log_debug "[ApiKeys Auth] Stats enqueue reservation unavailable (#{error.class}); relying on the persisted timestamp."
       true
