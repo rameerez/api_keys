@@ -105,7 +105,13 @@ module ApiKeys
     # PATCH/PUT /keys/:id
     def update
       attributes = api_key_update_params
-      attributes[:scopes] = scopes_after_editing_offered_choices(attributes[:scopes]) if attributes.key?(:scopes)
+      if attributes.key?(:scopes)
+        attributes[:scopes] = scopes_after_editing_offered_choices(attributes[:scopes])
+      elsif held_scopes_within_ceiling != Array(@api_key.scopes)
+        # No scope boxes were shown, but the key still holds a scope its type
+        # no longer allows; without dropping it no edit could ever be saved.
+        attributes[:scopes] = held_scopes_within_ceiling
+      end
       skip_untouched_restriction_fields!(attributes)
 
       if @api_key.update(attributes)
@@ -176,14 +182,27 @@ module ApiKeys
     # the owner's defaults) is kept, in its current order. A submitted value
     # that was never offered is ignored.
     #
+    # A held scope outside the key's current ceiling is dropped, whether
+    # offered or not: authentication already denies it, so no access changes,
+    # and keeping it would make every save of the key (a rename, or tightening
+    # a non-revocable key's origins) fail the ceiling validation. A newly
+    # checked scope outside the ceiling is kept, so validation reports it.
+    #
     # @param submitted [Array<String>] Checked boxes, sentinel already stripped.
     # @return [Array<String>]
     def scopes_after_editing_offered_choices(submitted)
       offered = dashboard_scope_choices
-      current = Array(@api_key.scopes)
-      kept = current.select { |scope| !offered.include?(scope) || submitted.include?(scope) }
-      added = offered.select { |scope| submitted.include?(scope) && !current.include?(scope) }
+      held = Array(@api_key.scopes)
+      kept = held_scopes_within_ceiling.select { |scope| !offered.include?(scope) || submitted.include?(scope) }
+      added = offered.select { |scope| submitted.include?(scope) && !held.include?(scope) }
       kept + added
+    end
+
+    # The key's scopes without those its current ceiling excludes.
+    #
+    # @return [Array<String>]
+    def held_scopes_within_ceiling
+      Array(@api_key.scopes).select { |scope| @api_key.scope_within_ceiling?(scope) }
     end
 
     # The text the form puts in a restriction field. Usable entries appear as

@@ -106,15 +106,22 @@
     </div>
 
     <%# The edit form offers the owner's default scopes and edits only those: %>
-    <%# saving keeps every other scope the key holds (see the controller's %>
-    <%# scopes_after_editing_offered_choices). %>
+    <%# saving keeps every other scope the key holds, except scopes its type no %>
+    <%# longer allows (see the controller's scopes_after_editing_offered_choices). %>
     <% @available_scopes = dashboard_scope_choices %>
+    <% dropped_scopes = Array(api_key.scopes).reject { |scope| api_key.scope_within_ceiling?(scope) } %>
+    <% if dropped_scopes.any? %>
+      <small class="api-keys-form-help">
+        <%= safe_join(dropped_scopes.map { |scope| content_tag(:code, scope) }, ", ") %>
+        <%= dropped_scopes.one? ? "is" : "are" %> no longer allowed for this key and will be removed when you save.
+      </small>
+    <% end %>
     <% if @available_scopes.present? %>
       <div>
         <%= form.label :scopes, "Permissions / Scopes" %>
         <%# Empty sentinel: clearing every box must remove every offered scope, not keep the old ones. %>
         <%= hidden_field_tag "#{form.object_name}[scopes][]", "", id: nil if api_key.scopes_enforced? %>
-        <% kept_scopes = Array(api_key.scopes) - @available_scopes %>
+        <% kept_scopes = Array(api_key.scopes) - @available_scopes - dropped_scopes %>
         <% if kept_scopes.any? %>
           <small class="api-keys-form-help">
             This key also holds <%= safe_join(kept_scopes.map { |scope| content_tag(:code, scope) }, ", ") %>,
@@ -126,7 +133,7 @@
             <%= form.check_box :scopes,
                                { multiple: true, # Submits as an array
                                  class: "form-check-input",
-                                 checked: api_key.scopes&.include?(scope), # Check if scope is already assigned
+                                 checked: api_key.scopes&.include?(scope) && !dropped_scopes.include?(scope),
                                  id: "api_key_scopes_#{scope.parameterize}_edit" }, # Unique ID for edit form
                                scope, # Value submitted when checked
                                nil # Value submitted when unchecked (not needed here)

@@ -388,6 +388,19 @@ module ApiKeys
       scope_policy_enabled?
     end
 
+    # Whether a scope is inside this key's current permission ceiling: its
+    # type's `permissions:`, or the configured scopes for an untyped key.
+    # A held scope outside it (left behind when a ceiling was narrowed) is
+    # already denied by `allows_scope?` and fails the ceiling validation on
+    # the next save.
+    #
+    # @param scope [String, Symbol]
+    # @return [Boolean]
+    def scope_within_ceiling?(scope)
+      ceiling = permission_ceiling
+      ceiling == :all || ceiling.include?(scope.to_s)
+    end
+
     # Alias for scopes - provides a more user-friendly API that matches
     # the configuration DSL where key types use `permissions` for scope ceiling.
     # Note: We use a method instead of alias_method because `scopes` is defined

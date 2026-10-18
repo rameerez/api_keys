@@ -494,6 +494,96 @@ module ApiKeys
       end
     end
 
+    # A kept scope that a narrowed ceiling excludes used to make every save of
+    # the key fail the ceiling validation (422), even a rename, and even the
+    # origin tightening a non-revocable key relies on. Authentication already
+    # denies such a scope, so the save drops it.
+    test "a rename drops a kept scope that a narrowed ceiling excludes" do
+      configure_key_types(secret: %w[read write admin])
+      with_owner_default_scopes(%w[read write]) do
+        key = @user.create_api_key!(name: "Admin Key", key_type: :secret, scopes: %w[read admin])
+        configure_key_types(secret: %w[read write])
+        refute ApiKeys::ApiKey.find(key.id).valid?, "precondition: admin now exceeds the ceiling"
+
+        get :edit, params: { id: key.id }
+        edit_html = response.body
+        submission = browser_submission(edit_html) do |form|
+          form.at_css('input[name="api_key[name]"]')["value"] = "Renamed"
+        end
+        patch :update, params: submission.merge("id" => key.id)
+
+        assert_redirected_to keys_path
+        key.reload
+        assert_equal "Renamed", key.name
+        assert_equal %w[read], key.scopes
+        notes = Nokogiri::HTML(edit_html).css("small.api-keys-form-help").map { |note| note.text.squish }
+        assert_includes notes, "admin is no longer allowed for this key and will be removed when you save."
+      end
+    end
+
+    test "a non-revocable key can still tighten its origins after its ceiling narrowed" do
+      configure_key_types(secret: %w[read], permanent: %w[read write admin])
+      with_owner_default_scopes(%w[read write]) do
+        key = @user.create_api_key!(name: "Permanent", key_type: :permanent, scopes: %w[read admin])
+        configure_key_types(secret: %w[read], permanent: %w[read write])
+        refute ApiKeys::ApiKey.find(key.id).revocable?
+
+        get :edit, params: { id: key.id }
+        submission = browser_submission(response.body) do |form|
+          form.at_css('input[name="api_key[allowed_origins]"]')["value"] = "example.com"
+        end
+        patch :update, params: submission.merge("id" => key.id)
+
+        assert_redirected_to keys_path
+        key.reload
+        assert_equal %w[read], key.scopes
+        assert_equal ["example.com"], key.allowed_origins
+      end
+    end
+
+    test "a held offered scope the ceiling now excludes is dropped even though its box was checked" do
+      configure_key_types(secret: %w[read write])
+      with_owner_default_scopes(%w[read write]) do
+        key = @user.create_api_key!(name: "Writer", key_type: :secret, scopes: %w[read write])
+        configure_key_types(secret: %w[read])
+
+        get :edit, params: { id: key.id }
+        edit_html = response.body
+        patch :update, params: { id: key.id, api_key: { name: "Writer", scopes: ["", "read", "write"] } }
+
+        assert_redirected_to keys_path
+        assert_equal %w[read], key.reload.scopes
+        assert_nil Nokogiri::HTML(edit_html).at_css('input[type="checkbox"][value="write"][checked]'),
+                   "the form shows the box unchecked, matching what a save keeps"
+      end
+    end
+
+    test "a save without scope boxes still drops scopes the ceiling excludes" do
+      configure_key_types(secret: %w[read admin])
+      key = @user.create_api_key!(name: "Admin Key", key_type: :secret, scopes: %w[read admin])
+      configure_key_types(secret: %w[read])
+
+      get :edit, params: { id: key.id }
+      assert_select 'input[type="checkbox"][name="api_key[scopes][]"]', count: 0
+      patch :update, params: browser_submission(response.body).merge("id" => key.id)
+
+      assert_redirected_to keys_path
+      assert_equal %w[read], key.reload.scopes
+    end
+
+    test "a newly checked scope outside the ceiling is still refused" do
+      configure_key_types(secret: %w[read write])
+      with_owner_default_scopes(%w[read write admin]) do
+        key = @user.create_api_key!(name: "Reader", key_type: :secret, scopes: %w[read])
+
+        patch :update, params: { id: key.id, api_key: { name: "Reader", scopes: ["", "read", "admin"] } }
+
+        assert_response :unprocessable_entity
+        assert_includes flash[:alert], "exceed the configured permission ceiling"
+        assert_equal %w[read], key.reload.scopes
+      end
+    end
+
     # =========================================================================
     # 0.5.1: a stored malformed policy survives a rename only as a refusal
     # =========================================================================
@@ -664,6 +754,16 @@ module ApiKeys
     def configure_secret_type(permissions:)
       ApiKeys.configure do |config|
         config.key_types = { secret: { prefix: "sk", permissions: permissions } }
+        config.environments = { test: { prefix_segment: "test" } }
+        config.current_environment = :test
+      end
+    end
+
+    def configure_key_types(secret:, permanent: nil)
+      types = { secret: { prefix: "sk", permissions: secret } }
+      types[:permanent] = { prefix: "pk", permissions: permanent, revocable: false } if permanent
+      ApiKeys.configure do |config|
+        config.key_types = types
         config.environments = { test: { prefix_segment: "test" } }
         config.current_environment = :test
       end
