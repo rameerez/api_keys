@@ -317,6 +317,34 @@ module ApiKeys
         assert_nil TokenSession.retrieve_once(@session, api_key_id: 8)
       end
 
+      # Documented limitation, pinned so it stays visible: the consumption
+      # marker lives only in the cache. If the cache loses it (flush, restart,
+      # eviction) within the handoff lifetime, a copy of the session taken
+      # before retrieval recovers the token again. Durable consumption state
+      # is planned for 0.6.0; when it lands, this test must flip.
+      test "losing the consumption marker re-opens replay for the rest of the handoff lifetime" do
+        cache = ActiveSupport::Cache::MemoryStore.new
+        use_cache(cache)
+        TokenSession.store(@session, bound_key("marker_lost_token", 11))
+        copied_cookie = @session.deep_dup
+        second_copy = @session.deep_dup
+        late_copy = @session.deep_dup
+
+        assert_equal "marker_lost_token", TokenSession.retrieve_once(@session, api_key_id: 11)
+        assert_nil TokenSession.retrieve_once(copied_cookie, api_key_id: 11), "replay is stopped while the marker exists"
+
+        cache.clear
+
+        assert_equal "marker_lost_token", TokenSession.retrieve_once(second_copy, api_key_id: 11),
+                     "without the marker, a pre-retrieval copy recovers the token again"
+
+        travel TokenSession::HANDOFF_TTL + 1.second do
+          cache.clear
+          assert_nil TokenSession.retrieve_once(late_copy, api_key_id: 11),
+                     "the window closes when the handoff itself expires"
+        end
+      end
+
       test "handoffs written before 0.5.1 are also one-time" do
         use_cache(ActiveSupport::Cache::MemoryStore.new)
         @session[:api_keys_new_token] = {
