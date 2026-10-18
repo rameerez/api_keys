@@ -433,6 +433,50 @@ module ApiKeys
       ceiling == :all || ceiling.include?(scope.to_s)
     end
 
+    # The scopes to save after a form that offered only some scopes as
+    # checkboxes was submitted: the rule the dashboard's edit form uses, for
+    # host forms built with `api_key_scopes_checkboxes`.
+    #
+    # - Offered scopes are set from the boxes: checked ones are granted,
+    #   unchecked ones removed.
+    # - Every other scope the key holds is kept, in its current order.
+    # - A checked value that was never offered is ignored, so a crafted
+    #   request cannot grant it.
+    # - A held scope outside the key's current ceiling is dropped, offered or
+    #   not. Authentication already denies it, and keeping it would make every
+    #   save of the key fail the ceiling validation. A newly checked scope
+    #   outside the ceiling is kept, so the validation reports it.
+    # - `checked: nil` means the form submitted no scopes at all (no boxes and
+    #   no sentinel): nothing is granted or removed except held scopes outside
+    #   the ceiling.
+    # - A `scopes: :ceiling` key returns its stored scopes unchanged: they are
+    #   metadata there, and the type's live ceiling authorizes the key.
+    #
+    # It only computes the list; assign it (`key.update(scopes: ...)`) to save.
+    #
+    # @param offered [Array<String, Symbol>] The scopes the form rendered as boxes.
+    # @param checked [Array<String, Symbol>, nil] The submitted values; blank
+    #   entries (the sentinel) are ignored.
+    # @return [Array<String>]
+    # @raise [ArgumentError] when +offered+ or +checked+ is not an Array (or nil for +checked+).
+    def scopes_after_form_edit(offered:, checked:)
+      raise ArgumentError, "offered must be an Array of scope names" unless offered.is_a?(Array)
+      unless checked.nil? || checked.is_a?(Array)
+        raise ArgumentError, "checked must be an Array of scope names, or nil when no scopes were submitted"
+      end
+      return scopes.deep_dup if scopes_follow_ceiling?
+
+      offered = checked.nil? ? [] : offered.map(&:to_s)
+      checked = Array(checked).reject { |scope| scope.respond_to?(:blank?) && scope.blank? }.map(&:to_s)
+      held = Array(scopes)
+
+      kept = held.select do |scope|
+        scope_within_ceiling?(scope) && (!offered.include?(scope) || checked.include?(scope))
+      end
+      added = offered.select { |scope| checked.include?(scope) && !held.include?(scope) }
+      kept + added
+    end
+
     # Alias for scopes - provides a more user-friendly API that matches
     # the configuration DSL where key types use `permissions` for scope ceiling.
     # Note: We use a method instead of alias_method because `scopes` is defined

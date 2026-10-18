@@ -577,7 +577,7 @@ Renders a select dropdown with all expiration presets:
 
 #### `api_key_scopes_checkboxes`
 
-Renders scope checkboxes with a block for custom markup. Before the boxes it can render one empty `api_key[scopes][]` field: browsers omit unchecked boxes, so without it a form with every box cleared would send no scopes at all, and a new key would silently get the default scopes while an edited key would keep its old ones. With it, clearing every box submits `[""]`, which `create_api_key!` and `ApiKey#scopes=` read as "no scopes". The submitted list replaces the key's scopes, so render a box for every scope the key may hold.
+Renders scope checkboxes with a block for custom markup. Before the boxes it can render one empty `api_key[scopes][]` field: browsers omit unchecked boxes, so without it a form with every box cleared would send no scopes at all, and a new key would silently get the default scopes while an edited key would keep its old ones. With it, clearing every box submits `[""]`, which `create_api_key!` and `ApiKey#scopes=` read as "no scopes". The submitted list replaces the key's scopes, so render a box for every scope the key may hold, or save it through `ApiKey#scopes_after_form_edit` (below).
 
 By default the field is rendered only when there is at least one box and the form's key enforces its scopes (`@api_key.scopes_enforced?`). That is true for typed keys, whenever `key_types` or the global `config.default_scopes` are configured, and when the owner model's `has_api_keys` declares `default_scopes`. The key reads that last setting through its owner, so build it from the owner (`current_organization.api_keys.build`). A form with no object (`form_with scope: :api_key`) or on a bare `ApiKeys::ApiKey.new` cannot see per-owner defaults and renders no field: pass `include_hidden: true` there to render it whenever there is at least one box. Where scopes are not enforced at all, an empty list still means "unrestricted", so the default leaves the key's scopes as they were rather than widening it. Pass `include_hidden: false` only if you render the field yourself. When you iterate the returned data without a block, render `hidden_field_tag "api_key[scopes][]", "", id: nil` before the boxes under the same conditions.
 
@@ -599,6 +599,16 @@ By default the field is rendered only when there is at least one box and the for
 <% end %>
 
 <%# checked options: :all, :none, or an array of specific scopes %>
+```
+
+If your edit form offers only some scopes, saving the submitted list as is would strip every scope the form did not show. Save `ApiKey#scopes_after_form_edit(offered:, checked:)` instead, the rule the built-in dashboard uses: offered scopes follow their boxes, every other scope the key holds is kept, a submitted value that was never offered is ignored, and held scopes outside the key's current ceiling are dropped. Pass `checked: nil` when the request carried no scopes parameter at all. A `scopes: :ceiling` key gets its stored scopes back unchanged.
+
+```ruby
+def update
+  submitted = params.require(:api_key).permit(:name, scopes: [])
+  scopes = @api_key.scopes_after_form_edit(offered: @available_scopes, checked: submitted[:scopes])
+  @api_key.update(name: submitted[:name], scopes: scopes)
+end
 ```
 
 #### `api_key_token_data`

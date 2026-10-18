@@ -121,12 +121,13 @@ module ApiKeys
         # scopes outside a narrowed ceiling are kept: the model lets such a key
         # save as long as its scopes are not written.
         attributes.delete(:scopes)
-      elsif attributes.key?(:scopes)
-        attributes[:scopes] = scopes_after_editing_offered_choices(attributes[:scopes])
-      elsif held_scopes_within_ceiling != Array(@api_key.scopes)
-        # No scope boxes were shown, but the key still holds a scope its type
-        # no longer allows; without dropping it no edit could ever be saved.
-        attributes[:scopes] = held_scopes_within_ceiling
+      else
+        # The form speaks only for the scopes it offered (see
+        # ApiKey#scopes_after_form_edit). Without a scopes parameter (no boxes
+        # were shown) it still drops held scopes the current ceiling excludes,
+        # or no edit of such a key could ever be saved.
+        edited = @api_key.scopes_after_form_edit(offered: dashboard_scope_choices, checked: attributes[:scopes])
+        attributes[:scopes] = edited if attributes.key?(:scopes) || edited != Array(@api_key.scopes)
       end
       skip_untouched_restriction_fields!(attributes)
 
@@ -190,35 +191,6 @@ module ApiKeys
     # @return [Array<String>]
     def dashboard_scope_choices
       Array(current_api_keys_owner.class.api_keys_settings.dig(:default_scopes))
-    end
-
-    # The edit form can only speak for the scopes it showed. Checked choices
-    # are granted and unchecked ones removed; any other scope the key holds
-    # (for example one granted programmatically, or a type permission outside
-    # the owner's defaults) is kept, in its current order. A submitted value
-    # that was never offered is ignored.
-    #
-    # A held scope outside the key's current ceiling is dropped, whether
-    # offered or not: authentication already denies it, so no access changes,
-    # and keeping it would make every save of the key (a rename, or tightening
-    # a non-revocable key's origins) fail the ceiling validation. A newly
-    # checked scope outside the ceiling is kept, so validation reports it.
-    #
-    # @param submitted [Array<String>] Checked boxes, sentinel already stripped.
-    # @return [Array<String>]
-    def scopes_after_editing_offered_choices(submitted)
-      offered = dashboard_scope_choices
-      held = Array(@api_key.scopes)
-      kept = held_scopes_within_ceiling.select { |scope| !offered.include?(scope) || submitted.include?(scope) }
-      added = offered.select { |scope| submitted.include?(scope) && !held.include?(scope) }
-      kept + added
-    end
-
-    # The key's scopes without those its current ceiling excludes.
-    #
-    # @return [Array<String>]
-    def held_scopes_within_ceiling
-      Array(@api_key.scopes).select { |scope| @api_key.scope_within_ceiling?(scope) }
     end
 
     # The text the form puts in a restriction field. Usable entries appear as

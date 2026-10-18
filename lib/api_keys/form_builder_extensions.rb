@@ -71,7 +71,9 @@ module ApiKeys
     #   scopes while an update would keep the old ones. With the sentinel the
     #   server receives `[""]`, which `ApiKey#scopes=` and `create_api_key!`
     #   read as "no scopes". The submitted list replaces the key's scopes, so
-    #   render a box for every scope the key may hold.
+    #   render a box for every scope the key may hold, or save it through
+    #   `ApiKey#scopes_after_form_edit(offered:, checked:)`, which edits only
+    #   the offered scopes and keeps the rest.
     #   - nil (default): render it when there is at least one box and the
     #     form's key enforces its scopes (`ApiKey#scopes_enforced?`). Elsewhere
     #     an empty list would mean "unrestricted" and clearing the boxes would

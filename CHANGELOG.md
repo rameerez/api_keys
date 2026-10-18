@@ -9,6 +9,7 @@
 - `ApiKeys::TokenSession.retrieve_once_with_status` consumes a handoff exactly like `retrieve_once` and also says why no token came back (`:already_shown`, `:withheld`, `:missing`). The dashboard's token page uses it: a replayed copy of the session, or a refresh after the token was shown, now says the token was already shown.
 - `rails generate api_keys:add_key_activity` for existing installations: one idempotent migration with every 0.6.0 column (`last_refused_at`, `refusals_count`, `last_refusal_code`, `token_shown_at`). New installs create the columns from the start.
 - `ApiKeys::ViewHelpers#api_key_refusal_reason` explains a key's latest refusal for custom dashboards.
+- `ApiKey#scopes_after_form_edit(offered:, checked:)`: the dashboard's 0.5.1 edit rule as a public method for host forms built with `api_key_scopes_checkboxes`. Offered scopes follow their boxes, every other held scope is kept, an unoffered submitted value is ignored, and held scopes outside the current ceiling are dropped; a `scopes: :ceiling` key gets its stored scopes back unchanged. The dashboard now calls it.
 
 ### Changed
 

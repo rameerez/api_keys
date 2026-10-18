@@ -114,7 +114,7 @@
     <%# offers nothing to edit; the controller ignores scopes submitted for it. %>
     <%# Any other key gets the owner's default scopes as boxes, and a save edits %>
     <%# only those: it keeps every other scope the key holds, except scopes its %>
-    <%# type no longer allows (see the controller's scopes_after_editing_offered_choices). %>
+    <%# type no longer allows (ApiKey#scopes_after_form_edit). %>
     <% @available_scopes = dashboard_scope_choices %>
     <% dropped_scopes = api_key.scopes_follow_ceiling? ? [] : Array(api_key.scopes).reject { |scope| api_key.scope_within_ceiling?(scope) } %>
     <% if dropped_scopes.any? %>
