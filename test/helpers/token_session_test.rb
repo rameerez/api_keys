@@ -458,11 +458,28 @@ module ApiKeys
           "ApiKey.transaction" => ->(&work) { ApiKeys::ApiKey.transaction(&work) },
           "ActiveRecord::Base.transaction" => ->(&work) { ActiveRecord::Base.transaction(&work) },
           "a host model's transaction on the same database" => ->(&work) { User.transaction(&work) },
-          "a savepoint (requires_new)" => lambda { |&work|
-            ApiKeys::ApiKey.transaction { ApiKeys::ApiKey.transaction(requires_new: true, &work) }
+          # The outer transaction writes first: an untouched one would be
+          # restarted instead of getting a physical savepoint.
+          "a savepoint (requires_new) under a dirtied transaction" => lambda { |&work|
+            ApiKeys::ApiKey.transaction do
+              User.create!(name: "Outer write")
+              ApiKeys::ApiKey.transaction(requires_new: true) do
+                assert_current_transaction_is_a_savepoint
+                work.call
+              end
+            end
           },
-          "a non-joinable inner transaction" => lambda { |&work|
-            User.transaction { ApiKeys::ApiKey.transaction(joinable: false, &work) }
+          "a savepoint inside a non-joinable transaction" => lambda { |&work|
+            User.transaction(joinable: false) do
+              User.create!(name: "Non-joinable outer write")
+              ApiKeys::ApiKey.connection_pool.with_connection do |connection|
+                refute connection.current_transaction.joinable?, "precondition: the outer transaction is non-joinable"
+              end
+              ApiKeys::ApiKey.transaction(requires_new: true) do
+                assert_current_transaction_is_a_savepoint
+                work.call
+              end
+            end
           }
         }.each_with_index do |(label, wrap), index|
           id = 420 + index
@@ -475,6 +492,13 @@ module ApiKeys
           assert_equal :inside_transaction, retrieval.status, label
           refute ApiKeys::ApiKey.find(id).token_shown?, label
           assert_equal "nested_token_#{index}", TokenSession.retrieve_once(session, api_key_id: id), label
+        end
+      end
+
+      def assert_current_transaction_is_a_savepoint
+        ApiKeys::ApiKey.connection_pool.with_connection do |connection|
+          assert_kind_of ActiveRecord::ConnectionAdapters::SavepointTransaction, connection.current_transaction,
+                         "precondition: a physical savepoint, not a joined or restarted transaction"
         end
       end
 

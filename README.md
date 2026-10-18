@@ -486,7 +486,7 @@ ApiKeys::TokenSession.store(session, @api_key, key: :my_custom_key)
 )
 ```
 
-Treat the session payload as private implementation detail; use `store`, `available?`, and `retrieve_once` rather than reading it directly. A failed, expired, tampered, mismatched, or reused handoff returns `nil` and fails closed. Any retrieval attempt uses the handoff up, including one bound to the wrong key.
+Treat the session payload as private implementation detail; use `store`, `available?`, and `retrieve_once` rather than reading it directly. A failed, expired, tampered, mismatched, or reused handoff returns `nil` and fails closed. Every retrieval attempt outside a database transaction uses the handoff up, including one bound to the wrong key; an attempt refused inside a transaction (`:inside_transaction`, below) leaves it in the session for a retry outside it.
 
 To tell the owner *why* no token came back, use `retrieve_once_with_status`. It consumes the handoff exactly like `retrieve_once` and also returns a status: `:retrieved`, `:already_shown` (an earlier retrieval released this key's token, for example a replayed copy of the session), `:withheld` (the database or cache could not record the retrieval), `:inside_transaction` (see below), or `:missing`:
 
