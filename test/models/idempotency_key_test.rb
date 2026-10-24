@@ -120,14 +120,14 @@ class IdempotencyKeyTest < ApiKeys::Test
     ]
 
     timeouts.each do |timeout|
-      Key.stubs(:waiting_at_most).raises(timeout)
+      Key.stubs(:waiting_at_most_lock_timeout).raises(timeout)
       assert_raises(Key::Busy, timeout.message) { Key.hold(@api_key, "busy") { flunk "the write must not run" } }
-      Key.unstub(:waiting_at_most)
+      Key.unstub(:waiting_at_most_lock_timeout)
     end
   end
 
   test "other database errors are not Busy" do
-    Key.stubs(:waiting_at_most).raises(ActiveRecord::StatementInvalid.new("syntax error"))
+    Key.stubs(:waiting_at_most_lock_timeout).raises(ActiveRecord::StatementInvalid.new("syntax error"))
 
     assert_raises(ActiveRecord::StatementInvalid) { Key.hold(@api_key, "broken") { flunk } }
   end

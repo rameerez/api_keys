@@ -107,6 +107,7 @@ class TrustedKeyCheckTest < ApiKeys::Test
       assert key.persisted?
       assert_nil key.created_by
       assert authenticate(key).send(:current_api_key)
+      assert key.update(name: "Renamed"), "the immutable created_by needs no column to save"
 
       error = assert_raises(ApiKeys::Errors::CreatedByMigrationRequiredError) do
         @organization.create_api_key!(name: "CI", created_by: @person)

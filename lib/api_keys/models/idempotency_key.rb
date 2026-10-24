@@ -77,7 +77,7 @@ module ApiKeys
       def locked(api_key, key)
         rows = where(api_key: api_key, key: key)
         busy_on_lock_wait do
-          waiting_at_most(LOCK_TIMEOUT) do
+          waiting_at_most_lock_timeout do
             rows.update_all(updated_at: Time.current) if connection.adapter_name.match?(/sqlite/i)
             rows.lock.take || raise(Busy) # deleted since it was claimed: the client retries
           end
@@ -116,20 +116,20 @@ module ApiKeys
         raise
       end
 
-      def waiting_at_most(seconds)
+      # The statements hold no input: LOCK_TIMEOUT is 2 seconds in each.
+      def waiting_at_most_lock_timeout
         case connection.adapter_name
         when /postg/i
           # SET LOCAL ends with the transaction, or with a lock wait that
           # fails it. After the lock, the write waits as it always does.
-          connection.execute("SET LOCAL lock_timeout = '#{Integer(seconds)}s'")
+          connection.execute("SET LOCAL lock_timeout = '2s'")
           yield.tap { connection.execute("SET LOCAL lock_timeout TO DEFAULT") }
         when /mysql|trilogy/i
-          previous = connection.select_value("SELECT @@SESSION.innodb_lock_wait_timeout")
-          connection.execute("SET SESSION innodb_lock_wait_timeout = #{Integer(seconds)}")
+          connection.execute("SET @api_keys_lock_wait = @@SESSION.innodb_lock_wait_timeout, SESSION innodb_lock_wait_timeout = 2")
           begin
             yield
           ensure
-            connection.execute("SET SESSION innodb_lock_wait_timeout = #{Integer(previous)}")
+            connection.execute("SET SESSION innodb_lock_wait_timeout = @api_keys_lock_wait")
           end
         else
           yield
