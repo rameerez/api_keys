@@ -58,10 +58,16 @@ module ApiKeys
       # Every value becomes a pair of a tag and its content, so values of
       # different kinds never encode alike: an upload is never equal to a
       # text that holds its digest, or to a hash that looks like one. An
-      # upload counts by its bytes, its file name and its content type.
+      # upload counts by its bytes, its file name and its content type. A
+      # hash that names a key twice, as a symbol and as a text, is refused:
+      # its order would decide the digest.
       def canonical(value)
         if value.is_a?(Hash)
-          ["object", value.map { |name, inner| [name.to_s, canonical(inner)] }.sort_by(&:first)]
+          pairs = value.map { |name, inner| [name.to_s, canonical(inner)] }
+          duplicates = pairs.map(&:first).tally.select { |_name, count| count > 1 }.keys
+          raise ArgumentError, "the parameters name #{duplicates.join(', ')} twice" if duplicates.any?
+
+          ["object", pairs.sort_by(&:first)]
         elsif value.is_a?(Array)
           ["array", value.map { |inner| canonical(inner) }]
         elsif upload?(value)
@@ -79,7 +85,7 @@ module ApiKeys
       # the outer rollback removes both. Only transactional tests may run it
       # inside a transaction, with `config.idempotency_in_test_transactions`.
       def hold(api_key, key)
-        if connection.transaction_open? && !ApiKeys.configuration.idempotency_in_test_transactions
+        if connection.transaction_open? && !ApiKeys.configuration.idempotency_in_test_transactions?
           raise ApiKeys::Error, "ApiKeys::IdempotencyKey.hold runs outside database transactions, so that the key's " \
                                 "claim commits on its own: run run_once_per_idempotency_key outside any transaction. " \
                                 "Transactional tests set config.idempotency_in_test_transactions = true."

@@ -81,7 +81,8 @@ module ApiKeys
     #   @return [Boolean] Lets ApiKeys::IdempotencyKey.hold run inside an open
     #     database transaction, as transactional tests open one around each
     #     test. There the key's claim is a savepoint that the test's rollback
-    #     removes. Never set it outside tests: it raises in production.
+    #     removes. It takes true only when Rails.env is test, and it counts
+    #     only while Rails.env is test.
     #     Default: false.
     #   @example config/environments/test.rb, or the test helper
     #     ApiKeys.configuration.idempotency_in_test_transactions = true
@@ -300,11 +301,17 @@ module ApiKeys
 
     def idempotency_in_test_transactions=(value)
       raise ArgumentError, "idempotency_in_test_transactions must be true or false" unless [true, false].include?(value)
-      if value && defined?(Rails) && Rails.respond_to?(:env) && Rails.env.production?
-        raise ArgumentError, "idempotency_in_test_transactions is for transactional tests only, never for production"
+      if value && !test_environment?
+        raise ArgumentError, "idempotency_in_test_transactions is for transactional tests only: Rails.env must be test"
       end
 
       @idempotency_in_test_transactions = value
+    end
+
+    # Whether hold may run inside an open transaction: the switch is on, and
+    # Rails.env is still test when it is used.
+    def idempotency_in_test_transactions?
+      @idempotency_in_test_transactions == true && test_environment?
     end
 
     def trusted_key_check=(value)
@@ -440,6 +447,10 @@ module ApiKeys
     end
 
     private
+
+    def test_environment?
+      defined?(Rails) && Rails.respond_to?(:env) && Rails.env.test? ? true : false
+    end
 
     def validate_resolved_prefix!(prefix)
       valid = prefix.is_a?(String) && prefix.present? && prefix.valid_encoding? && prefix.bytesize <= 64 &&

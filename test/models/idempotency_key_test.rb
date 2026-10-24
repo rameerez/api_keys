@@ -195,14 +195,37 @@ class IdempotencyKeyTest < ApiKeys::Test
     connection.rollback_transaction if connection.transaction_open?
   end
 
-  test "the test-only switch is off by default, takes only true or false, and refuses production" do
+  test "the test-only switch is off by default, takes only true or false, and only while Rails.env is test" do
     refute ApiKeys::Configuration.new.idempotency_in_test_transactions
     assert_raises(ArgumentError) { ApiKeys.configuration.idempotency_in_test_transactions = "yes" }
 
-    Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new("production"))
-    error = assert_raises(ArgumentError) { ApiKeys.configuration.idempotency_in_test_transactions = true }
-    assert_match "tests only", error.message
+    %w[production staging development].each do |environment|
+      Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new(environment))
+      error = assert_raises(ArgumentError, environment) { ApiKeys.configuration.idempotency_in_test_transactions = true }
+      assert_match "Rails.env must be test", error.message
+    end
     ApiKeys.configuration.idempotency_in_test_transactions = false
+  end
+
+  test "a switch set under test is ignored once Rails.env is no longer test: hold refuses" do
+    ApiKeys.configuration.idempotency_in_test_transactions = true
+    Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new("production"))
+    connection = ActiveRecord::Base.connection
+    connection.begin_transaction(joinable: false)
+
+    refute ApiKeys.configuration.idempotency_in_test_transactions?
+    assert_raises(ApiKeys::Error) { Key.hold(@api_key, "after-boot") { flunk "the write must not run" } }
+  ensure
+    connection.rollback_transaction if connection.transaction_open?
+  end
+
+  test "a hash that names a key as a symbol and as a text is refused, in either order" do
+    [{ a: 1, "a" => 2 }, { "a" => 2, a: 1 }].each do |parameters|
+      error = assert_raises(ArgumentError) { Key.digest_of("TOOL", parameters) }
+      assert_match "name a twice", error.message
+    end
+    assert_raises(ArgumentError) { Key.digest_of("TOOL", { "outer" => [{ b: 1, "b" => 1 }] }) }
+    assert_equal Key.digest_of("TOOL", { a: 1, b: 2 }), Key.digest_of("TOOL", { "b" => 2, "a" => 1 })
   end
 
   test "the digest of an overlapping query and body differs from the same names moved" do
