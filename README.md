@@ -1106,7 +1106,7 @@ How it works:
 
 - GET and HEAD run as they are. Every other request needs the header: a text of 1 to 255 characters, the same when the client retries.
 - A write answers with `render_resource(record, status:, **options)`. The key keeps the status and the record, never the response body, so a secret shown once is never stored.
-- The write, any rows it adds (an audit entry), and the key's answer commit in one transaction, or nothing does. A write that answers anything but 2xx, or raises, commits nothing and leaves the key free, so the corrected request can use it.
+- The write, any rows it adds (an audit entry), and the key's answer commit in one transaction, or nothing does. A write that answers anything but 2xx, or raises, commits nothing and leaves the key free, so the corrected request can use it. That transaction is on the database of the `api_keys` tables: a write to another database does not join it.
 - A retry with the same key and the same request answers the record **as it is now**, through `resource_json` without the first answer's options, with the header `Idempotent-Replayed: true`. If the record no longer exists, the retry raises `ActiveRecord::RecordNotFound` (Rails answers 404).
 - The request is the method, the path, and every query and body parameter, in any order of names. An uploaded file counts by its bytes.
 - Keys are per API key and kept for a day. Run `ApiKeys::IdempotencyKey.prune!` once a day, for example from a recurring job.
@@ -1225,7 +1225,7 @@ What stays in your app:
 
 - **Rate limits.** Limit the code look-ups on the approval page per person, so codes cannot be guessed ([§5.1](https://www.rfc-editor.org/rfc/rfc8628#section-5.1)), and the agent's requests per address. A rate limit's `with:` can answer in the RFC's shape: `with: -> { render_oauth_error("slow_down", "Too many requests.", status: :too_many_requests) }`.
 - **Who may approve,** and for which owner. When a person can switch between organizations, put the owner the page showed in the form and refuse an approval for another one.
-- **More fields in the token answer,** or an audit row: override `device_token_response(authorization, api_key)` and call `super`. It runs in the transaction that creates the key, so a row it writes commits with the key, or neither does.
+- **More fields in the token answer,** or an audit row: override `device_token_response(authorization, api_key)` and call `super`. It runs in the transaction that creates the key, so a row it writes to the same database commits with the key, or neither does.
 - **Housekeeping:** run `ApiKeys::DeviceAuthorization.prune!` once a day.
 
 Error descriptions change with I18n: `api_keys.device_flow.errors.<error>`.
