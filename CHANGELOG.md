@@ -1,3 +1,33 @@
+## [0.7.0] - 2026-10-24
+
+Four features that an invoicing app on the fleet runs in production today, moved into the gem with their tests so that apps on the fleet can delete their own copies. Each one is opt-in: an app that does not use it sees no change.
+
+### Added
+
+- The device authorization grant (RFC 8628), so an agent or a CLI can ask for an API key and get it after a person approves in the app, with no key copied by hand. `ApiKeys::DeviceAuthorization` (`request!`, `find_undecided_by_user_code`, `find_by_device_code`, `approve!(owner, by:)`, `deny!(by:)`, `poll!(client_id:)`, `prune!`) keeps both codes as SHA-256 digests, lives ten minutes, uses an eight-letter user code from twenty consonants that is case- and dash-insensitive, takes the row lock for polls and decisions, and never decides a decided or expired request again. The first poll after the approval creates an ordinary key for the owner, named "client on device", and answers with its token once. `ApiKeys::DeviceFlow` gives an API controller the `create` and `token` actions with the RFC 8628 answers, the RFC 6749 error shape and `Cache-Control: no-store`; the host names its approval page in `device_verification_uri`, and may add fields to the token answer in `device_token_response`, which runs in the transaction that creates the key. `rails generate api_keys:add_device_authorizations` creates the table.
+- The person behind a key, so a key whose owner is an organization stops when the person who created it no longer stands behind it. `created_by`, an optional polymorphic reference on `api_keys`, is set by `create_api_key!(created_by:)` and cannot change after creation. `config.trusted_key_check` is a lambda that `authenticate_api_key!` calls with the key after the scope check; a false answer refuses the request with 403 `untrusted_key` through `render_unauthorized`. The device flow names the approving person as `created_by`. New installs get the columns; existing installs run `rails generate api_keys:add_created_by`.
+- Idempotency-Key for writes, so a client can retry a write after a timeout without making a second record. `ApiKeys::IdempotencyKey` (`hold(api_key, key)`, `digest_of`, `answer!`, `answered?`, `prune!`, `Busy`) claims the key's row in a commit of its own, runs the write under the row lock, and commits the write with its answer (the status and the record, never a body), or nothing. Keys are per API key and kept a day. `ApiKeys::Idempotency` gives an API controller the `run_once_per_idempotency_key` around_action, `render_resource`, and the host's `resource_json`; a retry answers the record as it is now with `Idempotent-Replayed: true`. The refusals are 400 `idempotency_key_required`, 409 `idempotency_key_in_use` and 422 `idempotency_key_reused`, after draft-ietf-httpapi-idempotency-key-header section 2.7. `rails generate api_keys:add_idempotency_keys` creates the table.
+- Scope by HTTP method, so an API asks reads for one scope and writes for another in one line: `authenticate_api_key!(scope: { read: "read", write: "write" })`. GET and HEAD read; every other method writes. Both sides are required.
+
+### Changed
+
+- `untrusted_key` joins the refusal codes that are stamped on a key (`last_refusal_code`) and explained by `api_key_refusal_reason`. It is stamped only when `config.trusted_key_check` refuses a key.
+- `created_by_type` and `created_by_id` join the attributes that cannot change after a key is created.
+- `ApiKey::MAX_NAME_LENGTH` and `ApiKey::NAME_FORMAT` name the existing key name rule, which the device flow uses to name its keys.
+
+### Security
+
+- Device flow: the key's token is never stored, and the poll that creates the key is the only answer that carries it. A poll with another `client_id` changes nothing. Two simultaneous polls of one approved request make one key; this was checked with concurrent connections on PostgreSQL, MySQL and SQLite.
+- Idempotency-Key: a retry waits at most two seconds for the request that holds the key (PostgreSQL `lock_timeout`, MySQL `innodb_lock_wait_timeout`; on SQLite, the database's busy timeout), then answers 409. A retry of a key that exists reads the row without a lock, so it never waits elsewhere. SQLite has no row locks, so there an UPDATE takes the database's write lock first. The device flow's row lock does the same.
+- `config.trusted_key_check` fails closed: an error in the lambda fails the request and never passes it as trusted.
+
+### Upgrade notes
+
+- Nothing changes until an app opts in. Every 0.7.0 migration is optional: `add_created_by` for the person behind a key, `add_device_authorizations` for the device flow, `add_idempotency_keys` for Idempotency-Key. Run them in any order, before or after the deploy.
+- From 0.4.x, the 0.5.0 and 0.6.0 migrations (`add_restrictions`, `add_key_activity`) stay optional too. The calls of a custom key controller keep working: `create_api_key!`, `TokenSession.store(session, api_key)` and `TokenSession.retrieve_once(session)`, and a handoff stored by 0.4.x stays readable. Read the 0.5.1 and 0.6.0 notes: the scope checkboxes render an empty field before the boxes, a token's handoff is one-time across copies of the session, and a retrieval inside an open transaction is refused. The README section "Upgrading to 0.7.0 from 0.4.x or 0.6.x" lists them.
+- A 0.6.0 job worker ignores the new `untrusted_key` refusal code with a warning. A 0.4.x or 0.5.x worker errors on every refusal job of 0.6.0 or later: deploy job workers with the web processes.
+- Keys created before `add_created_by` have no `created_by`. If `config.trusted_key_check` needs one, backfill the columns in a migration (`update_columns` or SQL: validations refuse a change after creation).
+
 ## [0.6.0] - 2026-10-18
 
 ### Added

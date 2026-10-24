@@ -14,8 +14,7 @@ ActiveRecord::Schema.define do
 end
 
 # Writes that run once per Idempotency-Key (0.7.0), as a host app's API
-# controller serves them through Rails' real request stack. Each test names
-# the rule of the invoicing app that it keeps (Sol #2, #3, #4).
+# controller serves them through Rails' real request stack.
 class IdempotencyTest < ApiKeys::Test
   include Rack::Test::Methods
 
@@ -220,7 +219,7 @@ class IdempotencyTest < ApiKeys::Test
     assert_equal ["widget-3"], ApiKeys::IdempotencyKey.pluck(:key)
   end
 
-  test "Sol #2: a failure after the write commits nothing, and the retry writes once" do
+  test "a failure after the write commits nothing, and the retry writes once" do
     WidgetsController.fail_after_write = true
     api(:post, "/widgets", { name: "Gear" }, key: "widget-5")
     assert_equal 404, last_response.status
@@ -235,7 +234,7 @@ class IdempotencyTest < ApiKeys::Test
     assert_equal 1, Widget.count
   end
 
-  test "Sol #2: a key left without an answer by a crash runs on the retry, once" do
+  test "a key left without an answer by a crash runs on the retry, once" do
     ApiKeys::IdempotencyKey.create!(api_key: @key, key: "widget-6")
 
     2.times { api(:post, "/widgets", { name: "Gear" }, key: "widget-6") }
@@ -252,7 +251,7 @@ class IdempotencyTest < ApiKeys::Test
     assert_empty Widget.all
   end
 
-  test "Sol #3: the key stands for the query and the body; a changed query is another request" do
+  test "the key stands for the query and the body; a changed query is another request" do
     api(:post, "/widgets?name=Gear", {}, key: "widget-8")
     assert_equal 201, last_response.status
     assert_equal "idempotency_key_reused", api(:post, "/widgets?name=Sprocket", {}, key: "widget-8")["error"]
@@ -269,7 +268,7 @@ class IdempotencyTest < ApiKeys::Test
     assert_equal 422, last_response.status, "another method or path is another request"
   end
 
-  test "Sol #4: a retry answers the record as it is now, without the secret of the first answer" do
+  test "a retry answers the record as it is now, without the secret of the first answer" do
     first = api(:post, "/widgets", { name: "Gear" }, key: "widget-10")
     widget = Widget.find(first["id"])
     assert_equal "shown-once-#{widget.id}", first["secret"]
