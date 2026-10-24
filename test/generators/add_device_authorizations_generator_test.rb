@@ -24,6 +24,8 @@ module ApiKeys
           assert_includes migration, "t.string :user_code_digest, null: false, index: { unique: true }"
           assert_includes migration, "foreign_key: { on_delete: :nullify }"
           refute_match(/t\.string :(device|user)_code\b/, migration)
+          assert_includes migration, "t.send(json_column_type, :scopes, null: false)"
+          refute_match(/:scopes, default:/, migration, "MySQL refuses a literal default on a JSON column")
           refute_includes migration, "def migration_version"
         end
       end
@@ -39,6 +41,8 @@ module ApiKeys
         ApiKeys::DeviceAuthorization.reset_column_information
         columns = ApiKeys::DeviceAuthorization.columns_hash
         assert_equal :json, columns["scopes"].type
+        assert_nil columns["scopes"].default
+        assert_equal [], ApiKeys::DeviceAuthorization.new.scopes, "the model gives the default"
         assert_equal "pending", columns["state"].default
         assert_equal 5, columns["interval"].default.to_i
         refute columns["expires_at"].null

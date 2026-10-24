@@ -36,12 +36,30 @@ module ApiKeys
     # approved or denied.
     class Closed < ApiKeys::Error; end
 
+    # Raised by `approve!` when the owner may not have another key. The
+    # request stays pending, so the person can revoke a key and approve again
+    # before it expires.
+    class KeyLimitReached < ApiKeys::Error
+      def initialize(message = "this owner has the most API keys it may have: revoke a key, then approve again")
+        super
+      end
+    end
+
+    # What `create_api_key!` raises when it cannot make the key.
+    KEY_CREATION_ERRORS = [
+      ActiveRecord::RecordInvalid, ArgumentError, ApiKeys::Error, ApiKeys::Errors::BaseError
+    ].freeze
+
     # The answer to one poll: the new key, or the RFC 8628 §3.5 error code.
     Poll = Struct.new(:api_key, :error, keyword_init: true)
 
     belongs_to :owner, polymorphic: true, optional: true
     belongs_to :decided_by, polymorphic: true, optional: true
     belongs_to :api_key, class_name: "ApiKeys::ApiKey", optional: true
+
+    # In the model, not in the migration: MySQL refuses a literal default on
+    # a JSON column.
+    attribute :scopes, default: -> { [] }
 
     # The plaintext codes, on the instance `request!` returns only.
     attr_reader :device_code, :user_code
@@ -120,12 +138,16 @@ module ApiKeys
     # is created at the next poll (`poll!`), so its token is never stored.
     #
     # @raise [Closed] if the request was decided already or expired
+    # @raise [KeyLimitReached] if the owner may not have another key; the
+    #   request stays pending
     def approve!(owner, by:)
       unless owner.respond_to?(:create_api_key!) && owner.persisted?
         raise ArgumentError, "approve a device authorization for a saved record that has_api_keys"
       end
 
-      decide!("approved", by: by, owner: owner)
+      decide!("approved", by: by, owner: owner) do
+        raise KeyLimitReached unless owner.can_create_api_key?(key_type: key_type_for_new_keys)
+      end
     end
 
     # @raise [Closed] if the request was decided already or expired
@@ -135,7 +157,9 @@ module ApiKeys
 
     # One poll of the client (§3.4, §3.5), under the row's lock. A poll from
     # another client changes nothing. A poll that comes sooner than the
-    # interval slows the client down by five seconds.
+    # interval slows the client down by five seconds. A poll never raises
+    # for a key that cannot be made: the client waits, as for a pending
+    # request, and polls again.
     #
     # @return [Poll] the new key once, or the error code
     def poll!(client_id:)
@@ -146,10 +170,12 @@ module ApiKeys
         # An owner deleted since the approval gets no key.
         next Poll.new(error: "access_denied") if denied? || (approved? && owner.nil?)
         next Poll.new(error: "invalid_grant") if completed? # the device code was used
-        next Poll.new(api_key: complete!) if approved?
+
+        key = complete! if approved?
+        next Poll.new(api_key: key) if key
 
         too_soon = last_polled_at && last_polled_at > interval.seconds.ago
-        update!(last_polled_at: Time.current, interval: too_soon ? interval + SLOW_DOWN : interval)
+        update_columns(last_polled_at: Time.current, interval: too_soon ? interval + SLOW_DOWN : interval)
         Poll.new(error: too_soon ? "slow_down" : "authorization_pending")
       end
     end
@@ -162,8 +188,19 @@ module ApiKeys
       with_row_lock do
         raise Closed, "this device authorization is no longer open" unless pending? && expires_at.future?
 
+        yield if block_given?
         update!(state: state, owner: owner, decided_by: by, decided_at: Time.current)
       end
+    end
+
+    # The key type `create_api_key!` gives the key: the default type when
+    # key types are configured, none otherwise.
+    def key_type_for_new_keys
+      config = ApiKeys.configuration
+      return nil if config.key_types.blank?
+      return config.default_key_type if config.default_key_type.present?
+
+      raise ArgumentError, "the device flow needs config.default_key_type when key types are configured"
     end
 
     # Reloads the row under its lock for the rest of a transaction. SELECT
@@ -178,13 +215,22 @@ module ApiKeys
       end
     end
 
-    # The person who approved stands behind the key (created_by), when the
-    # api_keys table has the created_by columns.
+    # Creates the key, or answers nil when it cannot be made: the owner
+    # reached its key limit after the approval, for example. Then nothing is
+    # kept, and the request stays approved for the next poll. The person who
+    # approved stands behind the key (created_by), when the api_keys table
+    # has the created_by columns.
     def complete!
       person = { created_by: decided_by } if decided_by && ApiKeys::ApiKey.created_by_columns?
-      key = owner.create_api_key!(name: key_name, scopes: scopes, **person.to_h)
-      update!(state: "completed", api_key: key)
-      key
+      transaction(requires_new: true) do
+        key = owner.create_api_key!(name: key_name, scopes: scopes, **person.to_h)
+        update_columns(state: "completed", api_key_id: key.id, updated_at: Time.current)
+        key
+      end
+    rescue *KEY_CREATION_ERRORS => error
+      ActiveRecord::Base.logger&.warn("[ApiKeys] Device authorization #{id} could not create its key (#{error.class}).")
+      reload
+      nil
     end
 
     def scopes_are_grantable

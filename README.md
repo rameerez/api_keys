@@ -1065,6 +1065,7 @@ config.trusted_key_check = ->(api_key) { api_key.owner.managed_by?(api_key.creat
 After authentication and the scope check, `authenticate_api_key!` calls the lambda with the key. When it answers `false` or `nil`, the request gets `403` with `error: "untrusted_key"`, the key is not set as `current_api_key`, and the refusal is recorded on the key like every other refusal (with the 0.6.0 columns), never as a use. An error in the lambda fails the request; it never passes as trusted. Without a lambda (the default), every valid key is trusted, as before.
 
 - `created_by` is polymorphic and optional. It cannot change after the key is created, so no update can make another person stand behind a key.
+- The mounted dashboard leaves `created_by` nil: it knows the key's owner, not the person. An app that needs the person behind each key creates its keys in its own controller and passes `created_by:` there (see [Building Custom Integrations](#building-custom-integrations)).
 - Keys created before you set `created_by` have none. Decide what the lambda does with them, or backfill the columns in a migration.
 - The refusal renders through `render_unauthorized`, so if you override it to render your own error shape, `untrusted_key` uses that shape too. Change the message with I18n: `api_keys.errors.untrusted_key`.
 - New installs get the columns from the start. Existing installs run `rails generate api_keys:add_created_by`; until then, passing `created_by:` raises `ApiKeys::Errors::CreatedByMigrationRequiredError`.
@@ -1209,6 +1210,8 @@ class DeviceApprovalsController < ApplicationController
     redirect_to device_approval_path, notice: "Done. Go back to the agent."
   rescue ApiKeys::DeviceAuthorization::Closed
     redirect_to device_approval_path, alert: "This request expired or was decided already."
+  rescue ApiKeys::DeviceAuthorization::KeyLimitReached
+    redirect_to device_approval_path(code: params[:code]), alert: "You have the most API keys you may have. Revoke one, then approve again."
   end
 end
 ```
@@ -1218,6 +1221,8 @@ The rules the model keeps:
 - Both codes are stored as SHA-256 digests. The key's token is never stored: the poll that creates the key is the only answer that carries it.
 - A request lives ten minutes. The user code is eight letters from twenty consonants ([§6.1](https://www.rfc-editor.org/rfc/rfc8628#section-6.1)), and case, spaces and dashes do not matter when the person types it.
 - Polls and decisions take the request's row lock. A decided or expired request cannot be decided again: `approve!` and `deny!` raise `ApiKeys::DeviceAuthorization::Closed`.
+- `approve!` checks the owner's key limit first (`max_keys`, and the `limit` of `config.default_key_type` when key types are configured). At the limit it raises `ApiKeys::DeviceAuthorization::KeyLimitReached` and the request stays pending, so the person can revoke a key and approve again before it expires. With key types configured, the device flow needs `config.default_key_type`.
+- A poll never raises because the key cannot be made. If the owner reached its limit after the approval, the poll answers `authorization_pending`, nothing is kept, and a later poll makes the key once there is room.
 - A poll with another `client_id` changes nothing ([§3.4](https://www.rfc-editor.org/rfc/rfc8628#section-3.4)), so the grant waits for its own client.
 - The approving person becomes the key's `created_by` when the column exists, so `config.trusted_key_check` applies to these keys too. Characters a key name cannot hold become hyphens in the key's name.
 

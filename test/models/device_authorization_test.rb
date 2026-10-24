@@ -5,9 +5,26 @@ require "test_helper"
 # The device flow's model (RFC 8628): a client asks for codes, a person
 # approves or denies, and the client's polls get the RFC's answers: pending,
 # slow down, denied, expired, and the key once.
+ActiveRecord::Schema.define do
+  # A fictional owner whose has_api_keys sets a key limit.
+  create_table :teams, force: :cascade do |t|
+    t.string :name
+  end
+end
+
+class Team < ActiveRecord::Base
+  include ApiKeys::Models::Concerns::HasApiKeys
+  has_api_keys max_keys: 1
+end
+
 class DeviceAuthorizationTest < ApiKeys::Test
   Authorization = ApiKeys::DeviceAuthorization
   CLIENT = "Fictional agent"
+
+  def teardown
+    Team.delete_all
+    super
+  end
 
   def setup
     super
@@ -237,17 +254,87 @@ class DeviceAuthorizationTest < ApiKeys::Test
     assert_empty ApiKeys::ApiKey.all
   end
 
-  test "a key that cannot be created leaves the grant approved for the next poll" do
-    authorization = request_codes
-    authorization.approve!(@owner, by: @person)
-    User.any_instance.stubs(:create_api_key!).raises(ActiveRecord::RecordInvalid.new(ApiKeys::ApiKey.new))
+  # == The owner's key limit ==
 
-    assert_raises(ActiveRecord::RecordInvalid) { authorization.poll!(client_id: CLIENT) }
+  test "an approval for an owner at its key limit is refused, and the request stays pending" do
+    team = Team.create!(name: "Acme team")
+    team.create_api_key!(name: "Existing")
+    authorization = request_codes
+
+    error = assert_raises(Authorization::KeyLimitReached) { authorization.approve!(team, by: @person) }
+    assert_match "revoke a key", error.message
+    assert authorization.reload.pending?
+    assert_nil authorization.owner
+    assert_equal "authorization_pending", authorization.poll!(client_id: CLIENT).error
+
+    team.api_keys.sole.revoke!
+    authorization.approve!(team, by: @person)
+    assert authorization.poll!(client_id: CLIENT).api_key
+  end
+
+  test "an approval checks the limit of the key type the device flow uses" do
+    ApiKeys.configure do |config|
+      config.key_types = { secret: { prefix: "sk", permissions: :all, limit: 1 } }
+      config.default_key_type = :secret
+    end
+    @owner.create_api_key!(name: "Existing")
+    authorization = request_codes
+
+    assert_raises(Authorization::KeyLimitReached) { authorization.approve!(@owner, by: @person) }
+    assert authorization.reload.pending?
+  end
+
+  test "with key types but no default type, an approval names the missing setting" do
+    ApiKeys.configure { |config| config.key_types = { secret: { prefix: "sk", permissions: :all } } }
+    authorization = request_codes
+
+    error = assert_raises(ArgumentError) { authorization.approve!(@owner, by: @person) }
+    assert_match "default_key_type", error.message
+    assert authorization.reload.pending?
+  end
+
+  test "an owner that reaches its limit after the approval: the poll waits, and never raises" do
+    team = Team.create!(name: "Acme team")
+    authorization = request_codes
+    authorization.approve!(team, by: @person)
+    team.create_api_key!(name: "Made since the approval")
+
+    assert_equal "authorization_pending", authorization.poll!(client_id: CLIENT).error
     assert authorization.reload.approved?
     assert_nil authorization.api_key
+    assert_equal 1, team.api_keys.count, "nothing is kept of the failed key"
 
-    User.any_instance.unstub(:create_api_key!)
+    travel 6.seconds do
+      team.api_keys.sole.revoke!
+      key = authorization.poll!(client_id: CLIENT).api_key
+      assert_equal "Fictional agent on build-box", key.name
+      assert authorization.reload.completed?
+    end
+  end
+
+  test "a poll never raises for a key that cannot be made, whatever the reason" do
+    authorization = request_codes
+    authorization.approve!(@owner, by: @person)
+
+    [ActiveRecord::RecordInvalid.new(ApiKeys::ApiKey.new), ArgumentError.new("key_type is required"),
+     ApiKeys::Errors::CreatedByMigrationRequiredError.new, ApiKeys::Error.new("prefix")].each do |error|
+      travel 30.seconds # each poll keeps to the interval
+      User.any_instance.stubs(:create_api_key!).raises(error)
+      assert_equal "authorization_pending", authorization.poll!(client_id: CLIENT).error, error.class.name
+      User.any_instance.unstub(:create_api_key!)
+      assert authorization.reload.approved?
+    end
+
     assert authorization.poll!(client_id: CLIENT).api_key
+  ensure
+    travel_back
+  end
+
+  test "a poll after the app stopped granting a scope does not raise" do
+    authorization = request_codes(scopes: %w[read deploy])
+    ApiKeys.configuration.default_scopes = %w[read]
+
+    assert_equal "authorization_pending", authorization.poll!(client_id: CLIENT).error
   end
 
   # == The key's name ==
