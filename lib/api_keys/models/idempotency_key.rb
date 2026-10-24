@@ -49,30 +49,40 @@ module ApiKeys
       end
 
       # The digest of a request: its parts (the method and the path, or the
-      # name of a tool) and its parameters, with the names in order and an
-      # uploaded file by its bytes, so the same request has the same digest.
+      # name of a tool) and its parameters, with the names in order, so the
+      # same request has the same digest.
       def digest_of(*parts, parameters)
         Digest::SHA256.hexdigest([*parts, canonical(parameters).to_json].join("\n"))
       end
 
+      # Every value becomes a pair of a tag and its content, so values of
+      # different kinds never encode alike: an upload is never equal to a
+      # text that holds its digest, or to a hash that looks like one. An
+      # upload counts by its bytes, its file name and its content type.
       def canonical(value)
-        case value
-        when Hash then value.to_h { |name, inner| [name.to_s, canonical(inner)] }.sort.to_h
-        when Array then value.map { |inner| canonical(inner) }
-        else uploaded_file_digest(value) || value
+        if value.is_a?(Hash)
+          ["object", value.map { |name, inner| [name.to_s, canonical(inner)] }.sort_by(&:first)]
+        elsif value.is_a?(Array)
+          ["array", value.map { |inner| canonical(inner) }]
+        elsif upload?(value)
+          ["upload", Digest::SHA256.file(value.tempfile.path).hexdigest, value.original_filename.to_s, value.content_type.to_s]
+        else
+          ["value", value]
         end
       end
 
       # Yields the API key's row of +key+, locked, inside the transaction that
       # the caller's write joins. Raises Busy while another request holds it.
       #
-      # It runs outside any transaction the app opens, so that the claim
-      # commits on its own. The transaction Rails opens around each test
-      # (one that nothing can join) is allowed.
+      # It runs outside every open transaction, so that the claim commits on
+      # its own: inside one, the claim and the answer are a savepoint, and
+      # the outer rollback removes both. Only transactional tests may run it
+      # inside a transaction, with `config.idempotency_in_test_transactions`.
       def hold(api_key, key)
-        if connection.transaction_open? && connection.current_transaction.joinable?
+        if connection.transaction_open? && !ApiKeys.configuration.idempotency_in_test_transactions
           raise ApiKeys::Error, "ApiKeys::IdempotencyKey.hold runs outside database transactions, so that the key's " \
-                                "claim commits on its own: run run_once_per_idempotency_key outside any transaction"
+                                "claim commits on its own: run run_once_per_idempotency_key outside any transaction. " \
+                                "Transactional tests set config.idempotency_in_test_transactions = true."
         end
 
         claim(api_key, key)
@@ -118,10 +128,9 @@ module ApiKeys
         end
       end
 
-      def uploaded_file_digest(value)
-        return unless value.respond_to?(:tempfile) && value.respond_to?(:original_filename)
-
-        Digest::SHA256.file(value.tempfile.path).hexdigest
+      # ActionDispatch::Http::UploadedFile, and the files of Rack::Test.
+      def upload?(value)
+        %i[tempfile original_filename content_type].all? { |name| value.respond_to?(name) }
       end
 
       def busy_on_lock_wait

@@ -41,7 +41,7 @@ module ApiKeys
       "invalid_scope" => "Ask for scopes among: %{scopes}.",
       # The token endpoint's invalid_scope (RFC 6749 §5.2: "exceeds the scope
       # granted by the resource owner").
-      "scope_exceeds_approval" => "The key would grant more than the person approved. Ask for new codes.",
+      "scope_exceeds_approval" => "The app can no longer make the key the person approved. Ask for new codes.",
       "invalid_request" => "Send client_id, the client's name, and device_name, the device's name: " \
                            "at most #{ApiKeys::DeviceAuthorization::MAX_NAME_LENGTH} characters each."
     }.freeze

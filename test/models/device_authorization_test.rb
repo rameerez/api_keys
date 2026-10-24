@@ -353,6 +353,7 @@ class DeviceAuthorizationTest < ApiKeys::Test
     assert_raises(ActiveRecord::RecordInvalid) { before_approval.approve!(@owner, by: @person) }
     assert before_approval.reload.pending?
     assert_equal "invalid_scope", after_approval.poll!(client_id: CLIENT).error, "the key would also authorize deploy"
+    assert after_approval.reload.void?, "the request is closed"
     assert_empty ApiKeys::ApiKey.all
   end
 
@@ -375,22 +376,67 @@ class DeviceAuthorizationTest < ApiKeys::Test
     end
   end
 
-  test "a poll never raises for a key that cannot be made, whatever the reason" do
-    authorization = request_codes
-    authorization.approve!(@owner, by: @person)
-
-    [ActiveRecord::RecordInvalid.new(ApiKeys::ApiKey.new), ArgumentError.new("key_type is required"),
+  test "a poll never raises; a key that fails for any reason but the limit closes the request" do
+    [ActiveRecord::RecordInvalid.new(ApiKeys::ApiKey.new), ArgumentError.new("invalid environment"),
      ApiKeys::Errors::CreatedByMigrationRequiredError.new, ApiKeys::Error.new("prefix")].each do |error|
-      travel 30.seconds # each poll keeps to the interval
+      authorization = request_codes
+      authorization.approve!(@owner, by: @person)
       User.any_instance.stubs(:create_api_key!).raises(error)
-      assert_equal "authorization_pending", authorization.poll!(client_id: CLIENT).error, error.class.name
+
+      assert_equal "invalid_scope", authorization.poll!(client_id: CLIENT).error, error.class.name
       User.any_instance.unstub(:create_api_key!)
-      assert authorization.reload.approved?
+      assert authorization.reload.void?, error.class.name
+      assert_equal "invalid_scope", authorization.poll!(client_id: CLIENT).error, "the request stays closed"
+    end
+    assert_empty ApiKeys::ApiKey.all
+  end
+
+  # == The configuration changes after the approval ==
+
+  test "an untyped request stays untyped: key types turned on after the approval close it" do
+    authorization = request_codes(scopes: %w[read])
+    authorization.approve!(@owner, by: @person)
+    ApiKeys.configure do |config|
+      config.key_types = { agent: { prefix: "ag", permissions: %w[read write deploy], scopes: :ceiling } }
+      config.default_key_type = :agent
     end
 
-    assert authorization.poll!(client_id: CLIENT).api_key
-  ensure
-    travel_back
+    assert_equal "invalid_scope", authorization.poll!(client_id: CLIENT).error
+    assert authorization.reload.void?
+    assert_nil authorization.key_type, "the default type is never resolved at the poll"
+    assert_empty ApiKeys::ApiKey.all, "no key that allows deploy"
+    assert_raises(Authorization::Closed) { authorization.approve!(@owner, by: @person) }
+  end
+
+  test "an untyped request with key types off makes an untyped key, whatever the default type says" do
+    ApiKeys.configuration.default_key_type = :agent # ignored while key types are off
+    authorization = request_codes(scopes: %w[read])
+    authorization.approve!(@owner, by: @person)
+
+    key = authorization.poll!(client_id: CLIENT).api_key
+    assert_nil key.key_type
+    refute key.allows_scope?("write")
+  end
+
+  test "a type removed or renamed after the approval closes the request" do
+    ApiKeys.configure do |config|
+      config.key_types = { agent: { prefix: "ag", permissions: %w[read write] } }
+      config.default_key_type = :agent
+    end
+    removed = request_codes(key_type: :agent)
+    renamed = request_codes(key_type: :agent)
+    [removed, renamed].each { |authorization| authorization.approve!(@owner, by: @person) }
+
+    ApiKeys.configure do |config|
+      config.key_types = { robot: { prefix: "rb", permissions: %w[read write] } }
+      config.default_key_type = :robot
+    end
+    assert_equal "invalid_scope", renamed.poll!(client_id: CLIENT).error
+    ApiKeys.configuration.key_types = {}
+    assert_equal "invalid_scope", removed.poll!(client_id: CLIENT).error
+
+    assert [removed, renamed].all? { |authorization| authorization.reload.void? }
+    assert_empty ApiKeys::ApiKey.all
   end
 
   test "a poll after the app stopped granting a scope does not raise" do

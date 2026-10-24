@@ -75,6 +75,18 @@ module ApiKeys
     #     config.trusted_key_check = ->(api_key) { api_key.owner.managed_by?(api_key.created_by) }
     attr_reader :trusted_key_check
 
+    # Idempotency-Key, for tests only
+    #
+    # @!attribute [rw] idempotency_in_test_transactions
+    #   @return [Boolean] Lets ApiKeys::IdempotencyKey.hold run inside an open
+    #     database transaction, as transactional tests open one around each
+    #     test. There the key's claim is a savepoint that the test's rollback
+    #     removes. Never set it outside tests: it raises in production.
+    #     Default: false.
+    #   @example config/environments/test.rb, or the test helper
+    #     ApiKeys.configuration.idempotency_in_test_transactions = true
+    attr_reader :idempotency_in_test_transactions
+
     # Callbacks (Placeholders for future extension)
     attr_reader :before_authentication, :after_authentication
 
@@ -284,6 +296,15 @@ module ApiKeys
       raise ArgumentError, "tenant_resolver must be callable" unless value.respond_to?(:call)
 
       @tenant_resolver = value
+    end
+
+    def idempotency_in_test_transactions=(value)
+      raise ArgumentError, "idempotency_in_test_transactions must be true or false" unless [true, false].include?(value)
+      if value && defined?(Rails) && Rails.respond_to?(:env) && Rails.env.production?
+        raise ArgumentError, "idempotency_in_test_transactions is for transactional tests only, never for production"
+      end
+
+      @idempotency_in_test_transactions = value
     end
 
     def trusted_key_check=(value)
@@ -677,6 +698,9 @@ module ApiKeys
 
       # The person behind a key: no check, every valid key is trusted
       @trusted_key_check = nil
+
+      # Idempotency-Key: refuse every open transaction (tests may opt out)
+      @idempotency_in_test_transactions = false
 
       # Key Types & Environments (default to empty/disabled for backwards compatibility)
       @key_types = {}.freeze  # Empty = feature disabled, legacy behavior

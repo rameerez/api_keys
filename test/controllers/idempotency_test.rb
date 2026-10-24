@@ -3,6 +3,7 @@
 require "test_helper"
 require "action_controller"
 require "rack/test"
+require "tempfile"
 
 ActiveRecord::Schema.define do
   # A fictional resource of a host app.
@@ -52,6 +53,11 @@ class IdempotencyTest < ApiKeys::Test
       widget = Widget.find(params[:id])
       widget.update!(name: params[:name])
       render_resource widget
+    end
+
+    # An import of an uploaded file, as an API's CSV import takes one.
+    def import
+      render_resource Widget.create!(name: "import", owner: current_api_owner), status: :created
     end
 
     # A write that answers without naming its record.
@@ -129,6 +135,7 @@ class IdempotencyTest < ApiKeys::Test
       post "/widgets", to: WidgetsController.action(:create)
       patch "/widgets/:id", to: WidgetsController.action(:update)
       post "/widgets/touch", to: WidgetsController.action(:touch)
+      post "/widgets/import", to: WidgetsController.action(:import)
       post "/shaped/widgets", to: ShapedWidgetsController.action(:create)
       post "/unrendered", to: UnrenderedController.action(:create)
       post "/unauthorized", to: UnauthorizedReplayController.action(:create)
@@ -344,6 +351,27 @@ class IdempotencyTest < ApiKeys::Test
     api(:post, "/widgets?name=Gear", { name: "Body gear" }, key: "widget-15")
     assert_equal "true", last_response.headers["Idempotent-Replayed"]
     assert_equal 1, Widget.count
+  end
+
+  test "an upload with the same bytes under another file name or content type is another request" do
+    file = Tempfile.new("sales").tap { |tempfile| tempfile.write("id,amount\n1,10\n") && tempfile.flush }
+    upload = ->(type, name) { Rack::Test::UploadedFile.new(file.path, type, original_filename: name) }
+    headers = { "HTTP_AUTHORIZATION" => "Bearer #{@key.token}", "HTTP_IDEMPOTENCY_KEY" => "import-1" }
+
+    post "/widgets/import", { file: upload.("text/csv", "sales.csv") }, headers
+    assert_equal 201, last_response.status
+    post "/widgets/import", { file: upload.("text/csv", "refunds.csv") }, headers
+    assert_equal 422, last_response.status, "another file name"
+    post "/widgets/import", { file: upload.("application/vnd.ms-excel", "sales.csv") }, headers
+    assert_equal 422, last_response.status, "another content type"
+    post "/widgets/import", { file: Digest::SHA256.file(file.path).hexdigest }, headers
+    assert_equal 422, last_response.status, "a text that holds the upload's digest"
+
+    post "/widgets/import", { file: upload.("text/csv", "sales.csv") }, headers
+    assert_equal "true", last_response.headers["Idempotent-Replayed"]
+    assert_equal 1, Widget.count
+  ensure
+    file&.close!
   end
 
   test "a write that answers without its record fails and commits nothing" do

@@ -32,16 +32,33 @@ class IdempotencyKeyTest < ApiKeys::Test
     assert_match(/\A\h{64}\z/, digest)
   end
 
-  test "an uploaded file stands in the digest by its bytes" do
-    files = %w[first first second].map do |content|
+  test "an upload stands in the digest by its bytes, its file name and its content type" do
+    files = %w[first first second first].map do |content|
       Tempfile.new("upload").tap { |file| file.write(content) && file.flush }
     end
-    uploads = files.map { |file| Rack::Test::UploadedFile.new(file.path, "text/csv") }
+    upload = ->(index, type = "text/csv", name = "sales.csv") { Rack::Test::UploadedFile.new(files[index].path, type, original_filename: name) }
+    digest = ->(value) { Key.digest_of("POST", { "file" => value }) }
 
-    assert_equal Key.digest_of("POST", { "file" => uploads[0] }), Key.digest_of("POST", { "file" => uploads[1] })
-    refute_equal Key.digest_of("POST", { "file" => uploads[0] }), Key.digest_of("POST", { "file" => uploads[2] })
+    assert_equal digest.(upload.(0)), digest.(upload.(1)), "the same bytes, name and type"
+    refute_equal digest.(upload.(0)), digest.(upload.(2)), "other bytes"
+    refute_equal digest.(upload.(0)), digest.(upload.(3, "text/csv", "refunds.csv")), "another file name"
+    refute_equal digest.(upload.(0)), digest.(upload.(3, "text/plain")), "another content type"
   ensure
     files&.each(&:close!)
+  end
+
+  test "an upload never encodes like an ordinary value" do
+    file = Tempfile.new("upload").tap { |tempfile| tempfile.write("first") && tempfile.flush }
+    upload = Rack::Test::UploadedFile.new(file.path, "text/csv", original_filename: "sales.csv")
+    hex = Digest::SHA256.file(file.path).hexdigest
+    digest = ->(value) { Key.digest_of("POST", { "file" => value }) }
+
+    refute_equal digest.(upload), digest.(hex), "a text that holds the upload's digest"
+    refute_equal digest.(upload), digest.(["upload", hex, "sales.csv", "text/csv"]), "a list that copies its encoding"
+    refute_equal digest.({ "a" => "1" }), digest.([["a", "1"]]), "a hash and a list of pairs"
+    refute_equal digest.("1"), digest.(1), "a text and a number"
+  ensure
+    file&.close!
   end
 
   # == Hold ==
@@ -158,14 +175,34 @@ class IdempotencyKeyTest < ApiKeys::Test
     assert_empty Key.all
   end
 
-  test "hold runs inside the transaction Rails opens around a test, which nothing can join" do
+  test "hold refuses a transaction that nothing can join too: an outer rollback would remove the claim" do
     connection = ActiveRecord::Base.connection
     connection.begin_transaction(joinable: false)
+
+    assert_raises(ApiKeys::Error) { Key.hold(@api_key, "production-wrapper") { flunk "the write must not run" } }
+  ensure
+    connection.rollback_transaction if connection.transaction_open?
+  end
+
+  test "transactional tests opt in with the test-only switch" do
+    ApiKeys.configuration.idempotency_in_test_transactions = true
+    connection = ActiveRecord::Base.connection
+    connection.begin_transaction(joinable: false) # what Rails opens around a transactional test
     Key.hold(@api_key, "in-a-test") { |record| record.answer!(201, @owner) }
 
     assert Key.find_by!(key: "in-a-test").answered?
   ensure
     connection.rollback_transaction if connection.transaction_open?
+  end
+
+  test "the test-only switch is off by default, takes only true or false, and refuses production" do
+    refute ApiKeys::Configuration.new.idempotency_in_test_transactions
+    assert_raises(ArgumentError) { ApiKeys.configuration.idempotency_in_test_transactions = "yes" }
+
+    Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new("production"))
+    error = assert_raises(ArgumentError) { ApiKeys.configuration.idempotency_in_test_transactions = true }
+    assert_match "tests only", error.message
+    ApiKeys.configuration.idempotency_in_test_transactions = false
   end
 
   test "the digest of an overlapping query and body differs from the same names moved" do

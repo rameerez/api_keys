@@ -30,7 +30,9 @@ module ApiKeys
     USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ".chars.freeze
     USER_CODE_LENGTH = 8
     MAX_NAME_LENGTH = 60 # for client_id and device_name each
-    STATES = %w[pending approved denied completed].freeze
+    # `void`: approved, but the app's configuration changed so that the key
+    # can no longer be made as the person approved it. The request is closed.
+    STATES = %w[pending approved denied completed void].freeze
 
     # Raised when a request that was decided already, or that expired, is
     # approved or denied.
@@ -44,6 +46,12 @@ module ApiKeys
         super
       end
     end
+
+    # The answer to a void request: RFC 6749 §5.2 "invalid_scope ... exceeds
+    # the scope granted by the resource owner". The app can no longer make
+    # the key with the scopes and the type the person approved. It is not
+    # access_denied: the person denied nothing. Clients stop on it.
+    VOID_ERROR = "invalid_scope"
 
     # What `create_api_key!` raises when it cannot make the key.
     KEY_CREATION_ERRORS = [
@@ -208,8 +216,9 @@ module ApiKeys
     # One poll of the client (§3.4, §3.5), under the row's lock. A poll from
     # another client changes nothing. A poll that comes sooner than the
     # interval slows the client down by five seconds. A poll never raises
-    # for a key that cannot be made: the client waits, as for a pending
-    # request, and polls again.
+    # for a key that cannot be made. An owner at its key limit is the one
+    # case that may pass: the client waits, as for a pending request. Every
+    # other failure closes the request.
     #
     # @return [Poll] the new key once, or the error code
     def poll!(client_id:)
@@ -220,12 +229,13 @@ module ApiKeys
         # An owner deleted since the approval gets no key.
         next Poll.new(error: "access_denied") if denied? || (approved? && owner.nil?)
         next Poll.new(error: "invalid_grant") if completed? # the device code was used
-        # The configuration changed since the approval, so the key would
-        # authorize more than the person approved (RFC 6749 §5.2).
-        next Poll.new(error: "invalid_scope") if approved? && grant_exceeds_approval?
+        next Poll.new(error: VOID_ERROR) if void?
 
-        key = complete! if approved?
-        next Poll.new(api_key: key) if key
+        if approved?
+          key, closed = complete!
+          next Poll.new(api_key: key) if key
+          next Poll.new(error: VOID_ERROR) if closed
+        end
 
         too_soon = last_polled_at && last_polled_at > interval.seconds.ago
         update_columns(last_polled_at: Time.current, interval: too_soon ? interval + SLOW_DOWN : interval)
@@ -258,22 +268,49 @@ module ApiKeys
       end
     end
 
-    # Creates the key, or answers nil when it cannot be made: the owner
-    # reached its key limit after the approval, for example. Then nothing is
-    # kept, and the request stays approved for the next poll. The person who
-    # approved stands behind the key (created_by), when the api_keys table
-    # has the created_by columns.
+    # Whether the configuration changed since the request, so that no key
+    # can be made as the person approved it: key types turned on for an
+    # untyped request, the request's type removed or renamed, or a ceiling
+    # that would authorize more than the approved scopes. The type stored at
+    # the request is the type of the key; it is never resolved again.
+    def configuration_incompatible?
+      configured = ApiKeys.configuration.key_types.keys.map(&:to_s)
+      return configured.any? if key_type.blank?
+
+      !configured.include?(key_type) || grant_exceeds_approval?
+    end
+
+    # Makes the key: [key, false]. An owner at its key limit gives
+    # [nil, false], and the request stays approved for a later poll. Any
+    # other failure closes the request: [nil, true]. The person who approved
+    # stands behind the key (created_by), when the api_keys table has the
+    # created_by columns.
     def complete!
+      return [nil, void!] if configuration_incompatible?
+      return [nil, false] unless room_for_key?
+
       person = { created_by: decided_by } if decided_by && ApiKeys::ApiKey.created_by_columns?
-      transaction(requires_new: true) do
-        key = owner.create_api_key!(name: key_name, scopes: scopes, key_type: key_type.presence, **person.to_h)
-        update_columns(state: "completed", api_key_id: key.id, updated_at: Time.current)
-        key
+      key = transaction(requires_new: true) do
+        owner.create_api_key!(name: key_name, scopes: scopes, key_type: key_type.presence, **person.to_h).tap do |made|
+          update_columns(state: "completed", api_key_id: made.id, updated_at: Time.current)
+        end
       end
+      [key, false]
     rescue *KEY_CREATION_ERRORS => error
       ActiveRecord::Base.logger&.warn("[ApiKeys] Device authorization #{id} could not create its key (#{error.class}).")
       reload
-      nil
+      # A key made by another request in the meantime can fill the last
+      # place: that is the key limit again, and it passes.
+      error.is_a?(ActiveRecord::RecordInvalid) && !room_for_key? ? [nil, false] : [nil, void!]
+    end
+
+    def room_for_key?
+      owner.can_create_api_key?(key_type: key_type.presence)
+    end
+
+    def void!
+      update_columns(state: "void", updated_at: Time.current)
+      true
     end
 
     def key_type_is_configured

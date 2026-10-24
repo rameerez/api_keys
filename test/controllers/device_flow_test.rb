@@ -271,7 +271,7 @@ class DeviceFlowTest < ApiKeys::Test
 
     refused = poll(codes)
     assert_equal "invalid_scope", refused["error"]
-    assert_match "more than the person approved", refused["error_description"]
+    assert_match "can no longer make the key", refused["error_description"]
     assert_empty @owner.api_keys
   end
 
