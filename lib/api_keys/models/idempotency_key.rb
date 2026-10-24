@@ -65,8 +65,17 @@ module ApiKeys
 
       # Yields the API key's row of +key+, locked, inside the transaction that
       # the caller's write joins. Raises Busy while another request holds it.
+      #
+      # It runs outside any transaction the app opens, so that the claim
+      # commits on its own. The transaction Rails opens around each test
+      # (one that nothing can join) is allowed.
       def hold(api_key, key)
-        busy_on_lock_wait { claim(api_key, key) }
+        if connection.transaction_open? && connection.current_transaction.joinable?
+          raise ApiKeys::Error, "ApiKeys::IdempotencyKey.hold runs outside database transactions, so that the key's " \
+                                "claim commits on its own: run run_once_per_idempotency_key outside any transaction"
+        end
+
+        claim(api_key, key)
         transaction(requires_new: true) { yield locked(api_key, key) }
       end
 
@@ -75,7 +84,7 @@ module ApiKeys
       # locks: there an UPDATE takes the database's write lock first, and the
       # wait is the database's busy timeout.
       def locked(api_key, key)
-        rows = where(api_key: api_key, key: key)
+        rows = where(api_key_id: api_key.id, key: key)
         busy_on_lock_wait do
           waiting_at_most_lock_timeout do
             rows.update_all(updated_at: Time.current) if connection.adapter_name.match?(/sqlite/i)
@@ -86,18 +95,27 @@ module ApiKeys
 
       private
 
-      # Claims the key's row in a commit of its own. A key that exists is
-      # read without a lock, so a retry never waits here for the request
-      # that holds it: it waits in `locked`, at most LOCK_TIMEOUT. A day-old
-      # key is deleted and claimed afresh.
+      # Claims the key's row in a transaction of its own. A key that exists
+      # is read without a lock, so a retry never waits here for the request
+      # that holds it: it waits in `locked`. A new key is inserted, and two
+      # first requests with the same key wait for each other's insert at
+      # most LOCK_TIMEOUT. A day-old key is deleted and claimed afresh. The
+      # read comes before the transaction, so on MySQL the insert's fallback
+      # read sees the row that the other request committed.
       def claim(api_key, key)
-        rows = where(api_key: api_key, key: key)
-        existing = rows.take
+        rows = where(api_key_id: api_key.id, key: key)
+        existing = busy_on_lock_wait { rows.take }
         return existing if existing && existing.created_at > RETENTION.ago
 
-        rows.expired.delete_all if existing
-        # The row keeps the API key's id, never its token.
-        create_or_find_by!(api_key_id: api_key.id, key: key)
+        busy_on_lock_wait do
+          transaction(requires_new: true) do
+            waiting_at_most_lock_timeout do
+              rows.expired.delete_all if existing
+              # The row keeps the API key's id, never its token.
+              create_or_find_by!(api_key_id: api_key.id, key: key)
+            end
+          end
+        end
       end
 
       def uploaded_file_digest(value)

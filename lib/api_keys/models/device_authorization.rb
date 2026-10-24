@@ -67,6 +67,7 @@ module ApiKeys
     validates :client_id, presence: true, length: { maximum: MAX_NAME_LENGTH }
     validates :device_name, length: { maximum: MAX_NAME_LENGTH }
     validates :state, inclusion: { in: STATES }
+    validate :key_type_is_configured
     validate :scopes_are_grantable
 
     scope :undecided, -> { where(state: "pending").where("expires_at > ?", Time.current) }
@@ -77,15 +78,20 @@ module ApiKeys
       # A new request. Its `device_code` and `user_code` hold the plaintext
       # codes on this instance only.
       #
+      # +key_type+ is the type of the key the approval makes: a configured
+      # type when key types are configured, nil otherwise.
+      #
       # @return [ApiKeys::DeviceAuthorization]
       # @raise [ActiveRecord::RecordInvalid] for a missing client_id, a name
-      #   that is too long, or scopes the app does not grant
-      def request!(client_id:, scopes:, device_name: nil, requested_from: nil)
+      #   that is too long, or scopes a key of the type does not grant
+      # @raise [ArgumentError] for a key type the configuration does not name
+      def request!(client_id:, scopes:, device_name: nil, requested_from: nil, key_type: nil)
+        check_key_type!(key_type)
         device_code = SecureRandom.urlsafe_base64(32)
         user_code = Array.new(USER_CODE_LENGTH) { USER_CODE_ALPHABET[SecureRandom.random_number(USER_CODE_ALPHABET.size)] }.join
         authorization = create!(
           device_code_digest: digest(device_code), user_code_digest: digest(user_code),
-          client_id: client_id, device_name: device_name, scopes: Array(scopes).uniq,
+          client_id: client_id, device_name: device_name, scopes: Array(scopes).uniq, key_type: key_type&.to_s,
           requested_from: requested_from, interval: INTERVAL, expires_at: LIFETIME.from_now
         )
         authorization.instance_variable_set(:@device_code, device_code)
@@ -104,9 +110,35 @@ module ApiKeys
       end
 
       # The scopes a client may ask for: the app's `config.default_scopes`,
-      # the scopes a person can give a key.
-      def grantable_scopes
-        ApiKeys.configuration.default_scopes
+      # the scopes a person can give a key, within the permissions of
+      # +key_type+.
+      def grantable_scopes(key_type = nil)
+        permissions = key_type_config(key_type)&.[](:permissions)
+        scopes = ApiKeys.configuration.default_scopes
+        permissions.is_a?(Array) ? scopes & permissions.map(&:to_s) : scopes
+      end
+
+      # The configuration of +key_type+, or nil.
+      def key_type_config(key_type)
+        return nil if key_type.blank?
+
+        ApiKeys.configuration.key_types.find { |name, _settings| name.to_s == key_type.to_s }&.last
+      end
+
+      # With key types configured, every key has a configured type, so the
+      # request must name one. Without them, it must name none. A wrong
+      # setting is the app's error, not the client's: it raises.
+      def check_key_type!(key_type)
+        configured = ApiKeys.configuration.key_types.keys.map(&:to_s)
+        if configured.empty?
+          return if key_type.blank?
+
+          raise ArgumentError, "the device flow names key type #{key_type.inspect}, but no key types are configured"
+        end
+        return if configured.include?(key_type.to_s)
+
+        raise ArgumentError, "the device flow needs a configured key type: set config.default_key_type, " \
+                             "or define device_key_type in the controller (got #{key_type.inspect})"
       end
 
       def digest(text)
@@ -125,6 +157,24 @@ module ApiKeys
     # grant of this one.
     def client?(id)
       client_id == id.to_s.strip
+    end
+
+    # The scopes the key would authorize: the approved scopes within the
+    # type's permissions, or, for a `scopes: :ceiling` type, the type's whole
+    # live ceiling, whatever the key stores.
+    def granted_scopes
+      type_config = self.class.key_type_config(key_type)
+      return Array(scopes) unless type_config
+      return type_config[:permissions].map(&:to_s) if ApiKeys::ApiKey.scopes_follow_ceiling_for?(type_config)
+
+      permissions = type_config[:permissions]
+      permissions.is_a?(Array) ? Array(scopes) & permissions.map(&:to_s) : Array(scopes)
+    end
+
+    # Whether the key would authorize more than the person approved: a
+    # `scopes: :ceiling` type whose ceiling holds a scope that was not asked.
+    def grant_exceeds_approval?
+      (granted_scopes - Array(scopes)).any?
     end
 
     # "Fictional agent on build-box": the name the key gets. Characters a
@@ -146,7 +196,7 @@ module ApiKeys
       end
 
       decide!("approved", by: by, owner: owner) do
-        raise KeyLimitReached unless owner.can_create_api_key?(key_type: key_type_for_new_keys)
+        raise KeyLimitReached unless owner.can_create_api_key?(key_type: key_type.presence)
       end
     end
 
@@ -170,6 +220,9 @@ module ApiKeys
         # An owner deleted since the approval gets no key.
         next Poll.new(error: "access_denied") if denied? || (approved? && owner.nil?)
         next Poll.new(error: "invalid_grant") if completed? # the device code was used
+        # The configuration changed since the approval, so the key would
+        # authorize more than the person approved (RFC 6749 §5.2).
+        next Poll.new(error: "invalid_scope") if approved? && grant_exceeds_approval?
 
         key = complete! if approved?
         next Poll.new(api_key: key) if key
@@ -193,16 +246,6 @@ module ApiKeys
       end
     end
 
-    # The key type `create_api_key!` gives the key: the default type when
-    # key types are configured, none otherwise.
-    def key_type_for_new_keys
-      config = ApiKeys.configuration
-      return nil if config.key_types.blank?
-      return config.default_key_type if config.default_key_type.present?
-
-      raise ArgumentError, "the device flow needs config.default_key_type when key types are configured"
-    end
-
     # Reloads the row under its lock for the rest of a transaction. SELECT
     # ... FOR UPDATE locks the row on PostgreSQL and MySQL. SQLite has no
     # row locks, so there an UPDATE first takes the database's write lock,
@@ -223,7 +266,7 @@ module ApiKeys
     def complete!
       person = { created_by: decided_by } if decided_by && ApiKeys::ApiKey.created_by_columns?
       transaction(requires_new: true) do
-        key = owner.create_api_key!(name: key_name, scopes: scopes, **person.to_h)
+        key = owner.create_api_key!(name: key_name, scopes: scopes, key_type: key_type.presence, **person.to_h)
         update_columns(state: "completed", api_key_id: key.id, updated_at: Time.current)
         key
       end
@@ -233,11 +276,21 @@ module ApiKeys
       nil
     end
 
-    def scopes_are_grantable
-      grantable = self.class.grantable_scopes
-      return if scopes.is_a?(Array) && scopes.any? && scopes.all? { |scope| grantable.include?(scope) }
+    def key_type_is_configured
+      configured = ApiKeys.configuration.key_types.keys.map(&:to_s)
+      valid = configured.empty? ? key_type.blank? : configured.include?(key_type.to_s)
+      errors.add(:key_type, :inclusion) unless valid
+    end
 
-      errors.add(:scopes, :inclusion)
+    # The person approves exactly what the key may do: every scope is one a
+    # key of the type grants, and the type grants nothing more.
+    def scopes_are_grantable
+      grantable = self.class.grantable_scopes(key_type)
+      unless scopes.is_a?(Array) && scopes.any? && scopes.all? { |scope| grantable.include?(scope) }
+        return errors.add(:scopes, :inclusion)
+      end
+
+      errors.add(:scopes, "must hold every permission of a #{key_type} key, which follows its ceiling") if grant_exceeds_approval?
     end
   end
 end

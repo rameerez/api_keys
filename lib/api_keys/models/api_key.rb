@@ -65,6 +65,11 @@ module ApiKeys
     # saves can never set or clear it, so no update path (a form, mass
     # assignment, a stray `update`) can reopen a handoff that was claimed.
     attr_readonly :token_shown_at
+    # The person behind the key is fixed at creation. `config.trusted_key_check`
+    # may trust a key because of that person, so no save (with or without
+    # validations) and no update_column can name another one. A backfill of
+    # keys made before the columns existed writes them with SQL (update_all).
+    attr_readonly :created_by_type, :created_by_id
     attr_accessor :expires_at_preset
 
     # JSON attributes (:scopes, :metadata) are defined in the engine initializer

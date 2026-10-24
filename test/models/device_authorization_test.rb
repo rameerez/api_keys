@@ -36,8 +36,9 @@ class DeviceAuthorizationTest < ApiKeys::Test
     @person = User.create!(name: "Ada")
   end
 
-  def request_codes(client_id: CLIENT, device_name: "build-box", scopes: %w[read write])
-    Authorization.request!(client_id: client_id, device_name: device_name, scopes: scopes, requested_from: "203.0.113.7")
+  def request_codes(client_id: CLIENT, device_name: "build-box", scopes: %w[read write], key_type: nil)
+    Authorization.request!(client_id: client_id, device_name: device_name, scopes: scopes, requested_from: "203.0.113.7",
+                           key_type: key_type)
   end
 
   # == Request (RFC 8628 §3.1, §3.2) ==
@@ -272,25 +273,87 @@ class DeviceAuthorizationTest < ApiKeys::Test
     assert authorization.poll!(client_id: CLIENT).api_key
   end
 
-  test "an approval checks the limit of the key type the device flow uses" do
+  test "an approval checks the limit of the request's key type" do
     ApiKeys.configure do |config|
       config.key_types = { secret: { prefix: "sk", permissions: :all, limit: 1 } }
       config.default_key_type = :secret
     end
     @owner.create_api_key!(name: "Existing")
-    authorization = request_codes
+    authorization = request_codes(key_type: :secret)
 
     assert_raises(Authorization::KeyLimitReached) { authorization.approve!(@owner, by: @person) }
     assert authorization.reload.pending?
   end
 
-  test "with key types but no default type, an approval names the missing setting" do
-    ApiKeys.configure { |config| config.key_types = { secret: { prefix: "sk", permissions: :all } } }
-    authorization = request_codes
+  # == Key types ==
 
-    error = assert_raises(ArgumentError) { authorization.approve!(@owner, by: @person) }
+  test "with key types configured, a request names a configured type; without them, none" do
+    ApiKeys.configure { |config| config.key_types = { secret: { prefix: "sk", permissions: :all } } }
+
+    error = assert_raises(ArgumentError) { request_codes }
     assert_match "default_key_type", error.message
-    assert authorization.reload.pending?
+    assert_raises(ArgumentError) { request_codes(key_type: :publishable) }
+    assert_equal "secret", request_codes(key_type: :secret).key_type
+
+    ApiKeys.configuration.key_types = {}
+    assert_raises(ArgumentError) { request_codes(key_type: :secret) }
+    assert_empty Authorization.where(key_type: nil)
+  end
+
+  test "the key is of the request's type" do
+    ApiKeys.configure do |config|
+      config.key_types = { secret: { prefix: "sk", permissions: :all }, agent: { prefix: "ag", permissions: %w[read write] } }
+      config.default_key_type = :secret
+    end
+    authorization = request_codes(key_type: :agent)
+    authorization.approve!(@owner, by: @person)
+
+    key = authorization.poll!(client_id: CLIENT).api_key
+    assert_equal "agent", key.key_type
+    assert_match(/\Aag_/, key.token)
+    assert_equal %w[read write], key.scopes
+  end
+
+  test "a type with a finite ceiling grants only the scopes within it" do
+    ApiKeys.configure do |config|
+      config.key_types = { agent: { prefix: "ag", permissions: %w[read write] } }
+    end
+
+    assert_equal %w[read write], Authorization.grantable_scopes(:agent)
+    assert_equal %w[read write deploy], Authorization.grantable_scopes
+    assert_raises(ActiveRecord::RecordInvalid) { request_codes(key_type: :agent, scopes: %w[read deploy]) }
+  end
+
+  test "a ceiling type grants its whole ceiling, so the request must ask for all of it" do
+    ApiKeys.configure do |config|
+      config.key_types = { agent: { prefix: "ag", permissions: %w[read write], scopes: :ceiling } }
+    end
+
+    error = assert_raises(ActiveRecord::RecordInvalid) { request_codes(key_type: :agent, scopes: %w[read]) }
+    assert_match "every permission", error.message
+    assert_empty Authorization.all
+
+    authorization = request_codes(key_type: :agent, scopes: %w[read write])
+    authorization.approve!(@owner, by: @person)
+    key = authorization.poll!(client_id: CLIENT).api_key
+    assert key.allows_scope?("write")
+    assert_equal %w[read write], authorization.granted_scopes
+  end
+
+  test "a ceiling widened after the request: the approval is refused, and a poll makes no key" do
+    ApiKeys.configure do |config|
+      config.key_types = { agent: { prefix: "ag", permissions: %w[read write], scopes: :ceiling } }
+    end
+    before_approval = request_codes(key_type: :agent, scopes: %w[read write])
+    after_approval = request_codes(key_type: :agent, scopes: %w[read write])
+    after_approval.approve!(@owner, by: @person)
+
+    ApiKeys.configuration.key_types = { agent: { prefix: "ag", permissions: %w[read write deploy], scopes: :ceiling } }
+
+    assert_raises(ActiveRecord::RecordInvalid) { before_approval.approve!(@owner, by: @person) }
+    assert before_approval.reload.pending?
+    assert_equal "invalid_scope", after_approval.poll!(client_id: CLIENT).error, "the key would also authorize deploy"
+    assert_empty ApiKeys::ApiKey.all
   end
 
   test "an owner that reaches its limit after the approval: the poll waits, and never raises" do

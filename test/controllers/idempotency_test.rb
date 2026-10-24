@@ -65,6 +65,27 @@ class IdempotencyTest < ApiKeys::Test
     def resource_json(widget, secret: nil)
       { id: widget.id, name: widget.name, secret: secret }.compact
     end
+
+    def idempotent_replay_allowed?(widget)
+      widget.owner == current_api_owner
+    end
+  end
+
+  # A host that renders records but never says who may read them.
+  class UnauthorizedReplayController < ActionController::API
+    include ApiKeys::Controller
+    include ApiKeys::Idempotency
+
+    before_action :authenticate_api_key!
+    around_action :run_once_per_idempotency_key
+
+    def create
+      render_resource Widget.create!(name: "unchecked")
+    end
+
+    private
+
+    def resource_json(widget) = { id: widget.id }
   end
 
   # A host that renders the gem's refusals in its own error shape.
@@ -110,6 +131,7 @@ class IdempotencyTest < ApiKeys::Test
       post "/widgets/touch", to: WidgetsController.action(:touch)
       post "/shaped/widgets", to: ShapedWidgetsController.action(:create)
       post "/unrendered", to: UnrenderedController.action(:create)
+      post "/unauthorized", to: UnauthorizedReplayController.action(:create)
       post "/misordered", to: MisorderedController.action(:create)
     end
   end
@@ -292,6 +314,38 @@ class IdempotencyTest < ApiKeys::Test
     assert_equal 404, last_response.status
   end
 
+  test "a retry answers only a record that the API key may still read: one moved to another owner is not found" do
+    first = api(:post, "/widgets", { name: "Gear" }, key: "widget-14")
+    other_owner = User.create!(name: "Globex")
+    Widget.find(first["id"]).update!(owner: other_owner, name: "Globex secret plans")
+
+    assert_equal({ "error" => "not_found" }, api(:post, "/widgets", { name: "Gear" }, key: "widget-14"))
+    assert_equal 404, last_response.status
+    refute_includes last_response.body, "Globex"
+    assert_nil last_response.headers["Idempotent-Replayed"]
+  end
+
+  test "a host must say who may read a replayed record, before its first write" do
+    error = assert_raises(NotImplementedError) { api(:post, "/unauthorized") }
+
+    assert_match "idempotent_replay_allowed?", error.message
+    assert_empty Widget.all
+    assert_empty ApiKeys::IdempotencyKey.all
+  end
+
+  test "the query and the body count apart: a name moved between them makes another request" do
+    api(:post, "/widgets?name=Gear", { name: "Body gear" }, key: "widget-15")
+    assert_equal 201, last_response.status
+
+    assert_equal "idempotency_key_reused", api(:post, "/widgets?name=Cog", { name: "Body gear" }, key: "widget-15")["error"]
+    api(:post, "/widgets", { name: "Body gear" }, key: "widget-15")
+    assert_equal 422, last_response.status, "a query left out is another request"
+
+    api(:post, "/widgets?name=Gear", { name: "Body gear" }, key: "widget-15")
+    assert_equal "true", last_response.headers["Idempotent-Replayed"]
+    assert_equal 1, Widget.count
+  end
+
   test "a write that answers without its record fails and commits nothing" do
     error = assert_raises(ArgumentError) { api(:post, "/widgets/touch") }
 
@@ -320,6 +374,7 @@ class IdempotencyTest < ApiKeys::Test
     error = assert_raises(NotImplementedError) { api(:post, "/unrendered") }
 
     assert_match "resource_json", error.message
+    assert_match "idempotent_replay_allowed?", error.message
     assert_empty Widget.all
   end
 

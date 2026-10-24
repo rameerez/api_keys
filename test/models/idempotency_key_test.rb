@@ -149,6 +149,35 @@ class IdempotencyKeyTest < ApiKeys::Test
     assert_match(/\ASELECT "api_keys_idempotency_keys"\.\* FROM/, locking.second)
   end
 
+  test "hold refuses to run inside a transaction of the app, where its claim could not commit on its own" do
+    error = assert_raises(ApiKeys::Error) do
+      ActiveRecord::Base.transaction { Key.hold(@api_key, "nested") { flunk "the write must not run" } }
+    end
+
+    assert_match "outside database transactions", error.message
+    assert_empty Key.all
+  end
+
+  test "hold runs inside the transaction Rails opens around a test, which nothing can join" do
+    connection = ActiveRecord::Base.connection
+    connection.begin_transaction(joinable: false)
+    Key.hold(@api_key, "in-a-test") { |record| record.answer!(201, @owner) }
+
+    assert Key.find_by!(key: "in-a-test").answered?
+  ensure
+    connection.rollback_transaction if connection.transaction_open?
+  end
+
+  test "the digest of an overlapping query and body differs from the same names moved" do
+    once = Key.digest_of("POST", "/widgets", { "query" => { "name" => "A" }, "body" => { "name" => "body" } })
+    moved = Key.digest_of("POST", "/widgets", { "query" => { "name" => "B" }, "body" => { "name" => "body" } })
+    nested = Key.digest_of("POST", "/w", { "query" => {}, "body" => { "a" => { "y" => 1, "x" => [{ "q" => 1, "p" => 2 }] } } })
+    reordered = Key.digest_of("POST", "/w", { "body" => { "a" => { "x" => [{ "p" => 2, "q" => 1 }], "y" => 1 } }, "query" => {} })
+
+    refute_equal once, moved
+    assert_equal nested, reordered
+  end
+
   # == Housekeeping ==
 
   test "prune! deletes the keys older than a day" do

@@ -39,21 +39,28 @@ module ApiKeys
       "invalid_grant" => "This device code is unknown, was used already, or belongs to another client_id.",
       "unsupported_grant_type" => "Send grant_type=#{GRANT_TYPE}.",
       "invalid_scope" => "Ask for scopes among: %{scopes}.",
+      # The token endpoint's invalid_scope (RFC 6749 §5.2: "exceeds the scope
+      # granted by the resource owner").
+      "scope_exceeds_approval" => "The key would grant more than the person approved. Ask for new codes.",
       "invalid_request" => "Send client_id, the client's name, and device_name, the device's name: " \
                            "at most #{ApiKeys::DeviceAuthorization::MAX_NAME_LENGTH} characters each."
     }.freeze
 
     # RFC 8628 §3.1 and §3.2. `scope` lists the scopes, space-separated
-    # (RFC 6749 §3.3). A client may ask for any of `config.default_scopes`.
+    # (RFC 6749 §3.3). A client may ask for any of `config.default_scopes`
+    # that a key of `device_key_type` grants. A type whose scopes follow
+    # its ceiling grants the whole ceiling, so the request asks for all of it.
     def create
+      key_type = device_key_type
+      ApiKeys::DeviceAuthorization.check_key_type!(key_type)
       scopes = params.fetch(:scope) { device_default_scope }.to_s.split.uniq
-      if scopes.empty? || (scopes - ApiKeys::DeviceAuthorization.grantable_scopes).any?
+      if scopes.empty? || (scopes - ApiKeys::DeviceAuthorization.grantable_scopes(key_type)).any?
         return render_oauth_error("invalid_scope")
       end
 
       authorization = ApiKeys::DeviceAuthorization.request!(
         client_id: params[:client_id].to_s.strip, device_name: params[:device_name].to_s.strip.presence,
-        scopes: scopes, requested_from: ApiKeys.configuration.client_ip_resolver.call(request)
+        scopes: scopes, key_type: key_type, requested_from: ApiKeys.configuration.client_ip_resolver.call(request)
       )
       render_without_cache json: {
         device_code: authorization.device_code, user_code: authorization.user_code,
@@ -61,8 +68,8 @@ module ApiKeys
         verification_uri_complete: device_verification_uri(authorization.user_code),
         expires_in: ApiKeys::DeviceAuthorization::LIFETIME.to_i, interval: authorization.interval
       }
-    rescue ActiveRecord::RecordInvalid
-      render_oauth_error("invalid_request")
+    rescue ActiveRecord::RecordInvalid => error
+      render_oauth_error(error.record.errors.include?(:scopes) ? "invalid_scope" : "invalid_request")
     end
 
     # RFC 8628 §3.4 and §3.5. The answer that carries the token is the only
@@ -79,6 +86,9 @@ module ApiKeys
         poll = authorization.poll!(client_id: params[:client_id])
         device_token_response(authorization, poll.api_key) if poll.api_key
       end
+      if poll.error == "invalid_scope"
+        return render_oauth_error("invalid_scope", oauth_error_description("scope_exceeds_approval"))
+      end
       return render_oauth_error(poll.error) if poll.error
 
       render_without_cache json: body
@@ -91,6 +101,12 @@ module ApiKeys
     def device_verification_uri(_user_code = nil)
       raise NotImplementedError,
             "#{self.class.name} must define device_verification_uri(user_code = nil): the URL of its approval page"
+    end
+
+    # The type of the keys this flow makes. With key types configured, it
+    # must name one; the default is `config.default_key_type`.
+    def device_key_type
+      ApiKeys.configuration.default_key_type
     end
 
     # The scope a request without `scope` asks for, space-separated. With
@@ -111,9 +127,13 @@ module ApiKeys
     #   rate_limit to: 20, within: 1.hour, only: :create,
     #     with: -> { render_oauth_error("slow_down", "Too many requests.", status: :too_many_requests) }
     def render_oauth_error(error, description = nil, status: :bad_request)
-      description ||= I18n.t("api_keys.device_flow.errors.#{error}", default: ERROR_DESCRIPTIONS[error].to_s,
-                                                                     scopes: ApiKeys::DeviceAuthorization.grantable_scopes.join(" "))
+      description ||= oauth_error_description(error)
       render_without_cache json: { error: error, error_description: description.presence }.compact, status: status
+    end
+
+    def oauth_error_description(name)
+      scopes = ApiKeys::DeviceAuthorization.grantable_scopes(device_key_type).join(" ")
+      I18n.t("api_keys.device_flow.errors.#{name}", default: ERROR_DESCRIPTIONS[name].to_s, scopes: scopes)
     end
 
     # RFC 6749 §5.1: an answer that carries a credential is never cached.

@@ -22,6 +22,8 @@ class CreateApiKeysDeviceAuthorizations < ActiveRecord::Migration<%= migration_v
       # No default here: MySQL refuses a literal default on a JSON column.
       # The model defaults scopes to [].
       t.send(json_column_type, :scopes, null: false)
+      # The type of the key the approval makes, when key types are configured.
+      t.string :key_type
       t.string :state, default: "pending", null: false
       t.integer :interval, default: 5, null: false
       t.datetime :expires_at, null: false, index: true

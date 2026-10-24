@@ -93,10 +93,27 @@ class TrustedKeyCheckTest < ApiKeys::Test
 
     unnamed = @organization.create_api_key!(name: "Old")
     refute unnamed.update(created_by: other), "a key made without a person cannot gain one either"
-
-    unnamed.update_columns(created_by_type: "User", created_by_id: @person.id)
-    assert_equal @person, unnamed.reload.created_by, "a backfill migration writes the columns directly"
+    assert_nil unnamed.reload.created_by
     assert unnamed.update(name: "Renamed"), "other edits still save"
+  end
+
+  test "the bypass paths cannot change the person behind a key either" do
+    key = @organization.create_api_key!(name: "CI", created_by: @person)
+    other = User.create!(name: "Mallory")
+
+    assert_raises(ActiveRecord::ActiveRecordError) { key.update_column(:created_by_id, other.id) }
+    assert_raises(ActiveRecord::ActiveRecordError) { key.update_columns(created_by_type: "User", created_by_id: other.id) }
+    key.reload.created_by = other
+    key.save!(validate: false)
+    assert_equal @person, ApiKeys::ApiKey.find(key.id).created_by, "a save without validations leaves the columns alone"
+  end
+
+  test "a backfill of keys made before the columns existed writes them with SQL" do
+    unnamed = @organization.create_api_key!(name: "Old")
+
+    ApiKeys::ApiKey.where(id: unnamed.id, created_by_id: nil).update_all(created_by_type: "User", created_by_id: @person.id)
+
+    assert_equal @person, unnamed.reload.created_by
   end
 
   test "without the created_by columns keys work, and naming a person asks for the migration" do

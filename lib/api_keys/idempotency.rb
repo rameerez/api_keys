@@ -21,6 +21,12 @@ module ApiKeys
   #     def resource_json(record, **options)
   #       record.as_json(only: %i[id name])
   #     end
+  #
+  #     # Whether this API key may read the record now. A retry answers only
+  #     # records it may read: a record moved to another owner is not found.
+  #     def idempotent_replay_allowed?(record)
+  #       record.owner == current_api_owner
+  #     end
   #   end
   #
   #   class Api::ProjectsController < Api::BaseController
@@ -28,6 +34,9 @@ module ApiKeys
   #       render_resource current_api_owner.projects.create!(project_params), status: :created
   #     end
   #   end
+  #
+  # The around_action runs outside any transaction the app opens: the key's
+  # claim must commit on its own (ApiKeys::IdempotencyKey.hold refuses).
   #
   # Every request but GET and HEAD needs the header. A write answers with
   # `render_resource`, so the key keeps the record it made or changed, and a
@@ -43,6 +52,9 @@ module ApiKeys
     include ApiKeys::Authentication
 
     REPLAYED_HEADER = "Idempotent-Replayed"
+    # The methods a host defines: the gem cannot know how to render a record,
+    # or who may read it.
+    HOST_METHODS = %i[resource_json idempotent_replay_allowed?].freeze
 
     private
 
@@ -52,6 +64,8 @@ module ApiKeys
     def run_once_per_idempotency_key
       return yield if reading_request?
       raise ApiKeys::Error, "run authenticate_api_key! before run_once_per_idempotency_key" unless current_api_key
+
+      require_idempotency_host_methods!
 
       key = request.headers[ApiKeys::IdempotencyKey::HEADER].to_s
       if key.blank? || key.length > ApiKeys::IdempotencyKey::MAX_LENGTH
@@ -89,9 +103,30 @@ module ApiKeys
             "#{self.class.name} must define resource_json(record, **options) for ApiKeys::Idempotency"
     end
 
+    # Whether current_api_key may read +record+ now. Define it in the host
+    # controller. A retry runs no action, so this is the only check before a
+    # record's current state goes back to the client.
+    def idempotent_replay_allowed?(_record)
+      raise NotImplementedError,
+            "#{self.class.name} must define idempotent_replay_allowed?(record) for ApiKeys::Idempotency: " \
+            "whether current_api_key may read the record that a retry answers with"
+    end
+
+    # Both host methods are checked on the first write, not on the first
+    # retry, so a missing one shows in development and tests.
+    def require_idempotency_host_methods!
+      missing = HOST_METHODS.select { |name| method(name).owner == ApiKeys::Idempotency }
+      return if missing.empty?
+
+      raise NotImplementedError, "#{self.class.name} must define #{missing.join(' and ')} for ApiKeys::Idempotency: " \
+                                 "resource_json(record, **options) renders a record, and " \
+                                 "idempotent_replay_allowed?(record) answers whether current_api_key may read it"
+    end
+
     # The answer to a retry: the record as it is now, never a stored body,
-    # so it is current and holds no secret. A record that no longer exists
-    # is not found (ActiveRecord::RecordNotFound, which Rails answers 404).
+    # so it is current and holds no secret. A record that no longer exists,
+    # or that this API key may no longer read, is not found
+    # (ActiveRecord::RecordNotFound, which Rails answers 404).
     def replay_idempotent_request(record)
       if record.request_digest != idempotency_request_digest
         return render_unauthorized(error_code: :idempotency_key_reused, status: 422,
@@ -99,17 +134,21 @@ module ApiKeys
       end
 
       resource = record.resource
-      raise ActiveRecord::RecordNotFound, "the record of this Idempotency-Key no longer exists" unless resource
+      unless resource && idempotent_replay_allowed?(resource)
+        raise ActiveRecord::RecordNotFound, "the record of this Idempotency-Key is not found for this API key"
+      end
 
       response.headers[REPLAYED_HEADER] = "true"
       render json: resource_json(resource), status: record.response_status
     end
 
-    # The request a key stands for: the method, the path, and every
-    # parameter of the query and the body.
+    # The request a key stands for: the method, the path, the query, and
+    # the body. The query and the body count apart, so a name that moves
+    # from one to the other makes another request.
     def idempotency_request_digest
       @api_keys_idempotency_request_digest ||= ApiKeys::IdempotencyKey.digest_of(
-        request.request_method, request.path, request.query_parameters.merge(request.request_parameters)
+        request.request_method, request.path,
+        { "query" => request.query_parameters, "body" => request.request_parameters }
       )
     end
   end

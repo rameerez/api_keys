@@ -15,7 +15,7 @@ class DeviceFlowTest < ApiKeys::Test
   class DevicesController < ActionController::API
     include ApiKeys::DeviceFlow
 
-    cattr_accessor :default_scope, :extra_response, :fail_in_response
+    cattr_accessor :default_scope, :extra_response, :fail_in_response, :key_type_name
 
     private
 
@@ -25,6 +25,10 @@ class DeviceFlowTest < ApiKeys::Test
 
     def device_default_scope
       default_scope
+    end
+
+    def device_key_type
+      key_type_name || super
     end
 
     def device_token_response(authorization, api_key)
@@ -60,6 +64,7 @@ class DeviceFlowTest < ApiKeys::Test
     DevicesController.default_scope = nil
     DevicesController.extra_response = false
     DevicesController.fail_in_response = false
+    DevicesController.key_type_name = nil
     @owner = User.create!(name: "Acme")
     @person = User.create!(name: "Ada")
   end
@@ -225,6 +230,49 @@ class DeviceFlowTest < ApiKeys::Test
     assert_equal "Pick from read write", request_codes(scope: "admin")["error_description"]
   ensure
     I18n.reload!
+  end
+
+  test "with key types configured, the flow makes keys of the default type, or of the type the host names" do
+    ApiKeys.configure do |config|
+      config.key_types = { secret: { prefix: "sk", permissions: :all }, agent: { prefix: "ag", permissions: %w[read] } }
+      config.default_key_type = :secret
+    end
+
+    request_codes(scope: "read write")
+    assert_equal "secret", ApiKeys::DeviceAuthorization.last.key_type
+
+    DevicesController.key_type_name = :agent
+    assert_equal "invalid_scope", request_codes(scope: "read write")["error"]
+    assert_equal "Ask for scopes among: read.", JSON.parse(last_response.body)["error_description"]
+    codes = request_codes(scope: "read")
+    approve(codes)
+    poll(codes)
+    assert_match(/\Aag_/, JSON.parse(last_response.body)["access_token"])
+  end
+
+  test "with key types configured and no type named, the request fails as the app's error, not the client's" do
+    ApiKeys.configure { |config| config.key_types = { secret: { prefix: "sk", permissions: :all } } }
+
+    error = assert_raises(ArgumentError) { request_codes }
+    assert_match "device_key_type", error.message
+    assert_empty ApiKeys::DeviceAuthorization.all
+  end
+
+  test "a ceiling type: a request for part of the ceiling is invalid_scope, and a widened ceiling stops the poll" do
+    ApiKeys.configure do |config|
+      config.key_types = { agent: { prefix: "ag", permissions: %w[read write], scopes: :ceiling } }
+    end
+    DevicesController.key_type_name = :agent
+
+    assert_equal "invalid_scope", request_codes(scope: "read")["error"]
+    codes = request_codes(scope: "read write")
+    approve(codes)
+    ApiKeys.configuration.key_types = { agent: { prefix: "ag", permissions: %w[read write admin], scopes: :ceiling } }
+
+    refused = poll(codes)
+    assert_equal "invalid_scope", refused["error"]
+    assert_match "more than the person approved", refused["error_description"]
+    assert_empty @owner.api_keys
   end
 
   test "a host must name its approval page" do

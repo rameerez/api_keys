@@ -105,6 +105,7 @@ ActiveRecord::Schema.define do
     t.string :device_name
     t.string :requested_from
     t.json :scopes, null: false # no default on JSON: MySQL refuses one
+    t.string :key_type
     t.string :state, default: "pending", null: false
     t.integer :interval, default: 5, null: false
     t.datetime :expires_at, null: false, index: true
