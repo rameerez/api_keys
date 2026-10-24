@@ -1,0 +1,66 @@
+# frozen_string_literal: true
+
+# Migration to create the table of device authorizations (api_keys 0.7.0).
+# Each row is a client's request for an API key on the OAuth 2.0 Device
+# Authorization Grant (RFC 8628), which a person approves or denies in your
+# app (ApiKeys::DeviceFlow, ApiKeys::DeviceAuthorization). Both codes are
+# kept as SHA-256 digests, never as text, and the key's token is never
+# stored.
+#
+# Only apps that use the device flow need this table.
+class CreateApiKeysDeviceAuthorizations < ActiveRecord::Migration<%= migration_version %>
+  def change
+    primary_key_type, foreign_key_type = primary_and_foreign_key_types
+
+    create_table :api_keys_device_authorizations, id: primary_key_type do |t|
+      t.string :device_code_digest, null: false, index: { unique: true }
+      t.string :user_code_digest, null: false, index: { unique: true }
+      # The client names itself, and every poll repeats it (RFC 8628 §3.4).
+      t.string :client_id, null: false
+      t.string :device_name
+      t.string :requested_from
+      t.send(json_column_type, :scopes, default: [], null: false)
+      t.string :state, default: "pending", null: false
+      t.integer :interval, default: 5, null: false
+      t.datetime :expires_at, null: false, index: true
+      t.datetime :last_polled_at
+      # Who the key is for, and who decided: set when the person decides.
+      t.references :owner, polymorphic: true, null: true, type: foreign_key_type
+      t.references :decided_by, polymorphic: true, null: true, type: foreign_key_type
+      t.datetime :decided_at
+      # The key that the first poll after the approval created.
+      t.references :api_key, null: true, type: api_key_id_type, foreign_key: { on_delete: :nullify }
+      t.timestamps
+    end
+  end
+
+  private
+
+  # The key types the install generator gives the api_keys table: the app's
+  # `primary_key_type` generator setting, else Rails' defaults.
+  def primary_and_foreign_key_types
+    generators = Rails.application&.config&.generators
+    setting = generators&.options&.dig(generators.orm, :primary_key_type)
+    [setting || :primary_key, setting || :bigint]
+  end
+
+  # The type of api_keys.id, so that the foreign key matches it exactly.
+  def api_key_id_type
+    column = connection.columns(:api_keys).find { |candidate| candidate.name == "id" }
+    return primary_and_foreign_key_types.last unless column
+
+    sql_type = column.sql_type.to_s.downcase
+    if sql_type.include?("uuid")
+      :uuid
+    elsif column.type == :integer
+      sql_type.include?("bigint") || column.limit == 8 ? :bigint : :integer
+    else
+      column.type
+    end
+  end
+
+  # :jsonb on PostgreSQL, :json elsewhere, as on the api_keys table.
+  def json_column_type
+    connection.adapter_name.downcase.include?("postg") ? :jsonb : :json
+  end
+end

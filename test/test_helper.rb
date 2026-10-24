@@ -94,6 +94,26 @@ ActiveRecord::Schema.define do
     t.index :environment
     t.index [:owner_type, :owner_id, :key_type, :environment], name: "index_api_keys_owner_type_env"
   end
+
+  # The device flow's requests (0.7.0), as the add_device_authorizations
+  # generator creates them.
+  create_table :api_keys_device_authorizations, force: :cascade do |t|
+    t.string :device_code_digest, null: false, index: { unique: true }
+    t.string :user_code_digest, null: false, index: { unique: true }
+    t.string :client_id, null: false
+    t.string :device_name
+    t.string :requested_from
+    t.json :scopes, default: [], null: false
+    t.string :state, default: "pending", null: false
+    t.integer :interval, default: 5, null: false
+    t.datetime :expires_at, null: false, index: true
+    t.datetime :last_polled_at
+    t.references :owner, polymorphic: true, null: true
+    t.references :decided_by, polymorphic: true, null: true
+    t.datetime :decided_at
+    t.references :api_key, null: true, foreign_key: { on_delete: :nullify }
+    t.timestamps
+  end
 end
 
 # Mirror engine initializer behavior for attribute casting in tests
@@ -183,6 +203,7 @@ class ApiKeys::Test < ActiveSupport::TestCase
     )
     ApiKeys::TokenSession.stubs(:token_encryptor).returns(@token_session_encryptor)
     # Clear any existing records between tests
+    ApiKeys::DeviceAuthorization.delete_all
     ApiKeys::ApiKey.delete_all
     User.delete_all
   end
@@ -193,6 +214,7 @@ class ApiKeys::Test < ActiveSupport::TestCase
   end
 
   def teardown
+    ApiKeys::DeviceAuthorization.delete_all
     ApiKeys::ApiKey.delete_all
     User.delete_all
   end

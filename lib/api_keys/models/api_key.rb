@@ -10,6 +10,9 @@ module ApiKeys
   # The core ActiveRecord model representing an API key.
   class ApiKey < ActiveRecord::Base
     MAX_SCOPES = 100
+    # A key name: letters, numbers, underscores, hyphens and spaces.
+    MAX_NAME_LENGTH = 60
+    NAME_FORMAT = /\A[a-zA-Z0-9_ -]+\z/
     MAX_SCOPE_BYTESIZE = 128
     MAX_METADATA_BYTESIZE = 16_384
     MAX_RESTRICTION_ENTRIES = 100
@@ -138,9 +141,9 @@ module ApiKeys
     # validates :scopes, presence: true # Default handled by attribute def
     # validates :metadata, presence: true # Default handled by attribute def
     validates :name,
-              length: { maximum: 60 },
+              length: { maximum: MAX_NAME_LENGTH },
               # Allow letters, numbers, underscores, hyphens, and spaces. No leading/trailing spaces.
-              format: { with: /\A[a-zA-Z0-9_ -]+\z/, message: "can only contain letters, numbers, underscores, hyphens, and spaces (no leading / trailing spaces)" },
+              format: { with: NAME_FORMAT, message: "can only contain letters, numbers, underscores, hyphens, and spaces (no leading / trailing spaces)" },
               allow_blank: true # Apply length and format only if name is present
 
     validates :name, presence: true, if: :name_required? # Only require presence conditionally
