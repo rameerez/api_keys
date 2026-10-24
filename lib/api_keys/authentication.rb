@@ -21,6 +21,10 @@ module ApiKeys
     # Names the per-key reservation that lets one stats job per kind be
     # enqueued within a debounce interval (see reserve_stats_enqueue?).
     STATS_ENQUEUE_NAMESPACE = "api_keys:v1:stats_enqueue"
+    # The methods that read. Every other method writes. RFC 9110 §9.2.1 also
+    # names OPTIONS and TRACE safe, but an API action does not serve them,
+    # so they count as writes and need the stricter scope.
+    READ_METHODS = %w[GET HEAD].freeze
 
     included do
       # Helper methods to access the authenticated key and its owner
@@ -134,6 +138,11 @@ module ApiKeys
       Array(required_scopes).all? do |req_scope|
         current_api_key.allows_scope?(req_scope)
       end
+    end
+
+    # Whether this request reads (GET or HEAD).
+    def reading_request?
+      READ_METHODS.include?(request.request_method)
     end
 
     # Whether the person behind the key still stands behind it, as the host's

@@ -115,6 +115,19 @@ ActiveRecord::Schema.define do
     t.references :api_key, null: true, foreign_key: { on_delete: :nullify }
     t.timestamps
   end
+
+  # Writes under an Idempotency-Key (0.7.0), as the add_idempotency_keys
+  # generator creates them.
+  create_table :api_keys_idempotency_keys, force: :cascade do |t|
+    t.references :api_key, null: false, foreign_key: { on_delete: :cascade }, index: false
+    t.string :key, null: false
+    t.string :request_digest
+    t.integer :response_status
+    t.references :resource, polymorphic: true, null: true, index: false
+    t.timestamps
+    t.index :created_at
+    t.index [:api_key_id, :key], unique: true
+  end
 end
 
 # Mirror engine initializer behavior for attribute casting in tests
@@ -218,6 +231,7 @@ class ApiKeys::Test < ActiveSupport::TestCase
     )
     ApiKeys::TokenSession.stubs(:token_encryptor).returns(@token_session_encryptor)
     # Clear any existing records between tests
+    ApiKeys::IdempotencyKey.delete_all
     ApiKeys::DeviceAuthorization.delete_all
     ApiKeys::ApiKey.delete_all
     User.delete_all
@@ -229,6 +243,7 @@ class ApiKeys::Test < ActiveSupport::TestCase
   end
 
   def teardown
+    ApiKeys::IdempotencyKey.delete_all
     ApiKeys::DeviceAuthorization.delete_all
     ApiKeys::ApiKey.delete_all
     User.delete_all
