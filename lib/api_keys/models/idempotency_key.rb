@@ -96,7 +96,8 @@ module ApiKeys
         return existing if existing && existing.created_at > RETENTION.ago
 
         rows.expired.delete_all if existing
-        create_or_find_by!(api_key: api_key, key: key)
+        # The row keeps the API key's id, never its token.
+        create_or_find_by!(api_key_id: api_key.id, key: key)
       end
 
       def uploaded_file_digest(value)
