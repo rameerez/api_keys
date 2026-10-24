@@ -225,12 +225,19 @@ module ApiKeys
         #   Accepts the raw string a form field submits ("example.com, *.example.com").
         # @param allowed_ips [String, Array, nil] Convenience form of the IP list
         #   ("203.0.113.7, 10.0.0.0/8").
+        # @param created_by [ActiveRecord::Base, nil] The person behind the key, for
+        #   `config.trusted_key_check`. Needs the created_by columns.
         # @return [ApiKeys::ApiKey] The newly created ApiKey instance. The plaintext token
         #                           is available via the `#token` attribute on this instance
         #                           *only until it's reloaded*.
         def create_api_key!(name: nil, scopes: nil, expires_at: nil, expires_at_preset: nil, metadata: nil,
-                            key_type: nil, environment: nil, restrictions: nil, allowed_origins: nil, allowed_ips: nil)
+                            key_type: nil, environment: nil, restrictions: nil, allowed_origins: nil, allowed_ips: nil,
+                            created_by: nil)
           config = ApiKeys.configuration
+
+          if created_by && !ApiKeys::ApiKey.created_by_columns?
+            raise ApiKeys::Errors::CreatedByMigrationRequiredError
+          end
 
           # Parse expires_at_preset if provided (takes precedence over expires_at)
           if expires_at_preset.present?
@@ -302,6 +309,7 @@ module ApiKeys
             # prefix, token_digest, digest_algorithm are set by ApiKey callbacks
           }
           attributes[:restrictions] = requested_restrictions if requested_restrictions
+          attributes[:created_by] = created_by if created_by
 
           api_key = self.class.transaction do
             self.api_keys.create!(**attributes)

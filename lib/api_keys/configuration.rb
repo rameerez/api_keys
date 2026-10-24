@@ -63,6 +63,31 @@ module ApiKeys
     # Tenant Resolution
     attr_reader :tenant_resolver
 
+    # The person behind a key
+    #
+    # @!attribute [rw] trusted_key_check
+    #   @return [#call, nil] Callable receiving the authenticated ApiKey and
+    #     answering whether the person behind it still stands behind it. When
+    #     it answers false or nil, `authenticate_api_key!` refuses the request
+    #     with 403 `untrusted_key`. It runs after the scope check. nil (the
+    #     default) trusts every valid key.
+    #   @example A key acts while its creator still manages the organization
+    #     config.trusted_key_check = ->(api_key) { api_key.owner.managed_by?(api_key.created_by) }
+    attr_reader :trusted_key_check
+
+    # Idempotency-Key, for tests only
+    #
+    # @!attribute [rw] idempotency_in_test_transactions
+    #   @return [Boolean] Lets ApiKeys::IdempotencyKey.hold run inside an open
+    #     database transaction, as transactional tests open one around each
+    #     test. There the key's claim is a savepoint that the test's rollback
+    #     removes. It takes true only when Rails.env is test, and it counts
+    #     only while Rails.env is test.
+    #     Default: false.
+    #   @example config/environments/test.rb, or the test helper
+    #     ApiKeys.configuration.idempotency_in_test_transactions = true
+    attr_reader :idempotency_in_test_transactions
+
     # Callbacks (Placeholders for future extension)
     attr_reader :before_authentication, :after_authentication
 
@@ -274,6 +299,27 @@ module ApiKeys
       @tenant_resolver = value
     end
 
+    def idempotency_in_test_transactions=(value)
+      raise ArgumentError, "idempotency_in_test_transactions must be true or false" unless [true, false].include?(value)
+      if value && !test_environment?
+        raise ArgumentError, "idempotency_in_test_transactions is for transactional tests only: Rails.env must be test"
+      end
+
+      @idempotency_in_test_transactions = value
+    end
+
+    # Whether hold may run inside an open transaction: the switch is on, and
+    # Rails.env is still test when it is used.
+    def idempotency_in_test_transactions?
+      @idempotency_in_test_transactions == true && test_environment?
+    end
+
+    def trusted_key_check=(value)
+      raise ArgumentError, "trusted_key_check must be callable or nil" unless value.nil? || value.respond_to?(:call)
+
+      @trusted_key_check = value
+    end
+
     def client_ip_resolver=(value)
       raise ArgumentError, "client_ip_resolver must be callable" unless value.respond_to?(:call)
 
@@ -401,6 +447,10 @@ module ApiKeys
     end
 
     private
+
+    def test_environment?
+      defined?(Rails) && Rails.respond_to?(:env) && Rails.env.test? ? true : false
+    end
 
     def validate_resolved_prefix!(prefix)
       valid = prefix.is_a?(String) && prefix.present? && prefix.valid_encoding? && prefix.bytesize <= 64 &&
@@ -656,6 +706,12 @@ module ApiKeys
 
       # Tenant Resolution
       @tenant_resolver = ->(api_key) { api_key.owner if api_key.respond_to?(:owner) }
+
+      # The person behind a key: no check, every valid key is trusted
+      @trusted_key_check = nil
+
+      # Idempotency-Key: refuse every open transaction (tests may opt out)
+      @idempotency_in_test_transactions = false
 
       # Key Types & Environments (default to empty/disabled for backwards compatibility)
       @key_types = {}.freeze  # Empty = feature disabled, legacy behavior

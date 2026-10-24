@@ -26,6 +26,10 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       # Who owns this key? Can be null for ownerless keys.
       t.references :owner, polymorphic: true, null: true, type: foreign_key_type
 
+      # Who created this key: the person behind it, for keys whose owner is
+      # not a person (an organization). Optional.
+      t.references :created_by, polymorphic: true, null: true, type: foreign_key_type
+
       # Optional list of permissions granted to this key (array of strings)
       t.send(json_column_type, :scopes, default: [], null: false)
 

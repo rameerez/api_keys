@@ -67,6 +67,12 @@ require "api_keys/restrictions" # Origin/IP request restrictions value object
 require "api_keys/controller" # This can lead to loading jobs, etc.
 require "api_keys/models/concerns/has_api_keys"
 require "api_keys/models/api_key"
+require "api_keys/models/device_authorization"
+require "api_keys/models/idempotency_key"
+
+# Controller concerns a host includes in its own API controllers
+require "api_keys/device_flow"
+require "api_keys/idempotency"
 
 # Helpers for integrators building custom UIs
 require "api_keys/helpers/token_session"

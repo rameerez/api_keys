@@ -1,0 +1,52 @@
+# frozen_string_literal: true
+
+# Migration to create the table of Idempotency-Keys (api_keys 0.7.0). Each
+# row is one write under one API key's Idempotency-Key header
+# (ApiKeys::Idempotency, ApiKeys::IdempotencyKey): the request it stands for
+# as a digest, and, committed with the write itself, its status and a
+# reference to the record the write made or changed. A row never keeps a
+# response body, so a secret shown once is never stored.
+#
+# Only apps that use ApiKeys::Idempotency need this table.
+class CreateApiKeysIdempotencyKeys < ActiveRecord::Migration<%= migration_version %>
+  def change
+    primary_key_type, foreign_key_type = primary_and_foreign_key_types
+
+    create_table :api_keys_idempotency_keys, id: primary_key_type do |t|
+      # Each API key has its own keys. A deleted API key takes them with it.
+      t.references :api_key, null: false, type: api_key_id_type, foreign_key: { on_delete: :cascade }, index: false
+      t.string :key, null: false
+      t.string :request_digest
+      t.integer :response_status
+      t.references :resource, polymorphic: true, null: true, type: foreign_key_type, index: false
+      t.timestamps
+      t.index :created_at
+      t.index [:api_key_id, :key], unique: true
+    end
+  end
+
+  private
+
+  # The key types the install generator gives the api_keys table: the app's
+  # `primary_key_type` generator setting, else Rails' defaults.
+  def primary_and_foreign_key_types
+    generators = Rails.application&.config&.generators
+    setting = generators&.options&.dig(generators.orm, :primary_key_type)
+    [setting || :primary_key, setting || :bigint]
+  end
+
+  # The type of api_keys.id, so that the foreign key matches it exactly.
+  def api_key_id_type
+    column = connection.columns(:api_keys).find { |candidate| candidate.name == "id" }
+    return primary_and_foreign_key_types.last unless column
+
+    sql_type = column.sql_type.to_s.downcase
+    if sql_type.include?("uuid")
+      :uuid
+    elsif column.type == :integer
+      sql_type.include?("bigint") || column.limit == 8 ? :bigint : :integer
+    else
+      column.type
+    end
+  end
+end

@@ -49,3 +49,70 @@ jobs:
           name: test-results-ruby-${{ matrix.ruby_version }}-${{ matrix.gemfile }}
           path: test/reports/
           retention-days: 7
+
+  # The 0.7.0 migrations as the generators write them, and the row locks of
+  # Idempotency-Key and the device flow, on real databases with concurrent
+  # connections (test/databases/check.rb).
+  databases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        rails: ["~> 7.2.0", "~> 8.1.0"]
+        database: [postgresql, mysql2, sqlite3]
+        uuid: [""]
+        include:
+          - rails: "~> 8.1.0"
+            database: postgresql
+            uuid: "1"
+        exclude:
+          # Rails 7.2 waits for a busy SQLite database while it holds Ruby's
+          # global lock, so threads of one process cannot take turns. Rails
+          # 8.0 releases the lock while it waits.
+          - rails: "~> 7.2.0"
+            database: sqlite3
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot" --health-interval 5s --health-timeout 5s --health-retries 20
+
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/test/databases/Gemfile
+      RAILS_VERSION: ${{ matrix.rails }}
+      DB_ADAPTER: ${{ matrix.database }}
+      DB_HOST: 127.0.0.1
+      DB_USERNAME: ${{ matrix.database == 'mysql2' && 'root' || 'postgres' }}
+      DB_PASSWORD: ${{ matrix.database == 'mysql2' && 'root' || 'postgres' }}
+      UUID: ${{ matrix.uuid }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the MySQL client library
+        run: sudo apt-get update && sudo apt-get install -y libmysqlclient-dev
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - name: Run the database check
+        run: bundle exec ruby test/databases/check.rb

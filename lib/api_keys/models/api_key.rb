@@ -10,6 +10,9 @@ module ApiKeys
   # The core ActiveRecord model representing an API key.
   class ApiKey < ActiveRecord::Base
     MAX_SCOPES = 100
+    # A key name: letters, numbers, underscores, hyphens and spaces.
+    MAX_NAME_LENGTH = 60
+    NAME_FORMAT = /\A[a-zA-Z0-9_ -]+\z/
     MAX_SCOPE_BYTESIZE = 128
     MAX_METADATA_BYTESIZE = 16_384
     MAX_RESTRICTION_ENTRIES = 100
@@ -29,11 +32,17 @@ module ApiKeys
       revoked_key expired_key unknown_key_type unknown_environment
       environment_misconfigured environment_mismatch
       origin_not_allowed ip_not_allowed restriction_misconfigured missing_scope
+      untrusted_key
     ].freeze
+    # The person who created the key (0.7.0). Optional columns.
+    CREATED_BY_COLUMNS = %w[created_by_type created_by_id].freeze
     # Deliberately excludes `restrictions`: owners must be able to tighten a
-    # request policy even when the key itself is non-revocable.
+    # request policy even when the key itself is non-revocable. Includes the
+    # person who created the key: `config.trusted_key_check` may trust a key
+    # because of that person, so no update can name another one.
     IMMUTABLE_IDENTITY_ATTRIBUTES = %w[
       token_digest digest_algorithm prefix last4 owner_type owner_id key_type environment
+      created_by_type created_by_id
     ].freeze
 
     self.table_name = "api_keys"
@@ -43,6 +52,10 @@ module ApiKeys
 
     # == Associations ==
     belongs_to :owner, polymorphic: true, optional: true
+    # The person behind the key, when the host names one at creation:
+    # `create_api_key!(created_by: current_user)`. Needs the created_by
+    # columns (`rails generate api_keys:add_created_by`).
+    belongs_to :created_by, polymorphic: true, optional: true
 
     # == Attributes & Serialization ==
     # Expose the plaintext token only immediately after creation
@@ -52,6 +65,11 @@ module ApiKeys
     # saves can never set or clear it, so no update path (a form, mass
     # assignment, a stray `update`) can reopen a handoff that was claimed.
     attr_readonly :token_shown_at
+    # The person behind the key is fixed at creation. `config.trusted_key_check`
+    # may trust a key because of that person, so no save (with or without
+    # validations) and no update_column can name another one. A backfill of
+    # keys made before the columns existed writes them with SQL (update_all).
+    attr_readonly :created_by_type, :created_by_id
     attr_accessor :expires_at_preset
 
     # JSON attributes (:scopes, :metadata) are defined in the engine initializer
@@ -138,9 +156,9 @@ module ApiKeys
     # validates :scopes, presence: true # Default handled by attribute def
     # validates :metadata, presence: true # Default handled by attribute def
     validates :name,
-              length: { maximum: 60 },
+              length: { maximum: MAX_NAME_LENGTH },
               # Allow letters, numbers, underscores, hyphens, and spaces. No leading/trailing spaces.
-              format: { with: /\A[a-zA-Z0-9_ -]+\z/, message: "can only contain letters, numbers, underscores, hyphens, and spaces (no leading / trailing spaces)" },
+              format: { with: NAME_FORMAT, message: "can only contain letters, numbers, underscores, hyphens, and spaces (no leading / trailing spaces)" },
               allow_blank: true # Apply length and format only if name is present
 
     validates :name, presence: true, if: :name_required? # Only require presence conditionally
@@ -560,6 +578,15 @@ module ApiKeys
     # @return [Boolean]
     def self.restrictions_column?
       column_names.include?(RESTRICTIONS_COLUMN)
+    rescue StandardError
+      false
+    end
+
+    # Whether the `created_by` columns exist. Installations that predate
+    # v0.7.0 keep working untouched until they run the generator.
+    # @return [Boolean]
+    def self.created_by_columns?
+      (CREATED_BY_COLUMNS - column_names).empty?
     rescue StandardError
       false
     end

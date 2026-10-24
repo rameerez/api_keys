@@ -67,6 +67,7 @@ ActiveRecord::Schema.define do
     t.string   :digest_algorithm, null: false
     t.string   :name
     t.references :owner, polymorphic: true, null: true # type: :bigint assumed by default
+    t.references :created_by, polymorphic: true, null: true # The person behind the key (0.7.0)
     t.text     :scopes, default: "[]", null: false # Use text for SQLite JSON
     t.text     :metadata, default: "{}", null: false # Use text for SQLite JSON
     t.text     :restrictions, default: "{}", null: false # Origin/IP request restrictions
@@ -93,6 +94,40 @@ ActiveRecord::Schema.define do
     t.index :key_type
     t.index :environment
     t.index [:owner_type, :owner_id, :key_type, :environment], name: "index_api_keys_owner_type_env"
+  end
+
+  # The device flow's requests (0.7.0), as the add_device_authorizations
+  # generator creates them.
+  create_table :api_keys_device_authorizations, force: :cascade do |t|
+    t.string :device_code_digest, null: false, index: { unique: true }
+    t.string :user_code_digest, null: false, index: { unique: true }
+    t.string :client_id, null: false
+    t.string :device_name
+    t.string :requested_from
+    t.json :scopes, null: false # no default on JSON: MySQL refuses one
+    t.string :key_type
+    t.string :state, default: "pending", null: false
+    t.integer :interval, default: 5, null: false
+    t.datetime :expires_at, null: false, index: true
+    t.datetime :last_polled_at
+    t.references :owner, polymorphic: true, null: true
+    t.references :decided_by, polymorphic: true, null: true
+    t.datetime :decided_at
+    t.references :api_key, null: true, foreign_key: { on_delete: :nullify }
+    t.timestamps
+  end
+
+  # Writes under an Idempotency-Key (0.7.0), as the add_idempotency_keys
+  # generator creates them.
+  create_table :api_keys_idempotency_keys, force: :cascade do |t|
+    t.references :api_key, null: false, foreign_key: { on_delete: :cascade }, index: false
+    t.string :key, null: false
+    t.string :request_digest
+    t.integer :response_status
+    t.references :resource, polymorphic: true, null: true, index: false
+    t.timestamps
+    t.index :created_at
+    t.index [:api_key_id, :key], unique: true
   end
 end
 
@@ -150,6 +185,20 @@ module RefusalStatsSchema
   end
 end
 
+# The person behind a key (0.7.0).
+module CreatedBySchema
+  COLUMNS = {
+    created_by_type: [:string, {}],
+    created_by_id: [:bigint, {}]
+  }.freeze
+
+  module_function
+
+  def without_columns(&block)
+    OptionalColumnsSchema.without(COLUMNS, &block)
+  end
+end
+
 # The durable one-time token handoff column.
 module TokenShownAtSchema
   COLUMNS = { token_shown_at: [:datetime, {}] }.freeze
@@ -183,6 +232,8 @@ class ApiKeys::Test < ActiveSupport::TestCase
     )
     ApiKeys::TokenSession.stubs(:token_encryptor).returns(@token_session_encryptor)
     # Clear any existing records between tests
+    ApiKeys::IdempotencyKey.delete_all
+    ApiKeys::DeviceAuthorization.delete_all
     ApiKeys::ApiKey.delete_all
     User.delete_all
   end
@@ -193,6 +244,8 @@ class ApiKeys::Test < ActiveSupport::TestCase
   end
 
   def teardown
+    ApiKeys::IdempotencyKey.delete_all
+    ApiKeys::DeviceAuthorization.delete_all
     ApiKeys::ApiKey.delete_all
     User.delete_all
   end

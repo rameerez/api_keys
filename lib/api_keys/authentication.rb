@@ -21,6 +21,10 @@ module ApiKeys
     # Names the per-key reservation that lets one stats job per kind be
     # enqueued within a debounce interval (see reserve_stats_enqueue?).
     STATS_ENQUEUE_NAMESPACE = "api_keys:v1:stats_enqueue"
+    # The methods that read. Every other method writes. RFC 9110 §9.2.1 also
+    # names OPTIONS and TRACE safe, but an API action does not serve them,
+    # so they count as writes and need the stricter scope.
+    READ_METHODS = %w[GET HEAD].freeze
 
     included do
       # Helper methods to access the authenticated key and its owner
@@ -53,7 +57,13 @@ module ApiKeys
     private
 
     # The core authentication method.
+    #
+    # @param scope [String, Array<String>, Hash, nil] The scope(s) the key
+    #   needs. A Hash names them by HTTP method, in one line:
+    #   `scope: { read: "read", write: "write" }` asks GET and HEAD for the
+    #   read scope and every other method for the write scope.
     def authenticate_api_key!(scope: nil)
+      scope = scope_for_request_method(scope) if scope.is_a?(Hash)
       @current_api_key = nil
       remove_instance_variable(:@current_api_tenant) if instance_variable_defined?(:@current_api_tenant)
       log_debug "[ApiKeys Auth] authenticate_api_key! started for request: #{request.uuid}"
@@ -91,6 +101,19 @@ module ApiKeys
             required_scope: scope
           )
           record_key_refusal(refused_key, :missing_scope)
+        elsif !api_key_trusted?(@current_api_key)
+          log_debug "[ApiKeys Auth] Trust check failed for key ID #{@current_api_key.id}."
+          after_auth_context[:required_scope_check] = { required: scope, passed: true } if scope
+          after_auth_context[:success] = false
+          after_auth_context[:error_code] = :untrusted_key
+          refused_key = @current_api_key
+          @current_api_key = nil
+          render_unauthorized(
+            error_code: :untrusted_key,
+            message: "API key is no longer trusted: the person behind it no longer stands behind it",
+            status: :forbidden
+          )
+          record_key_refusal(refused_key, :untrusted_key)
         else
           after_auth_context[:required_scope_check] = { required: scope, passed: true } if scope
           # Authentication and scope check successful, enqueue stats update
@@ -123,7 +146,35 @@ module ApiKeys
       end
     end
 
+    # Whether this request reads (GET or HEAD).
+    def reading_request?
+      READ_METHODS.include?(request.request_method)
+    end
+
+    # The scope of `scope: { read:, write: }` for this request's method. Both
+    # are required, so a forgotten one never leaves its requests unchecked.
+    # A value of nil asks for no scope.
+    def scope_for_request_method(scopes)
+      scopes = scopes.to_h.transform_keys(&:to_sym)
+      unless scopes.keys.sort == %i[read write]
+        raise ArgumentError, "scope: by HTTP method takes exactly { read: ..., write: ... }"
+      end
+
+      reading_request? ? scopes[:read] : scopes[:write]
+    end
+
+    # Whether the person behind the key still stands behind it, as the host's
+    # `config.trusted_key_check` answers. Without a check, every valid key is
+    # trusted. An error in the check is not rescued: the request fails, and
+    # never passes as trusted.
+    def api_key_trusted?(api_key)
+      check = ApiKeys.configuration.trusted_key_check
+      check.nil? || check.call(api_key) ? true : false
+    end
+
     # Renders a standard JSON error response for authentication failures.
+    # Every refusal of the gem renders here, so a host that overrides it
+    # renders them all in its own error shape.
     def render_unauthorized(error_code:, message:, status: :unauthorized, required_scope: nil)
       error_message = I18n.t("api_keys.errors.#{error_code}", default: message) rescue message
       response_body = { error: error_code, message: error_message }

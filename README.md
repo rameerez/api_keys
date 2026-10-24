@@ -59,6 +59,41 @@ rails db:migrate
 
 New installations get these columns from the start too. Until an existing app runs the migration, authentication keeps working exactly as before, refusals are simply not recorded, and the one-time token page relies on the cache marker alone, as in 0.5.1.
 
+To name the person behind each key (see [The person behind a key](#the-person-behind-a-key)), add the 0.7.0 `created_by` column. New installations get it from the start:
+
+```bash
+rails generate api_keys:add_created_by
+rails db:migrate
+```
+
+The device flow and Idempotency-Key each need a table of their own. New and existing installations run these only if they use the feature:
+
+```bash
+rails generate api_keys:add_device_authorizations  # for ApiKeys::DeviceFlow
+rails generate api_keys:add_idempotency_keys       # for ApiKeys::Idempotency
+rails db:migrate
+```
+
+#### Upgrading to 0.7.0 from 0.4.x or 0.6.x
+
+Change the Gemfile line to `gem "api_keys", "~> 0.7.0"` and run `bundle update api_keys`. No migration is required: every migration since 0.5.0 adds an optional column or table, and the gem works without it. Run the ones for the features you want, in any order.
+
+| From | Optional migrations | What they turn on |
+|------|---------------------|-------------------|
+| 0.4.x | `add_restrictions` | Origin and IP locks (0.5.0) |
+| 0.4.x | `add_key_activity` | Refused-request stats and the durable one-time token page (0.6.0) |
+| 0.4.x, 0.6.x | `add_created_by` | The person behind a key (0.7.0) |
+| 0.4.x, 0.6.x | `add_device_authorizations` | The device flow (0.7.0) |
+| 0.4.x, 0.6.x | `add_idempotency_keys` | Idempotency-Key for writes (0.7.0) |
+
+On 0.6.x, nothing changes until you opt in to a 0.7.0 feature. A 0.6.0 job worker ignores the new `untrusted_key` refusal code with a warning, so a rolling deploy is safe.
+
+On 0.4.x, the calls of a custom key controller keep working unchanged: `create_api_key!(name:, key_type:, expires_at:)`, `ApiKeys::TokenSession.store(session, @api_key)` and `ApiKeys::TokenSession.retrieve_once(session)`. A handoff stored by 0.4.x stays readable after the deploy. Read the [CHANGELOG](CHANGELOG.md) for 0.5.0 to 0.6.0 before you upgrade. These changes are the ones a 0.4.x app sees:
+
+- `api_key_scopes_checkboxes` renders an empty `api_key[scopes][]` field before the boxes (0.5.1). A form with every box cleared now saves no scopes, where 0.4.x kept the old ones. If an edit form offers only some scopes, save `ApiKey#scopes_after_form_edit` (see [Form Builder Extensions](#form-builder-extensions-opt-in)).
+- A token's one-time handoff is one-time across copies of the session (0.5.1), and once ever per key after `add_key_activity` (0.6.0). A retrieval inside an open database transaction is refused (0.6.0): exclude the token page from a host `around_action` that wraps requests in a transaction.
+- Deploy job workers with the web processes. A refusal job from 0.6.0 or later errors on a 0.4.x worker.
+
 ## Quick Start
 
 Just add `has_api_keys` to your desired model. For example, if you want your `User` records to have API keys, you'd have:
@@ -408,7 +443,8 @@ current_org.can_create_api_key?(key_type: :publishable)
   environment: :live,                   # Defaults to current_environment
   metadata: { team: "backend" },        # Optional JSON metadata
   allowed_origins: "example.com",       # Optional: lock to web origins
-  allowed_ips: "10.0.0.0/8"             # Optional: lock to IP addresses
+  allowed_ips: "10.0.0.0/8",            # Optional: lock to IP addresses
+  created_by: current_user              # Optional: the person behind the key
 )
 ```
 
@@ -450,6 +486,9 @@ Methods available on `ApiKeys::ApiKey` instances:
 @api_key.allowed_ips              # => ["203.0.113.7", "10.0.0.0/8"]
 @api_key.restricted?              # => true if either list has entries
 @api_key.restrictions             # => ApiKeys::Restrictions value object
+
+# The person behind the key (needs the created_by column)
+@api_key.created_by               # => #<User id: 1, ...>, or nil
 
 # Metadata
 @api_key.name                     # => "Production Server"
@@ -952,6 +991,39 @@ def write_action
 end
 ```
 
+### Require read or write by HTTP method
+
+Most APIs give reads one scope and writes another. Pass both by HTTP method, in one line:
+
+```ruby
+before_action -> { authenticate_api_key!(scope: { read: "read", write: "write" }) }
+```
+
+GET and HEAD requests need the `read` scope. Every other method needs the `write` scope. Each side takes what `scope:` takes: a scope, a list of scopes, or `nil` for none. Both sides are required, so a forgotten one never leaves its requests unchecked.
+
+An action that needs another scope names it. Put the rule in a method, and let a controller override it:
+
+```ruby
+class Api::BaseController < ActionController::API
+  include ApiKeys::Controller
+  before_action -> { authenticate_api_key!(scope: required_scope) }
+
+  private
+
+  def required_scope
+    { read: "read", write: "write" }
+  end
+end
+
+class Api::InvoicesController < Api::BaseController
+  private
+
+  def required_scope
+    action_name == "pdf" ? "downloads" : super
+  end
+end
+```
+
 ### Rate limit your API endpoints
 
 Rails 8 introduced the native, built-in `rate_limit` to easily rate limit your endpoints, so `Rack::Attack` is no longer necessary! While this is not an `api_keys` feature per se, I thought it'd be nice to include an example here because it pairs so well with `api_keys`.
@@ -974,6 +1046,209 @@ This `rate_limit` feature depends on Rails 8+ and an active, well-configured cac
 
 If you're still on early versions of Rails, you can still use `api_keys`! No need to implement `rate_limit` – just an idea if you're already on Rails 8!
 
+
+## The person behind a key
+
+When keys belong to an organization, a key keeps working after the person who created it has left. Name that person when you create the key:
+
+```ruby
+current_organization.create_api_key!(name: "CI", scopes: %w[read], created_by: current_user)
+```
+
+Then tell the gem when a key stops being trusted:
+
+```ruby
+# config/initializers/api_keys.rb
+config.trusted_key_check = ->(api_key) { api_key.owner.managed_by?(api_key.created_by) }
+```
+
+After authentication and the scope check, `authenticate_api_key!` calls the lambda with the key. When it answers `false` or `nil`, the request gets `403` with `error: "untrusted_key"`, the key is not set as `current_api_key`, and the refusal is recorded on the key like every other refusal (with the 0.6.0 columns), never as a use. An error in the lambda fails the request; it never passes as trusted. Without a lambda (the default), every valid key is trusted, as before.
+
+- `created_by` is polymorphic and optional. It cannot change after the key is created (a validation, and `attr_readonly`), so no update can make another person stand behind a key.
+- The mounted dashboard leaves `created_by` nil: it knows the key's owner, not the person. An app that needs the person behind each key creates its keys in its own controller and passes `created_by:` there (see [Building Custom Integrations](#building-custom-integrations)).
+- Keys created before you set `created_by` have none. Decide what the lambda does with them, or backfill the columns in a migration with SQL (`update_all`): the columns are read-only for a saved key, so no save, `update_column` or form can change them.
+- The refusal renders through `render_unauthorized`, so if you override it to render your own error shape, `untrusted_key` uses that shape too. Change the message with I18n: `api_keys.errors.untrusted_key`.
+- New installs get the columns from the start. Existing installs run `rails generate api_keys:add_created_by`; until then, passing `created_by:` raises `ApiKeys::Errors::CreatedByMigrationRequiredError`.
+
+## Idempotent writes (Idempotency-Key)
+
+A client that retries a write after a timeout must not create a second record. With `ApiKeys::Idempotency`, every write carries an `Idempotency-Key` header and runs once per key ([draft-ietf-httpapi-idempotency-key-header](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/)):
+
+```bash
+rails generate api_keys:add_idempotency_keys
+rails db:migrate
+```
+
+```ruby
+class Api::BaseController < ActionController::API
+  include ApiKeys::Controller
+  include ApiKeys::Idempotency
+
+  before_action :authenticate_api_key!
+  around_action :run_once_per_idempotency_key # after authentication
+
+  private
+
+  # The JSON for a record. The first answer and every retry use it.
+  def resource_json(record, **options)
+    record.as_json(only: %i[id name]).merge(options)
+  end
+
+  # Whether this API key may read the record now. A retry runs no action,
+  # so this is the check before a record's current state goes back.
+  def idempotent_replay_allowed?(record)
+    record.owner == current_api_owner
+  end
+end
+
+class Api::WebhooksController < Api::BaseController
+  def create
+    webhook = current_api_owner.webhooks.create!(url: params.require(:url))
+    render_resource webhook, status: :created, secret: webhook.secret # the secret is in this answer only
+  end
+end
+```
+
+How it works:
+
+- GET and HEAD run as they are. Every other request needs the header: a text of 1 to 255 characters, the same when the client retries.
+- A write answers with `render_resource(record, status:, **options)`. The key keeps the status and the record, never the response body, so a secret shown once is never stored.
+- The write, any rows it adds (an audit entry), and the key's answer commit in one transaction, or nothing does. A write that answers anything but 2xx, or raises, commits nothing and leaves the key free, so the corrected request can use it. That transaction is on the database of the `api_keys` tables: a write to another database does not join it.
+- A retry with the same key and the same request answers the record **as it is now**, through `resource_json` without the first answer's options, with the header `Idempotent-Replayed: true`. Before that, `idempotent_replay_allowed?(record)` must answer true: a record that moved to another owner, or no longer exists, raises `ActiveRecord::RecordNotFound` (Rails answers 404). Both methods are required, and the first write raises `NotImplementedError` without them.
+- The request is the method, the path, the query and the body. The query and the body count apart, so a name that moves from one to the other makes another request. The order of names does not matter. An uploaded file counts by its bytes, its file name and its content type, and never encodes like an ordinary value.
+- The around_action runs outside every open transaction: the key's claim must commit on its own, so `ApiKeys::IdempotencyKey.hold` raises inside one. Transactional tests, which open a transaction around each test, set a test-only switch in `config/environments/test.rb` or the test helper: `ApiKeys.configuration.idempotency_in_test_transactions = true`. It takes `true` only when `Rails.env` is test, and counts only while it is test.
+- Keys are per API key and kept for a day. Run `ApiKeys::IdempotencyKey.prune!` once a day, for example from a recurring job.
+
+The refusals follow the draft (section 2.7). They render through `render_unauthorized`, like the gem's other refusals, and their messages change with I18n (`api_keys.errors.<code>`):
+
+| Status | `error` | When |
+|--------|---------|------|
+| 400 | `idempotency_key_required` | A write without the header, or with one longer than 255 characters |
+| 409 | `idempotency_key_in_use` | A request with this key is still running |
+| 422 | `idempotency_key_reused` | The key was used for another request |
+
+A retry waits at most two seconds for the request that holds the key, then answers 409, and two first requests with the same key wait for each other's claim at most as long. On PostgreSQL (`lock_timeout`) and MySQL (`innodb_lock_wait_timeout`) the gem sets that timeout for the claim and the lock, then puts the old value back. SQLite has no row locks: a retry waits for the database's write lock, as long as the database's busy timeout. CI checks this on PostgreSQL, MySQL and SQLite with real concurrent connections (`test/databases/check.rb`). Every successful write must answer with `render_resource`; one that does not raises and commits nothing.
+
+The model works outside a controller too, for example in a tool that shares the API's keys:
+
+```ruby
+digest = ApiKeys::IdempotencyKey.digest_of("TOOL", "create_webhook", arguments)
+ApiKeys::IdempotencyKey.hold(api_key, key) do |record|
+  next replay(record) if record.answered? # compare record.request_digest with digest first
+
+  record.update!(request_digest: digest)
+  webhook = create_webhook(arguments)
+  record.answer!(200, webhook)
+end
+# raises ApiKeys::IdempotencyKey::Busy while another call holds the key
+```
+
+## Let an agent ask for a key: the device flow (RFC 8628)
+
+An agent or a CLI should not ask a person to copy a key into it. With the OAuth 2.0 Device Authorization Grant ([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)), the agent asks for a key, the person approves in your app, and the agent receives an ordinary API key:
+
+1. The agent asks for codes and shows the person one link and a user code like `BCDF-GHJK`.
+2. The person opens the link in your app, signs in, compares the code, sees the agent's name, its device and the scopes, and approves or denies.
+3. The agent polls. The first poll after the approval creates the key for the owner the person chose, named "client on device", and answers with its token, once.
+
+```bash
+rails generate api_keys:add_device_authorizations
+rails db:migrate
+```
+
+**The agent's two endpoints.** Include `ApiKeys::DeviceFlow` in an API controller, name your approval page, and route the two actions:
+
+```ruby
+class Api::DeviceAuthorizationsController < ActionController::API
+  include ApiKeys::DeviceFlow
+
+  private
+
+  # The approval page, with the user code filled in when one is given
+  def device_verification_uri(user_code = nil)
+    device_approval_url(user_code: user_code)
+  end
+end
+
+# config/routes.rb
+post "api/device", to: "api/device_authorizations#create"
+post "api/token", to: "api/device_authorizations#token"
+```
+
+The agent sends `client_id` (its name), `device_name` (optional) and `scope` (space-separated), and gets the [RFC 8628 §3.2](https://www.rfc-editor.org/rfc/rfc8628#section-3.2) answer:
+
+```json
+{ "device_code": "…", "user_code": "BCDF-GHJK",
+  "verification_uri": "https://example.com/device",
+  "verification_uri_complete": "https://example.com/device?user_code=BCDF-GHJK",
+  "expires_in": 600, "interval": 5 }
+```
+
+It polls `token` with `grant_type=urn:ietf:params:oauth:grant-type:device_code`, the `device_code` and the same `client_id`. Until the person decides, it gets the [§3.5](https://www.rfc-editor.org/rfc/rfc8628#section-3.5) errors as `{ "error": …, "error_description": … }` with status 400: `authorization_pending`, `slow_down` (a poll sooner than the interval, which then grows by 5 seconds), `access_denied`, `expired_token`, and `invalid_grant` for an unknown or used device code or another `client_id`. After the approval it gets the key once:
+
+```json
+{ "access_token": "ak_…", "token_type": "Bearer", "scope": "read write" }
+```
+
+No answer may be cached: every answer has `Cache-Control: no-store`. An agent may ask for any scope in `config.default_scopes`. A request without `scope` fails with `invalid_scope`, unless the controller defines `device_default_scope` (for example `"read"`).
+
+The engine adds `device_code`, `user_code` and `token` to `config.filter_parameters`, so request logs never show the codes or a token. If your approval page takes the user code under another parameter name, add that name too.
+
+**Key types.** Every request names the type of the key it asks for: `device_key_type` in the controller, `config.default_key_type` by default. With key types configured and no type named, the request raises, because that is the app's error, not the client's. The scopes an agent may ask for are then the ones of `config.default_scopes` that the type's `permissions` allow. A type with `scopes: :ceiling` gives every key its whole ceiling, so a request must ask for all of it. The type is stored with the request and is the type of the key: an untyped request stays untyped, and a new default type never applies to it.
+
+If the configuration changes after the approval so that the key can no longer be made as the person approved it, the poll answers `invalid_scope` (RFC 6749 §5.2) and closes the request (state `void`): key types turned on for an untyped request, the request's type removed or renamed, or a ceiling that grew. Any other failure to make the key closes it too. An owner at its key limit is the one case that waits: the poll answers `authorization_pending`.
+
+**The person's page** stays in your app, behind your sign-in. Find the request by the code the person typed or followed, show what the agent asks for, and decide:
+
+```ruby
+class DeviceApprovalsController < ApplicationController
+  before_action :authenticate_user!
+  # Look-ups and approvals share one budget, so a guess sent straight to
+  # update costs the same as one typed on the page (RFC 8628 §5.1).
+  rate_limit to: 10, within: 10.minutes, by: -> { current_user.id }, only: %i[show update]
+
+  def show
+    @authorization = ApiKeys::DeviceAuthorization.find_undecided_by_user_code(params[:user_code]) if params[:user_code].present?
+    # Show @authorization.client_id, .device_name, .scopes, .requested_from and the code,
+    # and ask the person to compare the code with the one the agent shows (RFC 8628 §5.4).
+  end
+
+  def update
+    authorization = ApiKeys::DeviceAuthorization.find_undecided_by_user_code(params[:user_code])
+    return redirect_to(device_approval_path) unless authorization
+
+    if params[:decision] == "approve"
+      authorization.approve!(current_organization, by: current_user)
+    else
+      authorization.deny!(by: current_user)
+    end
+    redirect_to device_approval_path, notice: "Done. Go back to the agent."
+  rescue ApiKeys::DeviceAuthorization::Closed
+    redirect_to device_approval_path, alert: "This request expired or was decided already."
+  rescue ApiKeys::DeviceAuthorization::KeyLimitReached
+    redirect_to device_approval_path(user_code: params[:user_code]), alert: "You have the most API keys you may have. Revoke one, then approve again."
+  end
+end
+```
+
+The rules the model keeps:
+
+- Both codes are stored as SHA-256 digests. The key's token is never stored: the poll that creates the key is the only answer that carries it.
+- A request lives ten minutes. The user code is eight letters from twenty consonants ([§6.1](https://www.rfc-editor.org/rfc/rfc8628#section-6.1)), and case, spaces and dashes do not matter when the person types it.
+- Polls and decisions take the request's row lock. A decided or expired request cannot be decided again: `approve!` and `deny!` raise `ApiKeys::DeviceAuthorization::Closed`.
+- `approve!` checks the owner's key limit first (`max_keys`, and the `limit` of the request's key type). At the limit it raises `ApiKeys::DeviceAuthorization::KeyLimitReached` and the request stays pending, so the person can revoke a key and approve again before it expires. It also checks the scopes against the configuration as it is now, and raises `ActiveRecord::RecordInvalid` for scopes that a key of the type no longer grants.
+- A poll never raises because the key cannot be made. If the owner reached its limit after the approval, the poll answers `authorization_pending`, nothing is kept, and a later poll makes the key once there is room. Every other failure closes the request with `invalid_scope`.
+- A poll with another `client_id` changes nothing ([§3.4](https://www.rfc-editor.org/rfc/rfc8628#section-3.4)), so the grant waits for its own client.
+- The approving person becomes the key's `created_by` when the column exists, so `config.trusted_key_check` applies to these keys too. Characters a key name cannot hold become hyphens in the key's name.
+
+What stays in your app:
+
+- **Rate limits.** Limit the code look-ups and the approvals on the approval page together, per person, so codes cannot be guessed ([§5.1](https://www.rfc-editor.org/rfc/rfc8628#section-5.1)), and the agent's requests per address. A rate limit's `with:` can answer in the RFC's shape: `with: -> { render_oauth_error("slow_down", "Too many requests.", status: :too_many_requests) }`.
+- **Who may approve,** and for which owner. When a person can switch between organizations, put the owner the page showed in the form and refuse an approval for another one.
+- **More fields in the token answer,** or an audit row: override `device_token_response(authorization, api_key)` and call `super`. It runs in the transaction that creates the key, so a row it writes to the same database commits with the key, or neither does.
+- **Housekeeping:** run `ApiKeys::DeviceAuthorization.prune!` once a day.
+
+Error descriptions change with I18n: `api_keys.device_flow.errors.<error>`.
 
 ## Configuration and settings
 
