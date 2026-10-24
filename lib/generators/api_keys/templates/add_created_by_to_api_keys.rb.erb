@@ -1,0 +1,33 @@
+# frozen_string_literal: true
+
+# Migration to add the person behind each key to the api_keys table
+# (api_keys 0.7.0): `created_by_type` and `created_by_id`, a polymorphic
+# reference, for keys whose owner is not a person (an organization).
+# `create_api_key!(created_by: current_user)` sets it, and
+# `config.trusted_key_check` can refuse a key once that person no longer
+# stands behind it.
+#
+# Run this migration if you're upgrading from a version of api_keys before
+# 0.7.0. New installs get the columns from the install generator. Existing
+# keys keep NULL. The migration is idempotent: columns that already exist are
+# left alone.
+class AddCreatedByToApiKeys < ActiveRecord::Migration<%= migration_version %>
+  def up
+    return if column_exists?(:api_keys, :created_by_id)
+
+    add_reference :api_keys, :created_by, polymorphic: true, null: true, type: foreign_key_type
+  end
+
+  def down
+    remove_reference :api_keys, :created_by, polymorphic: true if column_exists?(:api_keys, :created_by_id)
+  end
+
+  private
+
+  # The key type the install generator gives api_keys.owner_id: the app's
+  # `primary_key_type` generator setting, else :bigint.
+  def foreign_key_type
+    generators = Rails.application&.config&.generators
+    generators&.options&.dig(generators.orm, :primary_key_type) || :bigint
+  end
+end

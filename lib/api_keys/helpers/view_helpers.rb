@@ -31,7 +31,8 @@ module ApiKeys
         "origin_not_allowed" => "the request came from a web origin the key does not allow",
         "ip_not_allowed" => "the request came from an IP address the key does not allow",
         "restriction_misconfigured" => "the key's stored request restrictions could not be verified",
-        "missing_scope" => "the key lacks a permission the endpoint requires"
+        "missing_scope" => "the key lacks a permission the endpoint requires",
+        "untrusted_key" => "the person behind the key no longer stands behind it"
       }.freeze
       UNKNOWN_REFUSAL_REASON = "the request was refused for an unrecognized reason"
 

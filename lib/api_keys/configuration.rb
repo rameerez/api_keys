@@ -63,6 +63,18 @@ module ApiKeys
     # Tenant Resolution
     attr_reader :tenant_resolver
 
+    # The person behind a key
+    #
+    # @!attribute [rw] trusted_key_check
+    #   @return [#call, nil] Callable receiving the authenticated ApiKey and
+    #     answering whether the person behind it still stands behind it. When
+    #     it answers false or nil, `authenticate_api_key!` refuses the request
+    #     with 403 `untrusted_key`. It runs after the scope check. nil (the
+    #     default) trusts every valid key.
+    #   @example A key acts while its creator still manages the organization
+    #     config.trusted_key_check = ->(api_key) { api_key.owner.managed_by?(api_key.created_by) }
+    attr_reader :trusted_key_check
+
     # Callbacks (Placeholders for future extension)
     attr_reader :before_authentication, :after_authentication
 
@@ -272,6 +284,12 @@ module ApiKeys
       raise ArgumentError, "tenant_resolver must be callable" unless value.respond_to?(:call)
 
       @tenant_resolver = value
+    end
+
+    def trusted_key_check=(value)
+      raise ArgumentError, "trusted_key_check must be callable or nil" unless value.nil? || value.respond_to?(:call)
+
+      @trusted_key_check = value
     end
 
     def client_ip_resolver=(value)
@@ -656,6 +674,9 @@ module ApiKeys
 
       # Tenant Resolution
       @tenant_resolver = ->(api_key) { api_key.owner if api_key.respond_to?(:owner) }
+
+      # The person behind a key: no check, every valid key is trusted
+      @trusted_key_check = nil
 
       # Key Types & Environments (default to empty/disabled for backwards compatibility)
       @key_types = {}.freeze  # Empty = feature disabled, legacy behavior

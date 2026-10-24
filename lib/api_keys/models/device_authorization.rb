@@ -178,8 +178,11 @@ module ApiKeys
       end
     end
 
+    # The person who approved stands behind the key (created_by), when the
+    # api_keys table has the created_by columns.
     def complete!
-      key = owner.create_api_key!(name: key_name, scopes: scopes)
+      person = { created_by: decided_by } if decided_by && ApiKeys::ApiKey.created_by_columns?
+      key = owner.create_api_key!(name: key_name, scopes: scopes, **person.to_h)
       update!(state: "completed", api_key: key)
       key
     end

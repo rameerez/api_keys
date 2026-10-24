@@ -32,11 +32,17 @@ module ApiKeys
       revoked_key expired_key unknown_key_type unknown_environment
       environment_misconfigured environment_mismatch
       origin_not_allowed ip_not_allowed restriction_misconfigured missing_scope
+      untrusted_key
     ].freeze
+    # The person who created the key (0.7.0). Optional columns.
+    CREATED_BY_COLUMNS = %w[created_by_type created_by_id].freeze
     # Deliberately excludes `restrictions`: owners must be able to tighten a
-    # request policy even when the key itself is non-revocable.
+    # request policy even when the key itself is non-revocable. Includes the
+    # person who created the key: `config.trusted_key_check` may trust a key
+    # because of that person, so no update can name another one.
     IMMUTABLE_IDENTITY_ATTRIBUTES = %w[
       token_digest digest_algorithm prefix last4 owner_type owner_id key_type environment
+      created_by_type created_by_id
     ].freeze
 
     self.table_name = "api_keys"
@@ -46,6 +52,10 @@ module ApiKeys
 
     # == Associations ==
     belongs_to :owner, polymorphic: true, optional: true
+    # The person behind the key, when the host names one at creation:
+    # `create_api_key!(created_by: current_user)`. Needs the created_by
+    # columns (`rails generate api_keys:add_created_by`).
+    belongs_to :created_by, polymorphic: true, optional: true
 
     # == Attributes & Serialization ==
     # Expose the plaintext token only immediately after creation
@@ -563,6 +573,15 @@ module ApiKeys
     # @return [Boolean]
     def self.restrictions_column?
       column_names.include?(RESTRICTIONS_COLUMN)
+    rescue StandardError
+      false
+    end
+
+    # Whether the `created_by` columns exist. Installations that predate
+    # v0.7.0 keep working untouched until they run the generator.
+    # @return [Boolean]
+    def self.created_by_columns?
+      (CREATED_BY_COLUMNS - column_names).empty?
     rescue StandardError
       false
     end

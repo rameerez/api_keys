@@ -67,6 +67,7 @@ ActiveRecord::Schema.define do
     t.string   :digest_algorithm, null: false
     t.string   :name
     t.references :owner, polymorphic: true, null: true # type: :bigint assumed by default
+    t.references :created_by, polymorphic: true, null: true # The person behind the key (0.7.0)
     t.text     :scopes, default: "[]", null: false # Use text for SQLite JSON
     t.text     :metadata, default: "{}", null: false # Use text for SQLite JSON
     t.text     :restrictions, default: "{}", null: false # Origin/IP request restrictions
@@ -167,6 +168,20 @@ module RefusalStatsSchema
 
   def restore!
     OptionalColumnsSchema.restore!(COLUMNS)
+  end
+end
+
+# The person behind a key (0.7.0).
+module CreatedBySchema
+  COLUMNS = {
+    created_by_type: [:string, {}],
+    created_by_id: [:bigint, {}]
+  }.freeze
+
+  module_function
+
+  def without_columns(&block)
+    OptionalColumnsSchema.without(COLUMNS, &block)
   end
 end
 

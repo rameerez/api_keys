@@ -80,5 +80,16 @@ module ApiKeys
         )
       end
     end
+
+    # Raised when a key is given a `created_by` but the columns are missing
+    class CreatedByMigrationRequiredError < BaseError
+      def initialize(message = nil)
+        super(
+          message ||
+            "A key was given a created_by, but the created_by columns are missing from api_keys. " \
+            "Run: rails generate api_keys:add_created_by && rails db:migrate"
+        )
+      end
+    end
   end
 end

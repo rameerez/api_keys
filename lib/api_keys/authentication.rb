@@ -91,6 +91,19 @@ module ApiKeys
             required_scope: scope
           )
           record_key_refusal(refused_key, :missing_scope)
+        elsif !api_key_trusted?(@current_api_key)
+          log_debug "[ApiKeys Auth] Trust check failed for key ID #{@current_api_key.id}."
+          after_auth_context[:required_scope_check] = { required: scope, passed: true } if scope
+          after_auth_context[:success] = false
+          after_auth_context[:error_code] = :untrusted_key
+          refused_key = @current_api_key
+          @current_api_key = nil
+          render_unauthorized(
+            error_code: :untrusted_key,
+            message: "API key is no longer trusted: the person behind it no longer stands behind it",
+            status: :forbidden
+          )
+          record_key_refusal(refused_key, :untrusted_key)
         else
           after_auth_context[:required_scope_check] = { required: scope, passed: true } if scope
           # Authentication and scope check successful, enqueue stats update
@@ -123,7 +136,18 @@ module ApiKeys
       end
     end
 
+    # Whether the person behind the key still stands behind it, as the host's
+    # `config.trusted_key_check` answers. Without a check, every valid key is
+    # trusted. An error in the check is not rescued: the request fails, and
+    # never passes as trusted.
+    def api_key_trusted?(api_key)
+      check = ApiKeys.configuration.trusted_key_check
+      check.nil? || check.call(api_key) ? true : false
+    end
+
     # Renders a standard JSON error response for authentication failures.
+    # Every refusal of the gem renders here, so a host that overrides it
+    # renders them all in its own error shape.
     def render_unauthorized(error_code:, message:, status: :unauthorized, required_scope: nil)
       error_message = I18n.t("api_keys.errors.#{error_code}", default: message) rescue message
       response_body = { error: error_code, message: error_message }

@@ -328,6 +328,24 @@ ApiKeys.configure do |config|
   # config.client_ip_resolver = ->(request) { request.headers.fetch("CF-Connecting-IP") }
 
   # ============================================================================
+  # THE PERSON BEHIND A KEY
+  # ============================================================================
+  #
+  # When keys belong to an organization, name the person who creates each one:
+  #
+  #   current_organization.create_api_key!(name: "CI", created_by: current_user)
+  #
+  # Then the check below can stop a key once that person no longer stands
+  # behind it (they left, or lost the right to manage keys). It runs after the
+  # scope check, on every authenticated request. A false or nil answer refuses
+  # the request with 403 `untrusted_key`. Keys made before you set created_by
+  # have none: decide what the check does with them.
+  #
+  # Existing installs: rails generate api_keys:add_created_by && rails db:migrate
+  # Default: nil (every valid key is trusted)
+  # config.trusted_key_check = ->(api_key) { api_key.owner.managed_by?(api_key.created_by) }
+
+  # ============================================================================
   # BACKGROUND JOBS & CALLBACKS
   # ============================================================================
   #
