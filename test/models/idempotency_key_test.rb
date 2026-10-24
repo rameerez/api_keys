@@ -185,6 +185,7 @@ class IdempotencyKeyTest < ApiKeys::Test
     tests ApiKeys::Generators::AddIdempotencyKeysGenerator
     destination File.expand_path("../../tmp/add_idempotency_keys_generator", __dir__)
     setup :prepare_destination
+    setup { ApiKeys.reset_configuration! } # other suites configure key types
 
     FILE = "db/migrate/create_api_keys_idempotency_keys.rb"
 

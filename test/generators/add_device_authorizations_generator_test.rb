@@ -10,6 +10,7 @@ module ApiKeys
       tests ApiKeys::Generators::AddDeviceAuthorizationsGenerator
       destination File.expand_path("../../tmp/add_device_authorizations_generator", __dir__)
       setup :prepare_destination
+      setup { ApiKeys.reset_configuration! } # other suites configure key types
 
       FILE = "db/migrate/create_api_keys_device_authorizations.rb"
 
