@@ -1,0 +1,13 @@
+# frozen_string_literal: true
+
+# The bundle of test/databases/check.rb, which CI runs against PostgreSQL,
+# MySQL and SQLite (.github/workflows/test.yml, job "databases").
+source "https://rubygems.org"
+
+gemspec path: "../.."
+
+gem "rails", ENV.fetch("RAILS_VERSION", "~> 8.1.0")
+gem "minitest", "~> 5.25"
+gem "pg"
+gem "mysql2"
+gem "sqlite3", ">= 2.1"

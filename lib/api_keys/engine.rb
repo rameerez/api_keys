@@ -14,6 +14,15 @@ module ApiKeys
     # value takes precedence over this fallback.
     config.parent_controller = nil
 
+    # The device flow's codes are in its requests: a device code redeems a
+    # key, and a user code lets a person approve one. Request logs show
+    # neither, nor a token (RFC 8628 §5.1, RFC 6749 §10.3).
+    FILTERED_PARAMETERS = %i[device_code user_code token].freeze
+
+    initializer "api_keys.filter_parameters" do |app|
+      app.config.filter_parameters |= FILTERED_PARAMETERS
+    end
+
     # Add has_api_keys method to ActiveRecord::Base
     initializer "api_keys.active_record" do
       ActiveSupport.on_load(:active_record) do

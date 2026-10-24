@@ -35,7 +35,9 @@ module ApiKeys
         say "       include ApiKeys::Idempotency"
         say "       around_action :run_once_per_idempotency_key"
         say "\n  3. Answer every write with render_resource(record, status: ...), and define"
-        say "     resource_json(record, **options) to render a record."
+        say "     resource_json(record, **options) to render a record and"
+        say "     idempotent_replay_allowed?(record) to say whether current_api_key may read it."
+        say "     Keep the around_action outside any transaction your app opens."
         say "\n  4. Run ApiKeys::IdempotencyKey.prune! once a day."
         say "\nSee the api_keys README for detailed usage and examples.", :cyan
       end

@@ -36,7 +36,7 @@ module ApiKeys
         say "\n  3. Build the page where a person approves: find the request with"
         say "     ApiKeys::DeviceAuthorization.find_undecided_by_user_code(code), then call"
         say "     approve!(owner, by: current_user) or deny!(by: current_user)."
-        say "\n  4. Rate-limit the code look-ups on that page (RFC 8628 §5.1), and run"
+        say "\n  4. Rate-limit the look-ups and the approvals on that page together (RFC 8628 §5.1), and run"
         say "     ApiKeys::DeviceAuthorization.prune! once a day."
         say "\nSee the api_keys README for detailed usage and examples.", :cyan
       end

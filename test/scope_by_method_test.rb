@@ -3,11 +3,13 @@
 require "test_helper"
 require "action_controller"
 require "rack/test"
+require "active_job"
 
 # Scope by HTTP method (0.7.0): one line asks reads for one scope and
 # writes for another, as an invoicing app on the fleet does for its API.
 class ScopeByMethodTest < ApiKeys::Test
   include Rack::Test::Methods
+  include ActiveJob::TestHelper
 
   class FakeRequest
     attr_reader :headers, :query_parameters, :protocol, :uuid, :remote_ip, :request_method
@@ -119,19 +121,15 @@ class ScopeByMethodTest < ApiKeys::Test
   end
 
   test "the after_authentication callback names the scope this request needed" do
-    contexts = []
     ApiKeys.configure do |config|
       config.enable_async_operations = true
-      config.after_authentication = ->(context) { contexts << context }
+      config.after_authentication = ->(context) { context }
     end
-    previous_adapter = ActiveJob::Base.queue_adapter
-    ActiveJob::Base.queue_adapter = :inline
 
     authenticate(key_with("read"), "PATCH", scope: BY_METHOD)
 
-    assert_equal({ required: "write", passed: false }, contexts.sole[:required_scope_check])
-  ensure
-    ActiveJob::Base.queue_adapter = previous_adapter if previous_adapter
+    after = enqueued_jobs.map { |job| ActiveJob::Arguments.deserialize(job[:args]) }.find { |args| args.first == :after_authentication }
+    assert_equal({ required: "write", passed: false }, after.last[:required_scope_check])
   end
 
   test "in a controller: one line for reads and writes, and an action may name another scope" do
