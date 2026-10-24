@@ -57,7 +57,13 @@ module ApiKeys
     private
 
     # The core authentication method.
+    #
+    # @param scope [String, Array<String>, Hash, nil] The scope(s) the key
+    #   needs. A Hash names them by HTTP method, in one line:
+    #   `scope: { read: "read", write: "write" }` asks GET and HEAD for the
+    #   read scope and every other method for the write scope.
     def authenticate_api_key!(scope: nil)
+      scope = scope_for_request_method(scope) if scope.is_a?(Hash)
       @current_api_key = nil
       remove_instance_variable(:@current_api_tenant) if instance_variable_defined?(:@current_api_tenant)
       log_debug "[ApiKeys Auth] authenticate_api_key! started for request: #{request.uuid}"
@@ -143,6 +149,18 @@ module ApiKeys
     # Whether this request reads (GET or HEAD).
     def reading_request?
       READ_METHODS.include?(request.request_method)
+    end
+
+    # The scope of `scope: { read:, write: }` for this request's method. Both
+    # are required, so a forgotten one never leaves its requests unchecked.
+    # A value of nil asks for no scope.
+    def scope_for_request_method(scopes)
+      scopes = scopes.to_h.transform_keys(&:to_sym)
+      unless scopes.keys.sort == %i[read write]
+        raise ArgumentError, "scope: by HTTP method takes exactly { read: ..., write: ... }"
+      end
+
+      reading_request? ? scopes[:read] : scopes[:write]
     end
 
     # Whether the person behind the key still stands behind it, as the host's
