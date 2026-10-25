@@ -66,6 +66,8 @@ rails generate api_keys:add_created_by
 rails db:migrate
 ```
 
+On PostgreSQL this migration builds its index concurrently, outside a transaction, so it does not block writes to `api_keys` and strong_migrations accepts it (0.8.1). Each step checks what exists, so a run that stopped half way can run again. If a concurrent build fails, PostgreSQL keeps an invalid index: remove it before the next run. The 0.6.0 and 0.7.0 upgrade migrations (`add_key_activity`, `add_created_by`, `add_device_authorizations`, `add_idempotency_keys`) pass strong_migrations on PostgreSQL and MySQL as generated.
+
 The device flow and Idempotency-Key each need a table of their own. New and existing installations run these only if they use the feature:
 
 ```bash
@@ -91,7 +93,7 @@ On 0.6.x, nothing changes until you opt in to a 0.7.0 feature. A 0.6.0 job worke
 On 0.4.x, the calls of a custom key controller keep working unchanged: `create_api_key!(name:, key_type:, expires_at:)`, `ApiKeys::TokenSession.store(session, @api_key)` and `ApiKeys::TokenSession.retrieve_once(session)`. A handoff stored by 0.4.x stays readable after the deploy. Read the [CHANGELOG](CHANGELOG.md) for 0.5.0 to 0.6.0 before you upgrade. These changes are the ones a 0.4.x app sees:
 
 - `api_key_scopes_checkboxes` renders an empty `api_key[scopes][]` field before the boxes (0.5.1). A form with every box cleared now saves no scopes, where 0.4.x kept the old ones. If an edit form offers only some scopes, save `ApiKey#scopes_after_form_edit` (see [Form Builder Extensions](#form-builder-extensions-opt-in)).
-- A token's one-time handoff is one-time across copies of the session (0.5.1), and once ever per key after `add_key_activity` (0.6.0). A retrieval inside an open database transaction is refused (0.6.0): exclude the token page from a host `around_action` that wraps requests in a transaction.
+- A token's one-time handoff is one-time across copies of the session (0.5.1), and once ever per key after `add_key_activity` (0.6.0). A retrieval inside an open database transaction is refused (0.6.0): exclude the token page from a host `around_action` that wraps requests in a transaction. The transaction of a transactional test does not count (0.8.1).
 - Deploy job workers with the web processes. A refusal job from 0.6.0 or later errors on a 0.4.x worker.
 
 ## Quick Start
@@ -554,6 +556,7 @@ The database applies it atomically, and the claim commits before the token is re
 
 - **With the column, the token is released at most once per key.** A cache flush, a restart, or an eviction changes nothing, and two simultaneous first retrievals are serialized by the database: one wins. `ApiKey#token_shown_at` and `#token_shown?` report it. A key whose row no longer exists gets nothing: zero rows claimed fails closed.
 - **A retrieval attempted inside a database transaction is refused, and can be retried outside it.** Inside a transaction the claim would commit only with it, after the token had been returned, and a rollback would undo it. No cache can stand in for that (a process-local store protects one process), so whatever the cache, the token is withheld with `:inside_transaction`, nothing is recorded, and the handoff stays in the session for a retrieval outside the transaction. The check is Active Record's transaction manager on the `ApiKey` connection: a transaction opened with raw SQL (`BEGIN`) is not detected, and one on another database's connection does not matter. The dashboard opens no transaction itself, but its controller inherits from your `ApplicationController` (or the configured parent): a host `around_action` that wraps requests in a transaction will see the refusal and must exclude the token page.
+- **In a transactional test, the token is released once, as in production (0.8.1).** Rails' transactional tests (also rspec-rails and DatabaseCleaner's `:transaction` strategy) open one outer, non-joinable transaction around each test, and a system test's server thread shares it. When `Rails.env` is test and that is the only open transaction, the claim runs in it: the first retrieval in the test returns the token, and a second one, or one from a copy of the session, does not. The rollback at the end of the test removes the key with its claim. A transaction that the app or the test opens on top of it still refuses the retrieval, as in production, so a test sees a host `around_action` that would break the token page. From 0.6.0 to 0.8.0 every retrieval in a transactional test was refused.
 - **The column is written only by that claim.** The model marks it read-only, so no form, mass assignment, or `update` can clear it and reopen a handoff.
 - **The cache marker from 0.5.1 stays as a second layer.** Each handoff carries a random ID inside its encrypted payload, and retrieval records it in `Rails.cache` with `write(key, true, unless_exist: true, expires_in: 10.minutes)`. With the column it refuses a release the claim did not see (a 0.5.1 process that served the token during a rolling deploy), and it is the only cross-copy layer for a handoff that names no key (`TokenSession.store(session, "a token string")`).
 - **Without the column** (an existing install that has not run `rails generate api_keys:add_key_activity`), the gem behaves as 0.5.1 and the marker is the only cross-copy layer. The token is then released at most once only when every application process shares a store that implements `unless_exist:` atomically (Redis, Memcached), and that store keeps the marker for the whole ten-minute handoff lifetime. If the cache is flushed, restarted without persistence, or evicts the marker within those ten minutes, a copy of the session taken before retrieval can recover the token again for the rest of that window. **`MemoryStore`** only covers the process that holds it. **`FileStore`** checks and then writes, so it stops a later replay on the same host but not two requests that arrive at the same instant. **Solid Cache** (Rails 8's default production store) implements `unless_exist:` as a `SELECT … FOR UPDATE` followed by an upsert; on PostgreSQL that locks nothing while the key does not exist yet, so two simultaneous first retrievals can both succeed. **`ActiveSupport::Cache::NullStore`** (Rails' generated development and test default), or no `Rails.cache` at all, records nothing, so the session deletion is the only protection.
@@ -1877,6 +1880,12 @@ Run the default test suite with `bundle exec rake test`. Run all supported Rails
 bundle exec appraisal rails-7.2 rake test
 bundle exec appraisal rails-8.0 rake test
 bundle exec appraisal rails-8.1 rake test
+```
+
+`test/databases/check.rb` runs the generated upgrade migrations as `rails db:migrate` runs them, with strong_migrations, and the row locks of Idempotency-Key and the device flow, on a real database. CI runs it on PostgreSQL, MySQL and SQLite:
+
+```bash
+BUNDLE_GEMFILE=test/databases/Gemfile DB_ADAPTER=postgresql bundle exec ruby test/databases/check.rb
 ```
 
 ## Development
