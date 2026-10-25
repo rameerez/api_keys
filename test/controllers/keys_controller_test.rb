@@ -29,9 +29,9 @@ ApiKeys::ApplicationController.helper(ApiKeys::Engine.routes.url_helpers)
 ApiKeys::ApplicationController.helper_method(:default_url_options)
 
 module ApiKeys
-  class KeysControllerTest < ActionController::TestCase
-    tests ApiKeys::KeysController
-
+  # The dashboard's test setup, for KeysControllerTest and for the
+  # transactional test at the end of this file.
+  module KeysControllerTestSetup
     def setup
       super
       ApiKeys.reset_configuration!
@@ -51,6 +51,11 @@ module ApiKeys
       @controller.prepend_view_path File.expand_path("../../app/views", __dir__)
       @controller.singleton_class.include(ApiKeys::Engine.routes.url_helpers)
     end
+  end
+
+  class KeysControllerTest < ActionController::TestCase
+    include KeysControllerTestSetup
+    tests ApiKeys::KeysController
 
     test "dashboard responses prohibit caching, MIME sniffing, and referrers" do
       get :index
@@ -1213,6 +1218,47 @@ module ApiKeys
         @request.content_security_policy_nonce,
         @request.content_security_policy_nonce_directives
       )
+    end
+  end
+end
+
+module ApiKeys
+  # A host app's dashboard test, in a transactional test (0.8.1): the token
+  # page shows a new key's token once, and a reload or a copied session gets
+  # the "already shown" answer, as in production.
+  class KeysControllerInTransactionalTestsTest < ActionController::TestCase
+    include ActiveRecord::TestFixtures
+    include KeysControllerTestSetup
+    self.use_transactional_tests = true
+    tests ApiKeys::KeysController
+
+    test "the token page shows a new key's token once" do
+      ApiKeys::ApiKey.connection_pool.with_connection do |connection|
+        assert_equal 1, connection.open_transactions, "precondition: the test's transaction is open"
+      end
+      post :create, params: { api_key: { name: "Transactional dashboard key", scopes: %w[read] } }
+      key = @user.api_keys.order(:created_at).last
+      assert_redirected_to key_path(key)
+      copied_cookie = @request.session[ApiKeys::TokenSession::DEFAULT_SESSION_KEY].deep_dup
+
+      get :show, params: { id: key.id }
+
+      assert_response :success
+      token = @controller.instance_variable_get(:@plaintext_token)
+      assert ApiKeys::Services::Digestor.match?(token: token, stored_digest: key.token_digest,
+                                                strategy: key.digest_algorithm.to_sym)
+      assert_includes response.body, token
+      assert key.reload.token_shown?
+
+      get :show, params: { id: key.id }
+      assert_redirected_to keys_path
+      assert_equal KeysController::ALREADY_SHOWN_ALERT, flash[:alert], "a reload gets nothing"
+
+      @request.session[ApiKeys::TokenSession::DEFAULT_SESSION_KEY] = copied_cookie
+      get :show, params: { id: key.id }
+      assert_redirected_to keys_path
+      assert_equal KeysController::ALREADY_SHOWN_ALERT, flash[:alert], "a copied session gets nothing"
+      assert_nil @controller.instance_variable_get(:@plaintext_token)
     end
   end
 end

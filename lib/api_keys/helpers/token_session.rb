@@ -43,6 +43,12 @@ module ApiKeys
     #    opened with raw SQL (`BEGIN`) is not detected. The dashboard opens no
     #    transaction itself; a host `around_action` that wraps its requests in
     #    one sees the refusal.
+    #
+    #    The transaction that a transactional test opens around each test does
+    #    not count (0.8.1): when Rails.env is test and the only open
+    #    transaction is an outer, non-joinable one, the claim runs in it. The
+    #    first retrieval in the test returns the token and a second one does
+    #    not, as in production. A transaction opened on top of it is refused.
     # 2. Cache marker (0.5.1): each handoff has a random ID, and retrieval
     #    records it in `Rails.cache` with `write(..., unless_exist: true)`;
     #    a later retrieval of the same handoff finds the marker and gets nil.
@@ -94,7 +100,8 @@ module ApiKeys
       #   transaction on the ApiKey connection, where its one-time claim could
       #   be rolled back after the token was shown. The token is withheld,
       #   nothing is recorded, and the handoff stays in the session for a
-      #   retry outside the transaction.
+      #   retry outside the transaction. The transaction of a transactional
+      #   test does not count; one opened on top of it does.
       # - `:missing`: no usable handoff for this key (none stored, expired,
       #   tampered, or bound to another key).
       #
@@ -303,7 +310,26 @@ module ApiKeys
           return false if stored_id.nil? || !defined?(::ApiKeys::ApiKey)
           return false unless ::ApiKeys::ApiKey.column_names.include?(::ApiKeys::ApiKey::TOKEN_SHOWN_AT_COLUMN)
 
-          ::ApiKeys::ApiKey.connection_pool.with_connection(&:transaction_open?)
+          ::ApiKeys::ApiKey.connection_pool.with_connection do |connection|
+            connection.transaction_open? && !only_test_transaction_open?(connection)
+          end
+        end
+
+        # Whether the only open transaction on +connection+ is the one a
+        # transactional test opens around each test. Rails' transactional
+        # tests (and rspec-rails, and DatabaseCleaner's :transaction strategy)
+        # open it as one outer, non-joinable transaction, and a system test's
+        # server thread shares it. A claim in it is as durable as every other
+        # write of the test: the test sees it, a second retrieval in the same
+        # test is refused, and the rollback at the end of the test removes the
+        # key with it. A transaction that the app or the test opens on top of
+        # it still refuses the retrieval, as in production. Only when
+        # Rails.env is test.
+        def only_test_transaction_open?(connection)
+          return false unless defined?(Rails) && Rails.respond_to?(:env) && Rails.env.test?
+          return false unless connection.open_transactions == 1
+
+          !connection.current_transaction.joinable?
         end
 
         # Inside a transaction the claim is not durable until the host commits,
