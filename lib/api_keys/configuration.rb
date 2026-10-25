@@ -16,7 +16,13 @@ module ApiKeys
     # == Accessors ==
 
     # Core Authentication
-    attr_reader :header, :query_param
+    #
+    # @!attribute [rw] require_bearer_scheme
+    #   @return [Boolean] Accept the header only as "Bearer <token>". A value
+    #     without the scheme is refused like any invalid token (401
+    #     `invalid_token`). false (the default) also accepts the bare token,
+    #     as every earlier version did.
+    attr_reader :header, :query_param, :require_bearer_scheme
 
     # Token Generation
     attr_reader :token_prefix, :token_length, :token_alphabet
@@ -192,7 +198,7 @@ module ApiKeys
     BOOLEAN_SETTINGS = %i[
       require_key_name track_requests_count https_only_production https_strict_mode
       enable_async_operations debug_logging strict_environment_isolation
-      dashboard_allow_cross_environment
+      dashboard_allow_cross_environment require_bearer_scheme
     ].freeze
 
     def header=(value)
@@ -633,6 +639,7 @@ module ApiKeys
       # Core Authentication
       @header = "Authorization" # Expects "Bearer <token>"
       @query_param = nil # No query param lookup by default
+      @require_bearer_scheme = false # Also accept a bare token in the header
 
       # Token Generation
       @token_prefix = -> { "ak_" }

@@ -9,6 +9,11 @@ ApiKeys.configure do |config|
   # Default: "Authorization" (expects "Bearer <token>")
   # config.header = "Authorization"
 
+  # Accept the header only as "Bearer <token>", refusing a bare token with
+  # 401 invalid_token. Recommended for public APIs.
+  # Default: false (a bare token is accepted too)
+  # config.require_bearer_scheme = true
+
   # The query parameter name to check as a fallback if the header is missing.
   # WARNING: Query parameters appear in logs, browser history, and Referer headers.
   # Only enable for development/testing. Set to nil to disable (recommended).

@@ -269,6 +269,67 @@ module ApiKeys
         assert_equal :invalid_token, result.error_code
       end
 
+      # require_bearer_scheme: a bare token in the header
+
+      test "a bare token in the header authenticates by default" do
+        refute ApiKeys.configuration.require_bearer_scheme
+        mock_cache
+
+        result = ApiKeys::Services::Authenticator.call(mock_request(headers: { "Authorization" => @token }))
+
+        assert result.success?
+        assert_equal @api_key, result.api_key
+      end
+
+      test "with require_bearer_scheme a bare token is an invalid token, never looked up" do
+        ApiKeys.configuration.require_bearer_scheme = true
+        mock_cache
+        ApiKeys::ApiKey.expects(:where).never
+        ApiKeys::ApiKey.expects(:find_by).never
+
+        [@token, "Basic #{@token}", "Token #{@token}", "Bearer", "Bearer "].each do |header|
+          result = ApiKeys::Services::Authenticator.call(mock_request(headers: { "Authorization" => header }))
+
+          refute result.success?, header
+          assert_nil result.api_key
+          assert_equal :invalid_token, result.error_code, header
+        end
+      end
+
+      test "with require_bearer_scheme the Bearer scheme still authenticates, in any case and spacing" do
+        ApiKeys.configuration.require_bearer_scheme = true
+        mock_cache
+
+        ["Bearer #{@token}", "bearer #{@token}", "BEARER\t#{@token}"].each do |header|
+          result = ApiKeys::Services::Authenticator.call(mock_request(headers: { "Authorization" => header }))
+
+          assert result.success?, header
+          assert_equal @api_key, result.api_key
+        end
+      end
+
+      test "with require_bearer_scheme a refused header does not fall back to the query parameter" do
+        ApiKeys.configuration.require_bearer_scheme = true
+        ApiKeys.configuration.query_param = "api_key"
+        mock_cache
+
+        result = ApiKeys::Services::Authenticator.call(
+          mock_request(headers: { "Authorization" => @token }, query_params: { "api_key" => @token })
+        )
+
+        refute result.success?
+        assert_equal :invalid_token, result.error_code
+      end
+
+      test "require_bearer_scheme applies to whatever header is configured" do
+        ApiKeys.configuration.header = "X-Api-Key"
+        ApiKeys.configuration.require_bearer_scheme = true
+        mock_cache
+
+        refute ApiKeys::Services::Authenticator.call(mock_request(headers: { "X-Api-Key" => @token })).success?
+        assert ApiKeys::Services::Authenticator.call(mock_request(headers: { "X-Api-Key" => "Bearer #{@token}" })).success?
+      end
+
       test "rejects oversized tokens before querying the database" do
         oversized_token = "ak_#{"a" * (ApiKeys::Services::Authenticator::MAX_TOKEN_BYTESIZE + 1)}"
         ApiKeys::ApiKey.expects(:find_by).never

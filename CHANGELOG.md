@@ -1,3 +1,9 @@
+## [0.8.0] - 2026-10-25
+
+### Added
+
+- `config.require_bearer_scheme`. When true, the authentication header is accepted only as `Bearer <token>` (any case, spaces or tabs after the scheme); a bare token, another scheme such as `Basic`, or a lone `Bearer` gets the ordinary 401 `invalid_token`, is never looked up, and never falls back to `config.query_param`. It applies to whichever header `config.header` names. The default, false, keeps accepting a bare token as every earlier version did. Asked for by ReplyBrain, whose public API should parse one credential shape only.
+
 ## [0.7.0] - 2026-10-24
 
 Four features that an invoicing app on the fleet runs in production today, moved into the gem with their tests so that apps on the fleet can delete their own copies. Each one is opt-in: an app that does not use it sees no change.
