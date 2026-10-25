@@ -18,8 +18,9 @@ module ApiKeys
       # The longest authentication header that can still carry a valid token:
       # the token plus the "Bearer" scheme and generous separator whitespace.
       MAX_CREDENTIAL_HEADER_BYTESIZE = MAX_TOKEN_BYTESIZE + 64
-      # Stands in for a header refused before parsing. It is not a String, so
-      # it can never match a key and always yields :invalid_token.
+      # Stands in for a refused header: malformed, or without the Bearer
+      # scheme the app requires. It is not a String, so it can never match a
+      # key and always yields :invalid_token.
       MALFORMED_CREDENTIAL = Object.new.freeze
       MAX_BCRYPT_CANDIDATES = 32
       MAX_KNOWN_PREFIXES = 1_024
@@ -146,7 +147,13 @@ module ApiKeys
               log_debug "[ApiKeys Auth] Extracted token from Bearer scheme."
               return match[1]
             end
-            # Fallback: return the raw header value if no Bearer scheme
+            # A bare token is accepted unless the app requires the scheme.
+            # Refused, it is an invalid token: the header was present, so it
+            # never falls through to the query parameter.
+            if config.require_bearer_scheme
+              log_debug "[ApiKeys Auth] Refused a header without the Bearer scheme."
+              return MALFORMED_CREDENTIAL
+            end
             log_debug "[ApiKeys Auth] No Bearer scheme, using raw header value as token."
             return header_value
           end

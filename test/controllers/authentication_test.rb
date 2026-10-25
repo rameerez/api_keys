@@ -255,6 +255,24 @@ module ApiKeys
         refute controller.send(:check_api_key_scopes, "read")
       end
 
+      test "with require_bearer_scheme a bare token gets the ordinary 401 invalid_token answer" do
+        user = User.create!(name: "Bare Token User")
+        token = user.create_api_key!(name: "Bare Token Key").token
+        ApiKeys.configuration.enable_async_operations = false
+
+        accepted = FakeController.new(FakeRequest.new(headers: { "Authorization" => token }))
+        accepted.send(:authenticate_api_key!)
+        assert_nil accepted.rendered, "a bare token is accepted by default"
+
+        ApiKeys.configuration.require_bearer_scheme = true
+        refused = FakeController.new(FakeRequest.new(headers: { "Authorization" => token }))
+        refused.send(:authenticate_api_key!)
+
+        assert_equal :unauthorized, refused.rendered[:status]
+        assert_equal :invalid_token, refused.rendered[:json][:error]
+        assert_nil refused.send(:current_api_key)
+      end
+
       test "a failed reauthentication clears prior key and tenant state" do
         user = User.create!(name: "Prior User")
         key = user.create_api_key!(name: "Prior Key")

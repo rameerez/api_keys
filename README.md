@@ -1298,9 +1298,19 @@ See the [Key Types](#key-types-stripe-style-publishable--secret-keys) section be
 
 Some highlights:
 
+### Require the `Bearer` scheme
+
+Clients send `Authorization: Bearer ak_123abc...`. For compatibility, a bare `Authorization: ak_123abc...` is accepted too. A public API should accept one shape only, so turn the bare token off:
+
+```ruby
+config.require_bearer_scheme = true
+```
+
+Now a header without the scheme (a bare token, `Basic …`, `Token …`) gets the same 401 `invalid_token` as any wrong key, and is never looked up. It applies to whichever header you configured in `config.header`, and a refused header never falls back to the query parameter.
+
 ### Accept API keys via query params instead of Authentication HTTP headers
 
-By default, the `api_key` gem expects API keys to come *exclusively* as HTTP Authentication Bearer tokens, for security purposes. But you can allow users to make requests to your endpoints with the API key token passed as a URL query param too, like this:
+By default, the `api_key` gem expects API keys to come *exclusively* in the `Authorization` header, for security purposes. But you can allow users to make requests to your endpoints with the API key token passed as a URL query param too, like this:
 
 ```
 https://example.com/api/endpoint?api_key=ak_123abc...
