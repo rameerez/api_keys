@@ -9,13 +9,27 @@
 #
 # Run this migration if you're upgrading from a version of api_keys before
 # 0.7.0. New installs get the columns from the install generator. Existing
-# keys keep NULL. The migration is idempotent: columns that already exist are
-# left alone.
+# keys keep NULL.
+#
+# On PostgreSQL the index is built concurrently, so api_keys takes writes
+# while it builds, and strong_migrations accepts the migration. A concurrent
+# build cannot run inside a transaction, so this migration runs without one.
+# Each step checks what exists, so a run that stopped half way can run
+# again. If a concurrent build fails, PostgreSQL keeps an invalid index:
+# remove it before the next run. MySQL and SQLite build the index as usual.
 class AddCreatedByToApiKeys < ActiveRecord::Migration<%= migration_version %>
-  def up
-    return if column_exists?(:api_keys, :created_by_id)
+  INDEX_NAME = "index_api_keys_on_created_by"
+  INDEX_COLUMNS = %i[created_by_type created_by_id].freeze
 
-    add_reference :api_keys, :created_by, polymorphic: true, null: true, type: foreign_key_type
+  disable_ddl_transaction!
+
+  def up
+    unless column_exists?(:api_keys, :created_by_id)
+      add_reference :api_keys, :created_by, polymorphic: true, null: true, type: foreign_key_type, index: false
+    end
+    return if index_exists?(:api_keys, INDEX_COLUMNS)
+
+    add_index :api_keys, INDEX_COLUMNS, name: INDEX_NAME, **index_algorithm
   end
 
   def down
@@ -29,5 +43,11 @@ class AddCreatedByToApiKeys < ActiveRecord::Migration<%= migration_version %>
   def foreign_key_type
     generators = Rails.application&.config&.generators
     generators&.options&.dig(generators.orm, :primary_key_type) || :bigint
+  end
+
+  # Concurrently on PostgreSQL (and PostGIS). MySQL and SQLite have no
+  # concurrent build and refuse the option.
+  def index_algorithm
+    connection.adapter_name.downcase.include?("postg") ? { algorithm: :concurrently } : {}
   end
 end

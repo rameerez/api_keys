@@ -275,18 +275,40 @@ class TrustedKeyCheckTest < ApiKeys::Test
     destination File.expand_path("../tmp/add_created_by_generator", __dir__)
     setup :prepare_destination
 
-    test "generates one idempotent migration with the polymorphic reference" do
+    # test/databases/check.rb runs this migration as db:migrate does on
+    # PostgreSQL, MySQL and SQLite, with strong_migrations.
+    test "generates one idempotent migration that strong_migrations accepts on PostgreSQL" do
       run_generator
 
       assert_migration "db/migrate/add_created_by_to_api_keys.rb" do |migration|
         assert_includes migration, "class AddCreatedByToApiKeys < ActiveRecord::Migration["
-        assert_includes migration, "return if column_exists?(:api_keys, :created_by_id)"
-        assert_includes migration, "add_reference :api_keys, :created_by, polymorphic: true, null: true"
+        assert_includes migration, "disable_ddl_transaction!"
+        assert_includes migration, "unless column_exists?(:api_keys, :created_by_id)"
+        assert_includes migration, "add_reference :api_keys, :created_by, polymorphic: true, null: true, " \
+                                   "type: foreign_key_type, index: false"
+        assert_includes migration, "return if index_exists?(:api_keys, INDEX_COLUMNS)"
+        assert_includes migration, 'INDEX_NAME = "index_api_keys_on_created_by"'
+        assert_includes migration, "{ algorithm: :concurrently }"
         refute_includes migration, "def migration_version"
       end
     end
 
-    test "the generated migration really adds, re-runs and removes the columns" do
+    test "the index is built concurrently on PostgreSQL and PostGIS, and as usual elsewhere" do
+      run_generator
+      load migration_file_name("db/migrate/add_created_by_to_api_keys.rb")
+      migration = ::AddCreatedByToApiKeys.new
+
+      { "PostgreSQL" => { algorithm: :concurrently }, "PostGIS" => { algorithm: :concurrently },
+        "Mysql2" => {}, "Trilogy" => {}, "SQLite" => {} }.each do |adapter, options|
+        migration.stubs(:connection).returns(stub(adapter_name: adapter))
+
+        assert_equal options, migration.send(:index_algorithm), adapter
+      end
+    ensure
+      Object.send(:remove_const, :AddCreatedByToApiKeys) if Object.const_defined?(:AddCreatedByToApiKeys)
+    end
+
+    test "the generated migration really adds, re-runs and removes the columns and the index" do
       run_generator
       load migration_file_name("db/migrate/add_created_by_to_api_keys.rb")
       migration = ::AddCreatedByToApiKeys.new
@@ -299,6 +321,12 @@ class TrustedKeyCheckTest < ApiKeys::Test
         ApiKeys::ApiKey.reset_column_information
         assert ApiKeys::ApiKey.created_by_columns?
         assert ApiKeys::ApiKey.columns_hash["created_by_id"].null, "existing keys keep NULL"
+        assert ActiveRecord::Base.connection.index_exists?(:api_keys, %i[created_by_type created_by_id],
+                                                           name: "index_api_keys_on_created_by")
+
+        # A run that stopped after the columns builds the index on the next run.
+        ActiveRecord::Base.connection.remove_index(:api_keys, name: "index_api_keys_on_created_by")
+        ActiveRecord::Migration.suppress_messages { migration.migrate(:up) }
         assert ActiveRecord::Base.connection.index_exists?(:api_keys, %i[created_by_type created_by_id])
 
         ActiveRecord::Migration.suppress_messages { migration.migrate(:down) }

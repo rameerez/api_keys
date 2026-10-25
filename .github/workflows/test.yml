@@ -50,9 +50,10 @@ jobs:
           path: test/reports/
           retention-days: 7
 
-  # The 0.7.0 migrations as the generators write them, and the row locks of
-  # Idempotency-Key and the device flow, on real databases with concurrent
-  # connections (test/databases/check.rb).
+  # The upgrade migrations as the generators write them and db:migrate runs
+  # them, with strong_migrations, and the row locks of Idempotency-Key and the
+  # device flow, on real databases with concurrent connections
+  # (test/databases/check.rb).
   databases:
     runs-on: ubuntu-latest
     timeout-minutes: 15

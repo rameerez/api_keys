@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
-# Runs the 0.7.0 migrations as the generators write them, and the row locks
-# of ApiKeys::IdempotencyKey and ApiKeys::DeviceAuthorization, against a real
-# database with real concurrent connections. The main suite runs on
-# in-memory SQLite, which has one connection.
+# Runs the upgrade migrations of 0.6.0 and 0.7.0 as the generators write
+# them and as db:migrate runs them, with strong_migrations checking each one,
+# and the row locks of ApiKeys::IdempotencyKey and
+# ApiKeys::DeviceAuthorization, against a real database with real concurrent
+# connections. The main suite runs on in-memory SQLite, which has one
+# connection.
 #
 #   BUNDLE_GEMFILE=test/databases/Gemfile DB_ADAPTER=postgresql bundle exec ruby test/databases/check.rb
 #
@@ -18,9 +20,11 @@ require "stringio"
 require "tmpdir"
 require "rails"
 require "active_record/railtie"
+require "strong_migrations"
 require "api_keys"
 require "rails/generators"
 require "generators/api_keys/install_generator"
+require "generators/api_keys/add_key_activity_generator"
 require "generators/api_keys/add_created_by_generator"
 require "generators/api_keys/add_device_authorizations_generator"
 require "generators/api_keys/add_idempotency_keys_generator"
@@ -58,12 +62,16 @@ CONFIG = case ADAPTER
          end
 ActiveRecord::Base.establish_connection(CONFIG)
 ActiveRecord::Migration.verbose = false
+# strong_migrations does not support SQLite, and says to skip it there.
+# There the check shows that the migrations run, as on any database.
+StrongMigrations.skip_database(:primary) if ADAPTER == "sqlite3"
 
 # Writes each migration with its generator, as an app does.
 MIGRATIONS = Dir.mktmpdir("api_keys_migrations")
 [
-  ApiKeys::Generators::InstallGenerator, ApiKeys::Generators::AddCreatedByGenerator,
-  ApiKeys::Generators::AddDeviceAuthorizationsGenerator, ApiKeys::Generators::AddIdempotencyKeysGenerator
+  ApiKeys::Generators::InstallGenerator, ApiKeys::Generators::AddKeyActivityGenerator,
+  ApiKeys::Generators::AddCreatedByGenerator, ApiKeys::Generators::AddDeviceAuthorizationsGenerator,
+  ApiKeys::Generators::AddIdempotencyKeysGenerator
 ].each do |generator|
   $stdout = StringIO.new
   generator.start([], destination_root: MIGRATIONS)
@@ -71,8 +79,25 @@ ensure
   $stdout = STDOUT
 end
 
+# The upgrade migrations, in the order db:migrate runs them.
+UPGRADES = %w[add_key_activity_to_api_keys add_created_by_to_api_keys create_api_keys_device_authorizations
+              create_api_keys_idempotency_keys].freeze
+
+def migration_file(name)
+  Dir["#{MIGRATIONS}/db/migrate/*_#{name}.rb"].sole
+end
+
+# Runs one generated migration as db:migrate does: inside a DDL transaction
+# unless the migration disables it, and checked by strong_migrations (which
+# checks only the way up, by default). An unsafe migration raises.
+def run_migration(name, direction)
+  file = migration_file(name)
+  ActiveRecord::MigrationContext.new(File.dirname(file)).run(direction, File.basename(file).to_i)
+  [ApiKeys::ApiKey, ApiKeys::DeviceAuthorization, ApiKeys::IdempotencyKey].each(&:reset_column_information)
+end
+
 def load_migration(name)
-  source = File.read(Dir["#{MIGRATIONS}/db/migrate/*_#{name}.rb"].sole)
+  source = File.read(migration_file(name))
   # The install migration gives JSON columns literal defaults, which MySQL
   # refuses. That migration is older than 0.7.0 and has an issue of its own;
   # here it only makes the api_keys table that the new migrations need.
@@ -82,12 +107,14 @@ end
 
 id_type = ENV["UUID"].present? ? :uuid : :primary_key
 ActiveRecord::Schema.define { create_table(:users, id: id_type) { |t| t.string :name } }
-%w[create_api_keys_table add_created_by_to_api_keys create_api_keys_device_authorizations
-   create_api_keys_idempotency_keys].each { |name| load_migration(name) }
+load_migration("create_api_keys_table")
 CreateApiKeysTable.migrate(:up)
-AddCreatedByToApiKeys.migrate(:up) # the install has the columns: nothing to do
-CreateApiKeysDeviceAuthorizations.migrate(:up)
-CreateApiKeysIdempotencyKeys.migrate(:up)
+# An install from before 0.6.0: the api_keys table without the columns that
+# the upgrades add. Then every upgrade, as an app runs them.
+ActiveRecord::Base.connection.remove_reference(:api_keys, :created_by, polymorphic: true)
+ApiKeys::ApiKey::REFUSAL_STATS_COLUMNS.each { |column| ActiveRecord::Base.connection.remove_column(:api_keys, column) }
+ActiveRecord::Base.connection.remove_column(:api_keys, ApiKeys::ApiKey::TOKEN_SHOWN_AT_COLUMN)
+UPGRADES.each { |name| run_migration(name, :up) }
 json = ADAPTER == "postgresql" ? :jsonb : :json
 ApiKeys::ApiKey.attribute :scopes, json, default: []
 ApiKeys::ApiKey.attribute :metadata, json, default: {}
@@ -128,26 +155,60 @@ class DatabaseCheck < Minitest::Test
     [result, Process.clock_gettime(Process::CLOCK_MONOTONIC) - started]
   end
 
-  def test_a_the_new_migrations_run_up_down_and_up_again
+  # Two migrations that strong_migrations refuses.
+  MIGRATION_VERSION = ActiveRecord::VERSION::STRING.to_f
+
+  class FourColumnIndex < ActiveRecord::Migration[MIGRATION_VERSION]
+    def up = add_index(:api_keys, %i[name prefix last4 revoked_at])
+  end
+
+  # What the 0.7.0 add_created_by migration did: an index built inside the
+  # migration's transaction.
+  class IndexInsideTheTransaction < ActiveRecord::Migration[MIGRATION_VERSION]
+    def up = add_reference(:api_keys, :reviewer, polymorphic: true, null: true)
+  end
+
+  def test_0_strong_migrations_checks_the_migrations_here
+    skip "strong_migrations does not support SQLite" if ADAPTER == "sqlite3"
+
+    error = assert_raises(StrongMigrations::UnsafeMigration) { FourColumnIndex.migrate(:up) }
+    assert_match "more than three columns", error.message
+    return unless ADAPTER == "postgresql"
+
+    error = assert_raises(StrongMigrations::UnsafeMigration) { IndexInsideTheTransaction.migrate(:up) }
+    assert_match "Adding an index non-concurrently", error.message
+    ApiKeys::ApiKey.reset_column_information
+    refute_includes ApiKeys::ApiKey.column_names, "reviewer_id", "strong_migrations stops before the statement"
+  end
+
+  def test_a_the_upgrade_migrations_run_up_down_and_up_again
     tables = %i[api_keys_device_authorizations api_keys_idempotency_keys]
+    created_by_index = %i[created_by_type created_by_id]
+    connection = ActiveRecord::Base.connection
     Key.delete_all
     ApiKeys::DeviceAuthorization.delete_all
     ApiKeys::ApiKey.delete_all
 
-    AddCreatedByToApiKeys.migrate(:down)
-    CreateApiKeysIdempotencyKeys.migrate(:down)
-    CreateApiKeysDeviceAuthorizations.migrate(:down)
-    ApiKeys::ApiKey.reset_column_information
+    UPGRADES.reverse_each { |name| run_migration(name, :down) }
     refute ApiKeys::ApiKey.created_by_columns?
-    tables.each { |table| refute ActiveRecord::Base.connection.table_exists?(table) }
+    refute ApiKeys::ApiKey.token_shown_at_column?
+    refute ApiKeys::ApiKey.refusal_stats_columns?
+    tables.each { |table| refute connection.table_exists?(table) }
 
-    AddCreatedByToApiKeys.migrate(:up)
-    AddCreatedByToApiKeys.migrate(:up) # idempotent
-    CreateApiKeysDeviceAuthorizations.migrate(:up)
-    CreateApiKeysIdempotencyKeys.migrate(:up)
-    [ApiKeys::ApiKey, ApiKeys::DeviceAuthorization, Key].each(&:reset_column_information)
+    UPGRADES.each { |name| run_migration(name, :up) }
     assert ApiKeys::ApiKey.created_by_columns?
-    tables.each { |table| assert ActiveRecord::Base.connection.table_exists?(table) }
+    assert ApiKeys::ApiKey.token_shown_at_column?
+    assert ApiKeys::ApiKey.refusal_stats_columns?
+    assert connection.index_exists?(:api_keys, created_by_index, name: "index_api_keys_on_created_by")
+    tables.each { |table| assert connection.table_exists?(table) }
+
+    # Idempotent: a second run, and a run that stopped after the columns
+    # (the index was not built), finish the work and add nothing twice.
+    AddKeyActivityToApiKeys.migrate(:up)
+    AddCreatedByToApiKeys.migrate(:up)
+    connection.remove_index(:api_keys, name: "index_api_keys_on_created_by")
+    AddCreatedByToApiKeys.migrate(:up)
+    assert_equal 1, connection.indexes(:api_keys).count { |index| index.columns == created_by_index.map(&:to_s) }
   end
 
   def test_b_the_foreign_keys_match_the_key_types
