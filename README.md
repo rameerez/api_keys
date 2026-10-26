@@ -32,6 +32,8 @@ And you're done!
 
 ### Upgrading an existing installation
 
+Every upgrade generator below writes a migration that strong_migrations accepts on PostgreSQL (0.8.1). There the indexes on `api_keys` are built concurrently, and the restrictions check constraint is validated apart, outside a transaction, so writes to `api_keys` go on. On MySQL strong_migrations accepts all of them except `add_restrictions`: it has no safe form of a check constraint on an existing MySQL table.
+
 Install the bounded bcrypt authentication lookup index before deploying the current hardening changes:
 
 ```bash
@@ -66,7 +68,7 @@ rails generate api_keys:add_created_by
 rails db:migrate
 ```
 
-On PostgreSQL this migration builds its index concurrently, outside a transaction, so it does not block writes to `api_keys` and strong_migrations accepts it (0.8.1). Each step checks what exists, so a run that stopped half way can run again. If a concurrent build fails, PostgreSQL keeps an invalid index: remove it before the next run. The 0.6.0 and 0.7.0 upgrade migrations (`add_key_activity`, `add_created_by`, `add_device_authorizations`, `add_idempotency_keys`) pass strong_migrations on PostgreSQL and MySQL as generated.
+On PostgreSQL this migration builds its index concurrently, outside a transaction, so it does not block writes to `api_keys` and strong_migrations accepts it (0.8.1). Each step checks what exists, so a run that stopped half way can run again. If a concurrent build fails, PostgreSQL keeps an invalid index: remove it before the next run.
 
 The device flow and Idempotency-Key each need a table of their own. New and existing installations run these only if they use the feature:
 

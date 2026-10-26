@@ -10,7 +10,7 @@ class AddAuthenticationIndexToApiKeys < ActiveRecord::Migration<%= migration_ver
     return if index_exists?(:api_keys, COLUMNS, name: INDEX_NAME)
 
     options = { name: INDEX_NAME }
-    options[:algorithm] = :concurrently if connection.adapter_name.downcase.include?("postgres")
+    options[:algorithm] = :concurrently if connection.adapter_name.downcase.include?("postg")
     add_index :api_keys, COLUMNS, **options
   end
 
@@ -18,7 +18,7 @@ class AddAuthenticationIndexToApiKeys < ActiveRecord::Migration<%= migration_ver
     return unless index_exists?(:api_keys, COLUMNS, name: INDEX_NAME)
 
     options = { name: INDEX_NAME }
-    options[:algorithm] = :concurrently if connection.adapter_name.downcase.include?("postgres")
+    options[:algorithm] = :concurrently if connection.adapter_name.downcase.include?("postg")
     remove_index :api_keys, **options
   end
 end

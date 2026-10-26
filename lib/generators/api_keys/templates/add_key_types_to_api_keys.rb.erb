@@ -5,14 +5,55 @@
 #
 # Run this migration if you're upgrading from a version of api_keys that
 # didn't have key types support.
+#
+# On PostgreSQL the indexes are built concurrently, so api_keys takes writes
+# while they build, and strong_migrations accepts the migration. A concurrent
+# build cannot run inside a transaction, so this migration runs without one.
+# Each step checks what exists, so a run that stopped half way can run
+# again. If a concurrent build fails, PostgreSQL keeps an invalid index:
+# remove it before the next run. MySQL and SQLite build the indexes as usual.
 class AddKeyTypesToApiKeys < ActiveRecord::Migration<%= migration_version %>
-  def change
-    add_column :api_keys, :key_type, :string
-    add_column :api_keys, :environment, :string
+  OWNER_TYPE_ENV_INDEX = "index_api_keys_owner_type_env"
+  OWNER_TYPE_ENV_COLUMNS = %i[owner_type owner_id key_type environment].freeze
 
-    add_index :api_keys, :key_type
-    add_index :api_keys, :environment
-    add_index :api_keys, [:owner_type, :owner_id, :key_type, :environment],
-              name: "index_api_keys_owner_type_env"
+  disable_ddl_transaction!
+
+  def up
+    add_column :api_keys, :key_type, :string unless column_exists?(:api_keys, :key_type)
+    add_column :api_keys, :environment, :string unless column_exists?(:api_keys, :environment)
+
+    add_index :api_keys, :key_type, **index_algorithm unless index_exists?(:api_keys, :key_type)
+    add_index :api_keys, :environment, **index_algorithm unless index_exists?(:api_keys, :environment)
+    return if index_exists?(:api_keys, OWNER_TYPE_ENV_COLUMNS)
+
+    # strong_migrations calls a non-unique index of more than three columns
+    # a best-practice problem. The install migration has the same index, so
+    # this migration keeps it and tells strong_migrations so.
+    with_safety_assured do
+      add_index :api_keys, OWNER_TYPE_ENV_COLUMNS, name: OWNER_TYPE_ENV_INDEX, **index_algorithm
+    end
+  end
+
+  def down
+    if index_exists?(:api_keys, OWNER_TYPE_ENV_COLUMNS)
+      remove_index :api_keys, name: OWNER_TYPE_ENV_INDEX, **index_algorithm
+    end
+    remove_index :api_keys, :environment, **index_algorithm if index_exists?(:api_keys, :environment)
+    remove_index :api_keys, :key_type, **index_algorithm if index_exists?(:api_keys, :key_type)
+    remove_column :api_keys, :environment if column_exists?(:api_keys, :environment)
+    remove_column :api_keys, :key_type if column_exists?(:api_keys, :key_type)
+  end
+
+  private
+
+  # Concurrently on PostgreSQL (and PostGIS). MySQL and SQLite have no
+  # concurrent build and refuse the option.
+  def index_algorithm
+    connection.adapter_name.downcase.include?("postg") ? { algorithm: :concurrently } : {}
+  end
+
+  # strong_migrations' safety_assured when the app uses strong_migrations.
+  def with_safety_assured(&block)
+    respond_to?(:safety_assured) ? safety_assured(&block) : yield
   end
 end

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-# Runs the upgrade migrations of 0.6.0 and 0.7.0 as the generators write
-# them and as db:migrate runs them, with strong_migrations checking each one,
+# Runs every upgrade migration as the generators write them and as
+# db:migrate runs them, with strong_migrations checking each one,
 # and the row locks of ApiKeys::IdempotencyKey and
 # ApiKeys::DeviceAuthorization, against a real database with real concurrent
 # connections. The main suite runs on in-memory SQLite, which has one
@@ -20,10 +20,16 @@ require "stringio"
 require "tmpdir"
 require "rails"
 require "active_record/railtie"
+# strong_migrations reads Rake.application when it refuses a migration, as
+# under rails db:migrate.
+require "rake"
 require "strong_migrations"
 require "api_keys"
 require "rails/generators"
 require "generators/api_keys/install_generator"
+require "generators/api_keys/add_key_types_generator"
+require "generators/api_keys/add_authentication_index_generator"
+require "generators/api_keys/add_restrictions_generator"
 require "generators/api_keys/add_key_activity_generator"
 require "generators/api_keys/add_created_by_generator"
 require "generators/api_keys/add_device_authorizations_generator"
@@ -69,9 +75,10 @@ StrongMigrations.skip_database(:primary) if ADAPTER == "sqlite3"
 # Writes each migration with its generator, as an app does.
 MIGRATIONS = Dir.mktmpdir("api_keys_migrations")
 [
-  ApiKeys::Generators::InstallGenerator, ApiKeys::Generators::AddKeyActivityGenerator,
-  ApiKeys::Generators::AddCreatedByGenerator, ApiKeys::Generators::AddDeviceAuthorizationsGenerator,
-  ApiKeys::Generators::AddIdempotencyKeysGenerator
+  ApiKeys::Generators::InstallGenerator, ApiKeys::Generators::AddKeyTypesGenerator,
+  ApiKeys::Generators::AddAuthenticationIndexGenerator, ApiKeys::Generators::AddRestrictionsGenerator,
+  ApiKeys::Generators::AddKeyActivityGenerator, ApiKeys::Generators::AddCreatedByGenerator,
+  ApiKeys::Generators::AddDeviceAuthorizationsGenerator, ApiKeys::Generators::AddIdempotencyKeysGenerator
 ].each do |generator|
   $stdout = StringIO.new
   generator.start([], destination_root: MIGRATIONS)
@@ -79,9 +86,15 @@ ensure
   $stdout = STDOUT
 end
 
-# The upgrade migrations, in the order db:migrate runs them.
-UPGRADES = %w[add_key_activity_to_api_keys add_created_by_to_api_keys create_api_keys_device_authorizations
+# Every upgrade migration, in the order db:migrate runs them.
+UPGRADES = %w[add_key_types_to_api_keys add_authentication_index_to_api_keys add_restrictions_to_api_keys
+              add_key_activity_to_api_keys add_created_by_to_api_keys create_api_keys_device_authorizations
               create_api_keys_idempotency_keys].freeze
+
+# strong_migrations has no safe form of a check constraint on an existing
+# MySQL table, so it refuses add_restrictions on MySQL. There the check runs
+# it without strong_migrations, and test_a shows the refusal.
+UNCHECKED = ADAPTER == "mysql2" ? %w[add_restrictions_to_api_keys] : []
 
 def migration_file(name)
   Dir["#{MIGRATIONS}/db/migrate/*_#{name}.rb"].sole
@@ -90,10 +103,36 @@ end
 # Runs one generated migration as db:migrate does: inside a DDL transaction
 # unless the migration disables it, and checked by strong_migrations (which
 # checks only the way up, by default). An unsafe migration raises.
-def run_migration(name, direction)
+def run_migration(name, direction, checked: !UNCHECKED.include?(name))
   file = migration_file(name)
-  ActiveRecord::MigrationContext.new(File.dirname(file)).run(direction, File.basename(file).to_i)
+  run = -> { ActiveRecord::MigrationContext.new(File.dirname(file)).run(direction, File.basename(file).to_i) }
+  checked ? run.call : StrongMigrations::Checker.safety_assured(&run)
+ensure
   [ApiKeys::ApiKey, ApiKeys::DeviceAuthorization, ApiKeys::IdempotencyKey].each(&:reset_column_information)
+end
+
+# Takes away what one upgrade adds, as an install from before it looks.
+def strip_upgrade(name)
+  connection = ActiveRecord::Base.connection
+  case name
+  when "add_key_types_to_api_keys"
+    connection.remove_index(:api_keys, name: "index_api_keys_owner_type_env")
+    %i[key_type environment].each do |column|
+      connection.remove_index(:api_keys, column)
+      connection.remove_column(:api_keys, column)
+    end
+  when "add_authentication_index_to_api_keys"
+    connection.remove_index(:api_keys, name: "index_api_keys_authentication_lookup")
+  when "add_restrictions_to_api_keys"
+    connection.remove_check_constraint(:api_keys, name: "api_keys_restrictions_is_object")
+    connection.remove_column(:api_keys, :restrictions)
+  when "add_key_activity_to_api_keys"
+    (ApiKeys::ApiKey::REFUSAL_STATS_COLUMNS + [ApiKeys::ApiKey::TOKEN_SHOWN_AT_COLUMN]).each do |column|
+      connection.remove_column(:api_keys, column)
+    end
+  when "add_created_by_to_api_keys"
+    connection.remove_reference(:api_keys, :created_by, polymorphic: true)
+  end
 end
 
 def load_migration(name)
@@ -109,12 +148,15 @@ id_type = ENV["UUID"].present? ? :uuid : :primary_key
 ActiveRecord::Schema.define { create_table(:users, id: id_type) { |t| t.string :name } }
 load_migration("create_api_keys_table")
 CreateApiKeysTable.migrate(:up)
-# An install from before 0.6.0: the api_keys table without the columns that
-# the upgrades add. Then every upgrade, as an app runs them.
-ActiveRecord::Base.connection.remove_reference(:api_keys, :created_by, polymorphic: true)
-ApiKeys::ApiKey::REFUSAL_STATS_COLUMNS.each { |column| ActiveRecord::Base.connection.remove_column(:api_keys, column) }
-ActiveRecord::Base.connection.remove_column(:api_keys, ApiKeys::ApiKey::TOKEN_SHOWN_AT_COLUMN)
+# An install from before 0.3.0: the api_keys table without what the upgrades
+# add. Then every upgrade, as an app runs them, on a table that has a row.
+UPGRADES.each { |name| strip_upgrade(name) }
+ActiveRecord::Base.connection.execute(<<~SQL)
+  INSERT INTO api_keys (#{%w[prefix token_digest digest_algorithm last4 scopes metadata created_at updated_at].join(", ")})
+  VALUES ('ak_old_', 'old-digest', 'sha256', 'old4', '[]', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+SQL
 UPGRADES.each { |name| run_migration(name, :up) }
+OLD_KEY_RESTRICTIONS = ActiveRecord::Base.connection.select_value("SELECT restrictions FROM api_keys WHERE prefix = 'ak_old_'")
 json = ADAPTER == "postgresql" ? :jsonb : :json
 ApiKeys::ApiKey.attribute :scopes, json, default: []
 ApiKeys::ApiKey.attribute :metadata, json, default: {}
@@ -181,34 +223,82 @@ class DatabaseCheck < Minitest::Test
     refute_includes ApiKeys::ApiKey.column_names, "reviewer_id", "strong_migrations stops before the statement"
   end
 
-  def test_a_the_upgrade_migrations_run_up_down_and_up_again
-    tables = %i[api_keys_device_authorizations api_keys_idempotency_keys]
-    created_by_index = %i[created_by_type created_by_id]
+  def key_types_columns?
+    (%w[key_type environment] - ApiKeys::ApiKey.column_names).empty?
+  end
+
+  def index_columns
+    ActiveRecord::Base.connection.indexes(:api_keys).map(&:columns)
+  end
+
+  def restrictions_constraint
     connection = ActiveRecord::Base.connection
+    return :unsupported unless connection.supports_check_constraints?
+
+    connection.check_constraints(:api_keys).find { |constraint| constraint.name == "api_keys_restrictions_is_object" }
+  end
+
+  UPGRADE_INDEXES = [%w[key_type], %w[environment], %w[owner_type owner_id key_type environment],
+                     %w[prefix last4 digest_algorithm], %w[created_by_type created_by_id]].freeze
+
+  def assert_every_upgrade_is_in_place
+    assert key_types_columns?
+    assert ApiKeys::ApiKey.restrictions_column?
+    assert ApiKeys::ApiKey.refusal_stats_columns?
+    assert ApiKeys::ApiKey.token_shown_at_column?
+    assert ApiKeys::ApiKey.created_by_columns?
+    UPGRADE_INDEXES.each { |columns| assert_equal 1, index_columns.count(columns), columns.join(", ") }
+    constraint = restrictions_constraint
+    refute_nil constraint, "the restrictions constraint exists"
+    assert constraint.validated?, "the restrictions constraint is validated" if ADAPTER == "postgresql"
+    %i[api_keys_device_authorizations api_keys_idempotency_keys].each do |table|
+      assert ActiveRecord::Base.connection.table_exists?(table), table
+    end
+  end
+
+  def test_a_the_upgrade_migrations_run_up_down_and_up_again
+    connection = ActiveRecord::Base.connection
+    assert_every_upgrade_is_in_place
+    assert_equal({}, JSON.parse(OLD_KEY_RESTRICTIONS), "a key from before the upgrade is unrestricted")
     Key.delete_all
     ApiKeys::DeviceAuthorization.delete_all
     ApiKeys::ApiKey.delete_all
 
     UPGRADES.reverse_each { |name| run_migration(name, :down) }
-    refute ApiKeys::ApiKey.created_by_columns?
-    refute ApiKeys::ApiKey.token_shown_at_column?
+    refute key_types_columns?
+    refute ApiKeys::ApiKey.restrictions_column?
     refute ApiKeys::ApiKey.refusal_stats_columns?
-    tables.each { |table| refute connection.table_exists?(table) }
+    refute ApiKeys::ApiKey.token_shown_at_column?
+    refute ApiKeys::ApiKey.created_by_columns?
+    assert_empty UPGRADE_INDEXES & index_columns
+    %i[api_keys_device_authorizations api_keys_idempotency_keys].each { |table| refute connection.table_exists?(table) }
 
+    if ADAPTER == "mysql2"
+      error = assert_raises(StandardError) { run_migration("add_restrictions_to_api_keys", :up, checked: true) }
+      assert_match "#strong_migrations", error.message
+      refute ApiKeys::ApiKey.restrictions_column?, "strong_migrations stops before the statement"
+    end
     UPGRADES.each { |name| run_migration(name, :up) }
-    assert ApiKeys::ApiKey.created_by_columns?
-    assert ApiKeys::ApiKey.token_shown_at_column?
-    assert ApiKeys::ApiKey.refusal_stats_columns?
-    assert connection.index_exists?(:api_keys, created_by_index, name: "index_api_keys_on_created_by")
-    tables.each { |table| assert connection.table_exists?(table) }
+    assert_every_upgrade_is_in_place
 
-    # Idempotent: a second run, and a run that stopped after the columns
-    # (the index was not built), finish the work and add nothing twice.
-    AddKeyActivityToApiKeys.migrate(:up)
-    AddCreatedByToApiKeys.migrate(:up)
+    # Idempotent: a second run, and a run that stopped half way, finish the
+    # work and add nothing twice.
+    [AddKeyTypesToApiKeys, AddAuthenticationIndexToApiKeys, AddKeyActivityToApiKeys, AddCreatedByToApiKeys]
+      .each { |migration| migration.migrate(:up) }
+    StrongMigrations::Checker.safety_assured { AddRestrictionsToApiKeys.migrate(:up) } # MySQL refuses it checked
+    connection.remove_index(:api_keys, name: "index_api_keys_owner_type_env")
+    AddKeyTypesToApiKeys.migrate(:up)
     connection.remove_index(:api_keys, name: "index_api_keys_on_created_by")
     AddCreatedByToApiKeys.migrate(:up)
-    assert_equal 1, connection.indexes(:api_keys).count { |index| index.columns == created_by_index.map(&:to_s) }
+    if ADAPTER == "postgresql" # the constraint was added, but not validated yet
+      connection.remove_check_constraint(:api_keys, name: "api_keys_restrictions_is_object")
+      connection.add_check_constraint(:api_keys, "jsonb_typeof(restrictions) = 'object'",
+                                      name: "api_keys_restrictions_is_object", validate: false)
+      refute restrictions_constraint.validated?, "precondition: not validated"
+      AddRestrictionsToApiKeys.migrate(:up)
+    end
+    ApiKeys::ApiKey.reset_column_information
+    assert_every_upgrade_is_in_place
   end
 
   def test_b_the_foreign_keys_match_the_key_types
