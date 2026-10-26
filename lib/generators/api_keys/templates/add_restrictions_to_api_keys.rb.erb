@@ -8,32 +8,51 @@
 # Run this migration if you're upgrading from a version of api_keys that
 # didn't have request restrictions support. The column defaults to an empty
 # object, which means "unrestricted", so existing keys are unaffected.
+#
+# On PostgreSQL the check constraint is added first without a check of the
+# existing rows, then validated, which does not block reads and writes, so
+# strong_migrations accepts the migration. It runs without a transaction, so
+# the validation holds no lock from the earlier steps. Each step checks what
+# exists, so a run that stopped half way can run again. MySQL refuses a
+# literal default on a JSON column, so there the default is the expression
+# JSON_OBJECT() (MySQL 8.0.13 or later). On MySQL strong_migrations refuses
+# this migration twice: first the column, for its callable default, then the
+# check constraint, which MySQL adds by copying the table. Check the size of
+# api_keys first. Then wrap the whole body of up (the column and the
+# constraint) in `safety_assured do ... end`, and run it when api_keys can be
+# locked for the copy, for example in a maintenance window.
 class AddRestrictionsToApiKeys < ActiveRecord::Migration<%= migration_version %>
   CONSTRAINT_NAME = "api_keys_restrictions_is_object"
 
+  disable_ddl_transaction!
+
   def up
-    add_column :api_keys, :restrictions, json_column_type, default: {}, null: false
+    unless column_exists?(:api_keys, :restrictions)
+      add_column :api_keys, :restrictions, json_column_type, default: restrictions_default, null: false
+    end
     add_restrictions_object_constraint
   end
 
   def down
-    remove_column :api_keys, :restrictions
+    remove_check_constraint :api_keys, name: CONSTRAINT_NAME if restrictions_constraint_exists?
+    remove_column :api_keys, :restrictions if column_exists?(:api_keys, :restrictions)
   end
 
   private
 
   # Helper method to determine the appropriate JSON column type based on the database adapter.
-  # Uses :jsonb for PostgreSQL for better performance and indexing, :json otherwise.
+  # Uses :jsonb for PostgreSQL (and PostGIS) for better performance and indexing, :json otherwise.
   def json_column_type
-    # Check connection availability for adapter name inspection
-    if ActiveRecord::Base.connection.adapter_name.downcase.include?('postgresql')
-      :jsonb
-    else
-      :json
-    end
+    postgresql? ? :jsonb : :json
   rescue ActiveRecord::ConnectionNotEstablished
     # Fallback during initial setup or if connection isn't available
     :text
+  end
+
+  # MySQL refuses a literal default on a JSON column, but takes an
+  # expression, which also fills the existing rows with an empty object.
+  def restrictions_default
+    connection.adapter_name.downcase.match?(/mysql|trilogy/) ? -> { "(JSON_OBJECT())" } : {}
   end
 
   # JSON columns can also hold arrays and scalars. The application requires an
@@ -41,14 +60,34 @@ class AddRestrictionsToApiKeys < ActiveRecord::Migration<%= migration_version %>
   def add_restrictions_object_constraint
     return unless connection.supports_check_constraints?
 
-    expression = case connection.adapter_name.downcase
-                 when /postgres/
-                   "jsonb_typeof(restrictions) = 'object'"
-                 when /sqlite/
-                   "json_valid(restrictions) AND json_type(restrictions) = 'object'"
-                 when /mysql|trilogy/
-                   "JSON_TYPE(restrictions) = 'OBJECT'"
-                 end
-    add_check_constraint :api_keys, expression, name: CONSTRAINT_NAME if expression
+    expression =
+      case connection.adapter_name.downcase
+      when /postg/
+        "jsonb_typeof(restrictions) = 'object'"
+      when /sqlite/
+        "json_valid(restrictions) AND json_type(restrictions) = 'object'"
+      when /mysql|trilogy/
+        "JSON_TYPE(restrictions) = 'OBJECT'"
+      end
+    return unless expression
+
+    unless restrictions_constraint_exists?
+      # On PostgreSQL, add the constraint without a check of the existing
+      # rows: this takes a short lock only.
+      add_check_constraint :api_keys, expression, name: CONSTRAINT_NAME, **(postgresql? ? { validate: false } : {})
+    end
+    # Checks the existing rows without blocking reads and writes. Nothing
+    # happens when the constraint is valid already.
+    validate_check_constraint :api_keys, name: CONSTRAINT_NAME if postgresql?
+  end
+
+  def restrictions_constraint_exists?
+    return false unless connection.supports_check_constraints?
+
+    connection.check_constraints(:api_keys).any? { |constraint| constraint.name == CONSTRAINT_NAME }
+  end
+
+  def postgresql?
+    connection.adapter_name.downcase.include?("postg")
   end
 end

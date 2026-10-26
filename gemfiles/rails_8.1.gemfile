@@ -18,6 +18,7 @@ group :development, :test do
   gem "bootsnap", require: false
   gem "mocha", "~> 2.0"
   gem "ostruct"
+  gem "rubocop-rails-omakase", require: false
 end
 
 gemspec path: "../"

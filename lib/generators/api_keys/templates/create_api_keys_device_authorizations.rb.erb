@@ -10,8 +10,6 @@
 # Only apps that use the device flow need this table.
 class CreateApiKeysDeviceAuthorizations < ActiveRecord::Migration<%= migration_version %>
   def change
-    primary_key_type, foreign_key_type = primary_and_foreign_key_types
-
     create_table :api_keys_device_authorizations, id: primary_key_type do |t|
       t.string :device_code_digest, null: false, index: { unique: true }
       t.string :user_code_digest, null: false, index: { unique: true }
@@ -42,16 +40,23 @@ class CreateApiKeysDeviceAuthorizations < ActiveRecord::Migration<%= migration_v
 
   # The key types the install generator gives the api_keys table: the app's
   # `primary_key_type` generator setting, else Rails' defaults.
-  def primary_and_foreign_key_types
+  def primary_key_type
+    primary_key_type_setting || :primary_key
+  end
+
+  def foreign_key_type
+    primary_key_type_setting || :bigint
+  end
+
+  def primary_key_type_setting
     generators = Rails.application&.config&.generators
-    setting = generators&.options&.dig(generators.orm, :primary_key_type)
-    [setting || :primary_key, setting || :bigint]
+    generators&.options&.dig(generators.orm, :primary_key_type)
   end
 
   # The type of api_keys.id, so that the foreign key matches it exactly.
   def api_key_id_type
     column = connection.columns(:api_keys).find { |candidate| candidate.name == "id" }
-    return primary_and_foreign_key_types.last unless column
+    return foreign_key_type unless column
 
     sql_type = column.sql_type.to_s.downcase
     if sql_type.include?("uuid")

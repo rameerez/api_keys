@@ -15,6 +15,10 @@ end
 
 appraise "rails-8.0" do
   gem "rails", ">= 8.0.5.1", "< 8.1.a"
+  # Active Support 8.0 passes quirks_mode to JSON.generate, which json 3
+  # removed. RuboCop, for the style test of the generated migrations, allows
+  # json 3, so keep json 2 here.
+  gem "json", "< 3"
 end
 
 # Test against Rails 8.1 (latest)

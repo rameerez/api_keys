@@ -4,6 +4,7 @@ source "https://rubygems.org"
 
 gem "rake", "~> 13.0"
 gem "rails", ">= 8.0.5.1", "< 8.1.a"
+gem "json", "< 3"
 
 group :development, :test do
   gem "appraisal"
@@ -18,6 +19,7 @@ group :development, :test do
   gem "bootsnap", require: false
   gem "mocha", "~> 2.0"
   gem "ostruct"
+  gem "rubocop-rails-omakase", require: false
 end
 
 gemspec path: "../"

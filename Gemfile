@@ -26,4 +26,7 @@ group :development, :test do
 
   # Ruby 4.0+ compatibility: ostruct removed from stdlib
   gem "ostruct"
+
+  # Lints the generated migrations as a host app on omakase does
+  gem "rubocop-rails-omakase", require: false
 end

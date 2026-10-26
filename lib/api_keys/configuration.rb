@@ -307,7 +307,7 @@ module ApiKeys
 
     def idempotency_in_test_transactions=(value)
       raise ArgumentError, "idempotency_in_test_transactions must be true or false" unless [true, false].include?(value)
-      if value && !test_environment?
+      if value && !ApiKeys.test_environment?
         raise ArgumentError, "idempotency_in_test_transactions is for transactional tests only: Rails.env must be test"
       end
 
@@ -317,7 +317,7 @@ module ApiKeys
     # Whether hold may run inside an open transaction: the switch is on, and
     # Rails.env is still test when it is used.
     def idempotency_in_test_transactions?
-      @idempotency_in_test_transactions == true && test_environment?
+      @idempotency_in_test_transactions == true && ApiKeys.test_environment?
     end
 
     def trusted_key_check=(value)
@@ -453,10 +453,6 @@ module ApiKeys
     end
 
     private
-
-    def test_environment?
-      defined?(Rails) && Rails.respond_to?(:env) && Rails.env.test? ? true : false
-    end
 
     def validate_resolved_prefix!(prefix)
       valid = prefix.is_a?(String) && prefix.present? && prefix.valid_encoding? && prefix.bytesize <= 64 &&

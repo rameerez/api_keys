@@ -16,7 +16,7 @@ module ApiKeys
 
         assert_migration "db/migrate/create_api_keys_table.rb" do |migration|
           assert_includes migration, "t.references :owner, polymorphic: true"
-          assert_includes migration, "[:owner_type, :owner_id, :key_type, :environment]"
+          assert_includes migration, "%i[owner_type owner_id key_type environment]"
           assert_includes migration, "jsonb_typeof(restrictions) = 'object'"
           assert_includes migration, "json_type(restrictions) = 'object'"
           refute_match(/^\s*t\.index :owner_id\b/, migration)

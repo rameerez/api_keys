@@ -18,7 +18,8 @@ module ApiKeys
           assert_includes migration, 'INDEX_NAME = "index_api_keys_authentication_lookup"'
           assert_includes migration, "COLUMNS = %i[prefix last4 digest_algorithm].freeze"
           assert_includes migration, "index_exists?(:api_keys, COLUMNS, name: INDEX_NAME)"
-          assert_includes migration, "algorithm] = :concurrently"
+          assert_includes migration, "{ algorithm: :concurrently }"
+          assert_includes migration, "remove_invalid_index"
           assert_includes migration, "disable_ddl_transaction!"
           refute_includes migration, "def migration_version"
         end
