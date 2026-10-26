@@ -423,7 +423,7 @@ class DatabaseCheck < Minitest::Test
     }.each do |migration, (name, columns)|
       connection.remove_index(:api_keys, name: name, algorithm: :concurrently)
       assert_raises(ActiveRecord::RecordNotUnique) do
-        connection.execute("CREATE UNIQUE INDEX CONCURRENTLY #{name} ON api_keys (#{columns.join(", ")})")
+        connection.add_index(:api_keys, columns, name: name, unique: true, algorithm: :concurrently)
       end
       broken = connection.indexes(:api_keys).find { |index| index.name == name }
       refute broken.valid?, "precondition: #{name} is invalid"
