@@ -59,6 +59,7 @@ module ApiKeys
           "ApiKey.transaction" => ->(&work) { ApiKeys::ApiKey.transaction(&work) },
           "a host model's transaction" => ->(&work) { User.transaction(&work) },
           "a savepoint (requires_new)" => ->(&work) { ApiKeys::ApiKey.transaction(requires_new: true, &work) },
+          # The shape of fixtures and DatabaseCleaner's :transaction together.
           "a non-joinable transaction" => ->(&work) { ApiKeys::ApiKey.transaction(joinable: false, &work) }
         }.each do |label, wrap|
           retrieval = nil
@@ -74,13 +75,15 @@ module ApiKeys
       end
 
       test "outside the test environment the same transaction refuses the retrieval" do
-        Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new("production"))
+        %w[production ci].each do |environment|
+          Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new(environment))
 
-        retrieval = TokenSession.retrieve_once_with_status(@session, api_key: @key)
+          retrieval = TokenSession.retrieve_once_with_status(@session, api_key: @key)
 
-        assert_equal :inside_transaction, retrieval.status
-        assert_nil retrieval.token
-        refute @key.reload.token_shown?
+          assert_equal :inside_transaction, retrieval.status, environment
+          assert_nil retrieval.token, environment
+          refute @key.reload.token_shown?, environment
+        end
       end
     end
 
@@ -130,6 +133,33 @@ module ApiKeys
           ApiKeys::ApiKey.remove_connection
           ApiKeys::ApiKey.reset_column_information
         end
+      end
+
+      # The documented boundary: the exemption reads the shape of the
+      # transaction, so in a test without a transaction of its own, an outer
+      # non-joinable transaction that the app opens is exempt too, and a
+      # rollback of it undoes the claim. Production refuses it. Pinned so the
+      # docs stay true.
+      test "in a test without its own transaction, an outer non-joinable transaction is exempt too" do
+        key = User.create!(name: "Non-joinable owner").create_api_key!(name: "Non-joinable key")
+        session = {}
+        TokenSession.store(session, key)
+        copied_cookie = session.deep_dup
+        retrieval = nil
+
+        ApiKeys::ApiKey.transaction(joinable: false) do
+          retrieval = TokenSession.retrieve_once_with_status(session, api_key: key)
+          raise ActiveRecord::Rollback
+        end
+
+        assert_equal :retrieved, retrieval.status, "exempt: the shape of a test transaction"
+        refute key.reload.token_shown?, "the rollback undid the claim"
+        Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new("production"))
+        TokenSession.stubs(:log_warn)
+        ApiKeys::ApiKey.transaction(joinable: false) do
+          retrieval = TokenSession.retrieve_once_with_status(copied_cookie, api_key: key)
+        end
+        assert_equal :inside_transaction, retrieval.status, "production refuses the same transaction"
       end
 
       test "the claim commits before the token is returned, and a copy of the session gets nothing" do

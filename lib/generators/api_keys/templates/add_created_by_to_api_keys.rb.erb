@@ -15,8 +15,9 @@
 # while it builds, and strong_migrations accepts the migration. A concurrent
 # build cannot run inside a transaction, so this migration runs without one.
 # Each step checks what exists, so a run that stopped half way can run
-# again. If a concurrent build fails, PostgreSQL keeps an invalid index:
-# remove it before the next run. MySQL and SQLite build the index as usual.
+# again. If a concurrent build fails, PostgreSQL keeps an invalid index; the
+# next run removes it and builds it again. MySQL and SQLite build the
+# index as usual.
 class AddCreatedByToApiKeys < ActiveRecord::Migration<%= migration_version %>
   INDEX_NAME = "index_api_keys_on_created_by"
   INDEX_COLUMNS = %i[created_by_type created_by_id].freeze
@@ -27,6 +28,7 @@ class AddCreatedByToApiKeys < ActiveRecord::Migration<%= migration_version %>
     unless column_exists?(:api_keys, :created_by_id)
       add_reference :api_keys, :created_by, polymorphic: true, null: true, type: foreign_key_type, index: false
     end
+    remove_invalid_index(INDEX_COLUMNS)
     return if index_exists?(:api_keys, INDEX_COLUMNS)
 
     add_index :api_keys, INDEX_COLUMNS, name: INDEX_NAME, **index_algorithm
@@ -49,5 +51,17 @@ class AddCreatedByToApiKeys < ActiveRecord::Migration<%= migration_version %>
   # concurrent build and refuse the option.
   def index_algorithm
     connection.adapter_name.downcase.include?("postg") ? { algorithm: :concurrently } : {}
+  end
+
+  # A concurrent build that fails (a lock or statement timeout, for example)
+  # leaves an invalid index on PostgreSQL, which index_exists? still finds.
+  # Treat it as absent: remove it, so that the next step builds it again.
+  # (IndexDefinition#valid? exists from Rails 7.1. The migrator's lock keeps
+  # a second run from removing an index that another run still builds.)
+  def remove_invalid_index(columns)
+    index = connection.indexes(:api_keys).find { |candidate| candidate.columns == Array(columns).map(&:to_s) }
+    return unless index.respond_to?(:valid?) && !index.valid?
+
+    remove_index :api_keys, name: index.name, **index_algorithm
   end
 end

@@ -286,6 +286,7 @@ class TrustedKeyCheckTest < ApiKeys::Test
         assert_includes migration, "unless column_exists?(:api_keys, :created_by_id)"
         assert_includes migration, "add_reference :api_keys, :created_by, polymorphic: true, null: true, " \
                                    "type: foreign_key_type, index: false"
+        assert_includes migration, "remove_invalid_index(INDEX_COLUMNS)"
         assert_includes migration, "return if index_exists?(:api_keys, INDEX_COLUMNS)"
         assert_includes migration, 'INDEX_NAME = "index_api_keys_on_created_by"'
         assert_includes migration, "{ algorithm: :concurrently }"

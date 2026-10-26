@@ -43,6 +43,14 @@ module ApiKeys
       @configuration = ::ApiKeys::Configuration.new
     end
 
+    # Whether Rails.env is test, read at each call. The test-only exemptions
+    # use it: config.idempotency_in_test_transactions, and the one-time token
+    # handoff inside a transactional test's own transaction.
+    # @return [Boolean]
+    def test_environment?
+      defined?(Rails) && Rails.respond_to?(:env) && Rails.env.test? ? true : false
+    end
+
     # Add-only backfill after widening a key type's `permissions:` ceiling, for
     # types that keep stored scopes. See ApiKeys::ApiKey.reconcile_scopes!.
     # @return [Integer] How many keys gained scopes.

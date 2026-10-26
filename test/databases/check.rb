@@ -401,6 +401,41 @@ class DatabaseCheck < Minitest::Test
     else pass
     end
   end
+
+  # A concurrent build that fails leaves an invalid index on PostgreSQL. The
+  # next run of the migration removes it and builds it again. A unique build
+  # over two equal rows fails in the same way as a lock timeout.
+  def test_i_a_failed_concurrent_build_is_built_again_on_the_next_run
+    skip "only PostgreSQL builds indexes concurrently" unless ADAPTER == "postgresql"
+
+    connection = ActiveRecord::Base.connection
+    now = Time.current
+    twins = Array.new(2) do |index|
+      { prefix: "ak_twin_", token_digest: "twin-#{index}", digest_algorithm: "sha256", last4: "twin",
+        owner_type: "User", owner_id: @owner.id, created_by_type: "User", created_by_id: @owner.id,
+        key_type: "secret", environment: "test", created_at: now, updated_at: now }
+    end
+    ApiKeys::ApiKey.insert_all!(twins)
+    {
+      AddCreatedByToApiKeys => ["index_api_keys_on_created_by", %w[created_by_type created_by_id]],
+      AddKeyTypesToApiKeys => ["index_api_keys_owner_type_env", %w[owner_type owner_id key_type environment]],
+      AddAuthenticationIndexToApiKeys => ["index_api_keys_authentication_lookup", %w[prefix last4 digest_algorithm]]
+    }.each do |migration, (name, columns)|
+      connection.remove_index(:api_keys, name: name, algorithm: :concurrently)
+      assert_raises(ActiveRecord::RecordNotUnique) do
+        connection.execute("CREATE UNIQUE INDEX CONCURRENTLY #{name} ON api_keys (#{columns.join(", ")})")
+      end
+      broken = connection.indexes(:api_keys).find { |index| index.name == name }
+      refute broken.valid?, "precondition: #{name} is invalid"
+
+      migration.migrate(:up)
+
+      rebuilt = connection.indexes(:api_keys).find { |index| index.name == name }
+      assert rebuilt.valid?, "#{migration}: #{name} is valid"
+      refute rebuilt.unique, "#{migration}: #{name} is the migration's index"
+      assert_equal columns, rebuilt.columns
+    end
+  end
 end
 
 Minitest.after_run do

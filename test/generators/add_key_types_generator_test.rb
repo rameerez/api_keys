@@ -40,7 +40,8 @@ module ApiKeys
           assert_includes migration, "class AddKeyTypesToApiKeys < ActiveRecord::Migration["
           assert_includes migration, "disable_ddl_transaction!"
           assert_includes migration, "add_column :api_keys, :key_type, :string unless column_exists?(:api_keys, :key_type)"
-          assert_includes migration, "add_index :api_keys, :key_type, **index_algorithm unless index_exists?"
+          assert_includes migration, "add_index :api_keys, column, **index_algorithm unless index_exists?(:api_keys, column)"
+          assert_includes migration, "remove_invalid_index(OWNER_TYPE_ENV_COLUMNS)"
           assert_includes migration, 'OWNER_TYPE_ENV_INDEX = "index_api_keys_owner_type_env"'
           assert_includes migration, "with_safety_assured do"
           assert_includes migration, "{ algorithm: :concurrently }"

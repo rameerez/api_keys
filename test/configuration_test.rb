@@ -4,6 +4,15 @@ require "test_helper"
 
 module ApiKeys
   class ConfigurationTest < ApiKeys::Test
+    test "test_environment? is true only while Rails.env is test" do
+      assert ApiKeys.test_environment?
+      %w[production development ci].each do |environment|
+        Rails.stubs(:env).returns(ActiveSupport::EnvironmentInquirer.new(environment))
+
+        refute ApiKeys.test_environment?, environment
+      end
+    end
+
     test "security-sensitive defaults fail closed" do
       assert ApiKeys.configuration.https_only_production
       assert ApiKeys.configuration.https_strict_mode

@@ -323,10 +323,20 @@ module ApiKeys
         # write of the test: the test sees it, a second retrieval in the same
         # test is refused, and the rollback at the end of the test removes the
         # key with it. A transaction that the app or the test opens on top of
-        # it still refuses the retrieval, as in production. Only when
-        # Rails.env is test.
+        # it still refuses the retrieval, as in production.
+        #
+        # The check reads the shape of the transaction, not where it came
+        # from, so three cases follow:
+        # - In a test without a transaction of its own, an outer
+        #   `transaction(joinable: false)` that the app opens is exempt too.
+        #   Production refuses it.
+        # - An environment with another name (`ci`, `staging`) is never
+        #   exempt: only Rails.env test is.
+        # - A test transaction inside another one (fixtures and
+        #   DatabaseCleaner's :transaction strategy together) is two deep, so
+        #   it is not exempt, as in 0.8.0.
         def only_test_transaction_open?(connection)
-          return false unless defined?(Rails) && Rails.respond_to?(:env) && Rails.env.test?
+          return false unless ApiKeys.test_environment?
           return false unless connection.open_transactions == 1
 
           !connection.current_transaction.joinable?

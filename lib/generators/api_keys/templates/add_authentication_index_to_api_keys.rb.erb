@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+# On PostgreSQL the index is built concurrently, outside a transaction, so
+# api_keys takes writes while it builds, and strong_migrations accepts the
+# migration. If a concurrent build fails, PostgreSQL keeps an invalid index;
+# the next run removes it and builds it again.
 class AddAuthenticationIndexToApiKeys < ActiveRecord::Migration<%= migration_version %>
   INDEX_NAME = "index_api_keys_authentication_lookup"
   COLUMNS = %i[prefix last4 digest_algorithm].freeze
@@ -7,18 +11,35 @@ class AddAuthenticationIndexToApiKeys < ActiveRecord::Migration<%= migration_ver
   disable_ddl_transaction!
 
   def up
+    remove_invalid_index
     return if index_exists?(:api_keys, COLUMNS, name: INDEX_NAME)
 
-    options = { name: INDEX_NAME }
-    options[:algorithm] = :concurrently if connection.adapter_name.downcase.include?("postg")
-    add_index :api_keys, COLUMNS, **options
+    add_index :api_keys, COLUMNS, name: INDEX_NAME, **index_algorithm
   end
 
   def down
     return unless index_exists?(:api_keys, COLUMNS, name: INDEX_NAME)
 
-    options = { name: INDEX_NAME }
-    options[:algorithm] = :concurrently if connection.adapter_name.downcase.include?("postg")
-    remove_index :api_keys, **options
+    remove_index :api_keys, name: INDEX_NAME, **index_algorithm
+  end
+
+  private
+
+  # Concurrently on PostgreSQL (and PostGIS). MySQL and SQLite have no
+  # concurrent build and refuse the option.
+  def index_algorithm
+    connection.adapter_name.downcase.include?("postg") ? { algorithm: :concurrently } : {}
+  end
+
+  # A concurrent build that fails (a lock or statement timeout, for example)
+  # leaves an invalid index on PostgreSQL, which index_exists? still finds.
+  # Treat it as absent: remove it, so that the next step builds it again.
+  # (IndexDefinition#valid? exists from Rails 7.1. The migrator's lock keeps
+  # a second run from removing an index that another run still builds.)
+  def remove_invalid_index
+    index = connection.indexes(:api_keys).find { |candidate| candidate.name == INDEX_NAME }
+    return unless index.respond_to?(:valid?) && !index.valid?
+
+    remove_index :api_keys, name: INDEX_NAME, **index_algorithm
   end
 end

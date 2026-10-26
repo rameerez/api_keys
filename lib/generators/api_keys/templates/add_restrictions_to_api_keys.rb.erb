@@ -17,7 +17,10 @@
 # literal default on a JSON column, so there the default is the expression
 # JSON_OBJECT() (MySQL 8.0.13 or later). strong_migrations has no safe form of
 # a check constraint on an existing MySQL table, so it refuses this migration
-# on MySQL.
+# on MySQL: MySQL copies the table to add the constraint. Check the size of
+# api_keys first. Then wrap the call of add_restrictions_object_constraint in
+# up in `safety_assured do ... end`, or run the migration in a maintenance
+# window.
 class AddRestrictionsToApiKeys < ActiveRecord::Migration<%= migration_version %>
   CONSTRAINT_NAME = "api_keys_restrictions_is_object"
 
@@ -57,14 +60,15 @@ class AddRestrictionsToApiKeys < ActiveRecord::Migration<%= migration_version %>
   def add_restrictions_object_constraint
     return unless connection.supports_check_constraints?
 
-    expression = case connection.adapter_name.downcase
-                 when /postg/
-                   "jsonb_typeof(restrictions) = 'object'"
-                 when /sqlite/
-                   "json_valid(restrictions) AND json_type(restrictions) = 'object'"
-                 when /mysql|trilogy/
-                   "JSON_TYPE(restrictions) = 'OBJECT'"
-                 end
+    expression =
+      case connection.adapter_name.downcase
+      when /postg/
+        "jsonb_typeof(restrictions) = 'object'"
+      when /sqlite/
+        "json_valid(restrictions) AND json_type(restrictions) = 'object'"
+      when /mysql|trilogy/
+        "JSON_TYPE(restrictions) = 'OBJECT'"
+      end
     return unless expression
 
     unless restrictions_constraint_exists?

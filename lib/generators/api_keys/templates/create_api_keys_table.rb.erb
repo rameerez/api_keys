@@ -5,8 +5,6 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
   RESTRICTIONS_CONSTRAINT_NAME = "api_keys_restrictions_is_object"
 
   def change
-    primary_key_type, foreign_key_type = primary_and_foreign_key_types
-
     create_table :api_keys, id: primary_key_type do |t|
       # Identifiable prefix (e.g., "ak_live_", "ak_test_") for env/debugging
       t.string   :prefix,        null: false
@@ -76,8 +74,8 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       t.index :token_digest, unique: true
 
       # Index to optimize prefix-based lookups (especially for bcrypt)
-      t.index [:prefix, :digest_algorithm], name: "index_api_keys_on_prefix_and_digest_algorithm"
-      t.index [:prefix, :last4, :digest_algorithm], name: "index_api_keys_authentication_lookup"
+      t.index %i[prefix digest_algorithm], name: "index_api_keys_on_prefix_and_digest_algorithm"
+      t.index %i[prefix last4 digest_algorithm], name: "index_api_keys_authentication_lookup"
 
       # Optional indexes
       t.index :prefix
@@ -87,7 +85,7 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
       t.index :last_used_at
       t.index :key_type
       t.index :environment
-      t.index [:owner_type, :owner_id, :key_type, :environment], name: "index_api_keys_owner_type_env"
+      t.index %i[owner_type owner_id key_type environment], name: "index_api_keys_owner_type_env"
     end
 
     add_restrictions_object_constraint
@@ -95,14 +93,19 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
 
   private
 
-  # Helper method to determine the appropriate primary and foreign key types
+  # Helper methods to determine the appropriate primary and foreign key types
   # based on the Rails application's configuration.
-  def primary_and_foreign_key_types
+  def primary_key_type
+    primary_key_type_setting || :primary_key
+  end
+
+  def foreign_key_type
+    primary_key_type_setting || :bigint # Assuming bigint is a safe default for foreign keys
+  end
+
+  def primary_key_type_setting
     config = Rails.configuration.generators
-    setting = config.options[config.orm][:primary_key_type]
-    primary_key_type = setting || :primary_key
-    foreign_key_type = setting || :bigint # Assuming bigint is a safe default for foreign keys
-    [primary_key_type, foreign_key_type]
+    config.options[config.orm][:primary_key_type]
   end
 
   # Helper method to determine the appropriate JSON column type based on the database adapter.
@@ -122,14 +125,15 @@ class CreateApiKeysTable < ActiveRecord::Migration<%= migration_version %>
   def add_restrictions_object_constraint
     return unless connection.supports_check_constraints?
 
-    expression = case connection.adapter_name.downcase
-                 when /postgres/
-                   "jsonb_typeof(restrictions) = 'object'"
-                 when /sqlite/
-                   "json_valid(restrictions) AND json_type(restrictions) = 'object'"
-                 when /mysql|trilogy/
-                   "JSON_TYPE(restrictions) = 'OBJECT'"
-                 end
+    expression =
+      case connection.adapter_name.downcase
+      when /postgres/
+        "jsonb_typeof(restrictions) = 'object'"
+      when /sqlite/
+        "json_valid(restrictions) AND json_type(restrictions) = 'object'"
+      when /mysql|trilogy/
+        "JSON_TYPE(restrictions) = 'OBJECT'"
+      end
     add_check_constraint :api_keys, expression, name: RESTRICTIONS_CONSTRAINT_NAME if expression
   end
 end

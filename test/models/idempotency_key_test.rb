@@ -285,7 +285,7 @@ class IdempotencyKeyTest < ApiKeys::Test
         assert_includes migration, "class CreateApiKeysIdempotencyKeys < ActiveRecord::Migration["
         assert_includes migration, "create_table :api_keys_idempotency_keys"
         assert_includes migration, "foreign_key: { on_delete: :cascade }"
-        assert_includes migration, "t.index [:api_key_id, :key], unique: true"
+        assert_includes migration, "t.index %i[api_key_id key], unique: true"
         refute_match(/:body|:response_body/, migration)
         refute_includes migration, "def migration_version"
       end
