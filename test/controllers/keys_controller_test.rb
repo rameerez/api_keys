@@ -194,6 +194,28 @@ module ApiKeys
       assert_match(/<script\s+nonce="[^"]+">/i, response.body)
     end
 
+    test "create records nobody as the creator unless current_creator_method is set" do
+      post :create, params: { api_key: { name: "Unattributed" } }
+
+      assert_nil @user.api_keys.find_by!(name: "Unattributed").created_by
+    end
+
+    test "create records the signed-in person from current_creator_method" do
+      ApiKeys.configuration.current_creator_method = :current_user
+      post :create, params: { api_key: { name: "Attributed", created_by_id: 0 } }
+
+      key = @user.api_keys.find_by!(name: "Attributed")
+      assert_equal @user, key.created_by
+    end
+
+    test "a current_creator_method the controller lacks mints no key" do
+      ApiKeys.configuration.current_creator_method = :current_person
+      post :create, params: { api_key: { name: "No creator" } }
+
+      assert_response :unprocessable_entity
+      assert_nil @user.api_keys.find_by(name: "No creator")
+    end
+
     test "the new key form offers the request restriction fields" do
       get :new
 

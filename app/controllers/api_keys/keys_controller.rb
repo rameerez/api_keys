@@ -93,8 +93,8 @@ module ApiKeys
           key_type: submitted_params[:key_type].presence,
           # The model normalizes these raw strings; no parser needed here.
           allowed_origins: submitted_params[:allowed_origins],
-          allowed_ips: submitted_params[:allowed_ips]
-          # Metadata could be added here if needed
+          allowed_ips: submitted_params[:allowed_ips],
+          created_by: current_api_keys_creator
         )
 
         # Store the plaintext token in session to display on the show page

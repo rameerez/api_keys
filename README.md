@@ -151,8 +151,13 @@ ApiKeys.configure do |config|
   
   # Tell the dashboard how to ensure the owner is authenticated
   config.authenticate_owner_method = :authenticate_organization!
+
+  # Record who minted each key (needs the created_by columns, 0.7.0+)
+  config.current_creator_method = :current_user
 end
 ```
+
+With `current_creator_method` set, every key the dashboard creates stores the signed-in person as `created_by`, so an organization can see who made each key, and `config.trusted_key_check` can judge dashboard-created keys. Left unset, the dashboard records nobody, as before 0.9.0.
 
 These methods must exist in your `ApplicationController` (or wherever the engine is mounted). For example:
 
@@ -186,6 +191,7 @@ The setting accepts a controller class or a valid constant-name string and defau
 # When organizations own keys but users manage them
 config.current_owner_method = :current_organization
 config.authenticate_owner_method = :require_organization_member!
+config.current_creator_method = :current_user
 ```
 
 **Multi-tenant applications:**
