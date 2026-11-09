@@ -204,6 +204,10 @@ module ApiKeys
       assert_raises(ArgumentError) { ApiKeys.configuration.callbacks_job_queue = Object.new }
       assert_raises(ArgumentError) { ApiKeys.configuration.current_owner_method = "bad-method" }
       assert_raises(ArgumentError) { ApiKeys.configuration.authenticate_owner_method = Object.new }
+      assert_raises(ArgumentError) { ApiKeys.configuration.current_creator_method = "bad-method" }
+      assert_nil ApiKeys.configuration.current_creator_method
+      ApiKeys.configuration.current_creator_method = :current_user
+      assert_equal :current_user, ApiKeys.configuration.current_creator_method
 
       ApiKeys.configuration.authenticate_owner_method = nil
       assert_nil ApiKeys.configuration.authenticate_owner_method

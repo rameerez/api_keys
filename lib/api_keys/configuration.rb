@@ -38,6 +38,20 @@ module ApiKeys
     # Owner Context Configuration
     attr_reader :current_owner_method, :authenticate_owner_method
 
+    # The person behind a dashboard-created key
+    #
+    # @!attribute [rw] current_creator_method
+    #   @return [Symbol, String, nil] Controller method that returns the signed-in
+    #     person (e.g. :current_user). When set, the dashboard records it as the
+    #     new key's `created_by`, so an organization-owned key says who minted it
+    #     and `config.trusted_key_check` can judge dashboard-created keys. Needs
+    #     the created_by columns (`rails g api_keys:add_created_by`). nil (the
+    #     default) records nobody, as before.
+    #   @example Organization-owned keys
+    #     config.current_owner_method = :current_organization
+    #     config.current_creator_method = :current_user
+    attr_reader :current_creator_method
+
     # Optional Behaviors
     attr_reader :default_max_keys_per_owner, :require_key_name
     attr_reader :expire_after, :default_scopes, :track_requests_count
@@ -354,6 +368,10 @@ module ApiKeys
       @authenticate_owner_method = validate_method_name!(value, :authenticate_owner_method)
     end
 
+    def current_creator_method=(value)
+      @current_creator_method = validate_method_name!(value, :current_creator_method)
+    end
+
     def current_environment=(value)
       unless value.nil? || value.respond_to?(:call) || valid_config_name?(value)
         raise ArgumentError, "current_environment must be callable, a safe String/Symbol, or nil"
@@ -660,6 +678,7 @@ module ApiKeys
       # Owner Context Configuration
       @current_owner_method = :current_user # Default to current_user for backward compatibility
       @authenticate_owner_method = :authenticate_user! # Default to authenticate_user! for Devise compatibility
+      @current_creator_method = nil
 
       # Optional Behaviors
       @default_max_keys_per_owner = nil # No global key limit per owner

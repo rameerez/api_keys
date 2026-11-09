@@ -48,6 +48,15 @@ ApiKeys.configure do |config|
   # Example for Organization-owned keys:
   # config.authenticate_owner_method = :authenticate_organization!
 
+  # The method that returns the signed-in person, recorded as a new key's
+  # created_by when the dashboard mints it. Set it when keys belong to an
+  # organization, so each key says who created it. Needs the created_by
+  # columns (rails g api_keys:add_created_by).
+  # Default: nil (records nobody)
+  #
+  # Example for Organization-owned keys:
+  # config.current_creator_method = :current_user
+
   # Dashboard environment filtering (only applies when key_types is configured).
   # When false (default), dashboard only shows keys matching current_environment.
   # When true, dashboard shows keys from all environments.

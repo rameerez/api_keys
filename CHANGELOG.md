@@ -1,3 +1,9 @@
+## [0.9.0] - Unreleased
+
+### Added
+
+- `config.current_creator_method`. The dashboard records the signed-in person it names (e.g. `:current_user`) as each new key's `created_by`. Before, the dashboard never set `created_by`, so in an app where organizations own keys, nobody could tell who minted a key, and a `config.trusted_key_check` that reads `created_by` refused every dashboard-created key. Default nil records nobody, as before. Set but missing on the host controller, key creation fails instead of minting an unattributed key. Needs the created_by columns (0.7.0).
+
 ## [0.8.1] - 2026-10-26
 
 Two fixes found when an app on the fleet upgraded from 0.5 to 0.8.0. The second one now covers every upgrade generator.

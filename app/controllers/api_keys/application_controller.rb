@@ -118,6 +118,22 @@ module ApiKeys
       end
     end
 
+    # The signed-in person, recorded as a new key's created_by
+    # (config.current_creator_method). nil when unconfigured. Configured but
+    # missing on the host controller fails loudly: a key minted without its
+    # creator could later fail config.trusted_key_check for everyone.
+    def current_api_keys_creator
+      creator_method = ApiKeys.configuration.current_creator_method
+      return nil unless creator_method
+
+      unless respond_to?(creator_method, true)
+        raise NoMethodError, "config.current_creator_method is #{creator_method.inspect}, " \
+                             "but #{self.class.name} does not respond to it"
+      end
+
+      send(creator_method)
+    end
+
     # Expose current_api_keys_owner as a helper method for views
     helper_method :current_api_keys_owner
 
