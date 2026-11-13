@@ -10,37 +10,65 @@ module ApiKeys
 
       # == for_select ==
 
-      test "for_select offers the industry-standard choices by default" do
+      # == choices: the picker, in the configured order ==
+
+      test "choices offer the industry-standard picker by default" do
         assert_equal [["1 day", "1_day"], ["7 days", "7_days"], ["30 days", "30_days"],
                       ["1 year", "1_year"], ["Never", "no_expiration"]],
-                     ExpirationOptions.for_select
+                     ExpirationOptions.choices
       end
 
-      test "for_select offers Custom only to forms that render the date field" do
-        assert_equal ["Custom", "custom"], ExpirationOptions.for_select(include_custom: true).last
-        refute_includes ExpirationOptions.for_select.map(&:last), "custom"
+      test "choices offer Custom only to forms that render the date field" do
+        assert_equal ["Custom", "custom"], ExpirationOptions.choices(include_custom: true).last
+        refute_includes ExpirationOptions.choices.map(&:last), "custom"
       end
 
-      test "for_select follows config.expiration_options, in order" do
+      test "choices follow config.expiration_options, in order" do
         ApiKeys.configuration.expiration_options = [:custom, 12.hours, 2.weeks, 3.months, 2.years, :never]
 
         assert_equal [["Custom", "custom"], ["12 hours", "12_hours"], ["2 weeks", "2_weeks"],
                       ["3 months", "3_months"], ["2 years", "2_years"], ["Never", "no_expiration"]],
-                     ExpirationOptions.for_select(include_custom: true)
+                     ExpirationOptions.choices(include_custom: true)
       end
 
-      test "for_select without no_expiration option" do
-        options = ExpirationOptions.for_select(include_no_expiration: false)
+      test "choices without Never" do
+        options = ExpirationOptions.choices(include_no_expiration: false)
 
         refute_includes options.map(&:last), "no_expiration"
         assert_equal ["1 day", "1_day"], options.first
       end
 
-      test "for_select never offers Never when config.expire_after would expire the key anyway" do
+      # == for_select: the same choices, Never first as before 0.10 ==
+
+      test "for_select keeps Never first, so a form with nothing selected still defaults to it" do
+        # A browser preselects the first option. Forms built on for_select
+        # before 0.10 relied on that being No Expiration; a "1 day" there would
+        # quietly mint keys that die tomorrow.
+        assert_equal [["Never", "no_expiration"], ["1 day", "1_day"], ["7 days", "7_days"],
+                      ["30 days", "30_days"], ["1 year", "1_year"]],
+                     ExpirationOptions.for_select
+        assert_equal ["Custom", "custom"], ExpirationOptions.for_select(include_custom: true).last
+        assert_equal ["1 day", "1_day"], ExpirationOptions.for_select(include_no_expiration: false).first
+      end
+
+      test "for_select without :never configured has no Never to put first" do
+        ApiKeys.configuration.expiration_options = [7.days, 30.days]
+
+        assert_equal [["7 days", "7_days"], ["30 days", "30_days"]], ExpirationOptions.for_select
+      end
+
+      # == config.expire_after ==
+
+      test "with config.expire_after, the never option names that lifetime instead of promising Never" do
         ApiKeys.configuration.expire_after = 90.days
 
-        refute_includes ExpirationOptions.for_select.map(&:last), "no_expiration"
-        refute ExpirationOptions.offered?("no_expiration")
+        travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+          assert_equal ["90 days (default)", "no_expiration"], ExpirationOptions.choices.last
+          assert_equal ["90 days (default)", "no_expiration"], ExpirationOptions.for_select.first
+          assert_equal ["90 days (default)", "no_expiration", { "data-api-keys-expires-on" => "February 11, 2027" }],
+                       ExpirationOptions.choices(preview: true).last
+        end
+        assert ExpirationOptions.offered?("no_expiration"), "forms that preselect no_expiration keep a matching option"
       end
 
       test "for_select with custom presets in days or durations" do
@@ -177,6 +205,10 @@ module ApiKeys
         refute ExpirationOptions.offered?("60_days")
         refute ExpirationOptions.offered?(nil)
         refute ExpirationOptions.offered?(["7_days"])
+      end
+
+      test "a preview never dates Never" do
+        assert_equal ["Never", "no_expiration"], ExpirationOptions.choices(preview: true).last
       end
 
       test "custom_offered? follows the configuration" do

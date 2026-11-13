@@ -1452,14 +1452,17 @@ module ApiKeys
       assert_empty @user.api_keys
     end
 
-    test "with config.expire_after, Never is not offered because the key would expire anyway" do
+    test "with config.expire_after, the never option offers that lifetime by name" do
       ApiKeys.configuration.expire_after = 90.days
 
       get :new
-      assert_select "option[value='no_expiration']", 0
+      assert_select "option[value='no_expiration']", text: "90 days (default)"
 
       freeze_time do
-        post :create, params: { api_key: { name: "Defaulted" } }
+        post :create, params: { api_key: { name: "Defaulted", expires_at_preset: "no_expiration" } }
+        assert_equal 90.days.from_now, @user.api_keys.last.expires_at
+
+        post :create, params: { api_key: { name: "Unchosen" } }
         assert_equal 90.days.from_now, @user.api_keys.last.expires_at, "a missing choice still gets expire_after"
       end
     end

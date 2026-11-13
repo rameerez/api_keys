@@ -61,7 +61,7 @@
       <%# Explicit ids: form_with leaves them out where form_with_generates_ids is off. %>
       <%= form.label :expires_at_preset, "Expiration", for: "api_key_expires_at_preset" %>
       <%= form.select :expires_at_preset,
-          options_for_select(ApiKeys::ExpirationOptions.for_select(include_custom: offers_custom, preview: true),
+          options_for_select(ApiKeys::ExpirationOptions.choices(include_custom: offers_custom, preview: true),
                              api_key.expires_at_preset),
           { prompt: "Select an expiration" },
           { required: true, id: "api_key_expires_at_preset" } %>

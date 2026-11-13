@@ -35,36 +35,48 @@ module ApiKeys
       DATE_LABEL = "%B %-d, %Y"
 
       class << self
-        # Options for a Rails select helper, as [label, value] pairs.
+        # The picker's options, in the order `config.expiration_options`
+        # lists them, as [label, value] pairs for a Rails select helper. Ask
+        # for a choice with a prompt (see `form.api_key_expiration_select`),
+        # since a browser preselects the first option.
         #
-        # @param include_no_expiration [Boolean] Offer "Never" (default: true).
-        #   It is never offered while `config.expire_after` is set, because the
-        #   key would expire anyway.
+        # @param include_no_expiration [Boolean] Offer the never option
+        #   (default: true). While `config.expire_after` is set it names that
+        #   lifetime ("90 days (default)") instead of promising "Never": its
+        #   value, "no_expiration", has always meant "no expiration of my own".
         # @param include_custom [Boolean] Offer "Custom" (default: false). Only
         #   a form that also renders the date field (`expires_on`) can use it.
-        # @param presets [Array<Integer, ActiveSupport::Duration>, nil] Offer
-        #   these instead of `config.expiration_options`: whole days, or
-        #   durations. "Never" comes first, as before 0.10.
         # @param preview [Boolean] Add each choice's expiration date as a
         #   `data-api-keys-expires-on` attribute, so the form can show it.
         # @return [Array<Array>]
         #
         # @example
-        #   ExpirationOptions.for_select
+        #   ExpirationOptions.choices
         #   # => [["1 day", "1_day"], ["7 days", "7_days"], ["30 days", "30_days"],
         #   #     ["1 year", "1_year"], ["Never", "no_expiration"]]
         #
-        def for_select(include_no_expiration: true, include_custom: false, presets: nil, preview: false)
-          choices = presets ? choices_from_presets(presets) : ApiKeys.configuration.expiration_options
-          # "Never" is a promise config.expire_after would break.
-          choices = choices.reject { |choice| choice == :never } unless include_no_expiration && ApiKeys.configuration.expire_after.nil?
-          choices = choices.reject { |choice| choice == :custom } unless include_custom
+        def choices(include_no_expiration: true, include_custom: false, preview: false)
+          build_options(ApiKeys.configuration.expiration_options, include_no_expiration, include_custom, preview)
+        end
 
-          choices.map do |choice|
-            option = [label_for(choice), value_for(choice)]
-            option << { "data-api-keys-expires-on" => parse(option[1]).strftime(DATE_LABEL) } if preview && choice.is_a?(ActiveSupport::Duration)
-            option
-          end
+        # The same options with the never option first, as before 0.10: a form
+        # built on it with nothing selected still defaults to no expiration of
+        # its own, never to "1 day".
+        #
+        # @param presets [Array<Integer, ActiveSupport::Duration>, nil] Offer
+        #   these instead of `config.expiration_options`: whole days, or durations.
+        # @see .choices for the other parameters
+        # @return [Array<Array>]
+        #
+        # @example
+        #   ExpirationOptions.for_select
+        #   # => [["Never", "no_expiration"], ["1 day", "1_day"], ["7 days", "7_days"],
+        #   #     ["30 days", "30_days"], ["1 year", "1_year"]]
+        #
+        def for_select(include_no_expiration: true, include_custom: false, presets: nil, preview: false)
+          configured = presets ? choices_from_presets(presets) : ApiKeys.configuration.expiration_options
+          options = build_options(configured, include_no_expiration, include_custom, preview)
+          options.partition { |option| option[1] == NEVER }.flatten(1)
         end
 
         # Turns a preset into the moment the key expires.
@@ -107,7 +119,7 @@ module ApiKeys
           return false unless preset.is_a?(String)
 
           preset = NEVER if preset == "never"
-          for_select(include_custom: include_custom).any? { |_label, value| value == preset }
+          choices(include_custom: include_custom).any? { |_label, value| value == preset }
         end
 
         # Whether `config.expiration_options` offers a custom date.
@@ -115,10 +127,10 @@ module ApiKeys
           ApiKeys.configuration.expiration_options.include?(:custom)
         end
 
-        # Whether "Never" can be offered: it is configured, and
-        # `config.expire_after` would not expire the key anyway.
+        # Whether `config.expiration_options` offers the never option (named
+        # after `config.expire_after` while that is set).
         def never_offered?
-          ApiKeys.configuration.expiration_options.include?(:never) && ApiKeys.configuration.expire_after.nil?
+          ApiKeys.configuration.expiration_options.include?(:never)
         end
 
         # The earliest and latest day a custom date can be, as the date
@@ -155,6 +167,25 @@ module ApiKeys
 
         private
 
+        def build_options(configured, include_no_expiration, include_custom, preview)
+          configured = configured.reject { |choice| choice == :never } unless include_no_expiration
+          configured = configured.reject { |choice| choice == :custom } unless include_custom
+
+          configured.map do |choice|
+            option = [label_for(choice), value_for(choice)]
+            expires_at = preview_time(choice)
+            option << { "data-api-keys-expires-on" => expires_at.strftime(DATE_LABEL) } if preview && expires_at
+            option
+          end
+        end
+
+        # When a choice expires a key made now, or nil (Never, Custom).
+        def preview_time(choice)
+          return choice.from_now if choice.is_a?(ActiveSupport::Duration)
+
+          ApiKeys.configuration.expire_after&.from_now if choice == :never
+        end
+
         def duration_for(preset)
           match = PRESET_FORMAT.match(preset)
           return nil unless match
@@ -187,7 +218,7 @@ module ApiKeys
 
         def label_for(choice)
           case choice
-          when :never then "Never"
+          when :never then never_label
           when :custom then "Custom"
           else
             unit, amount = choice.parts.first
@@ -196,6 +227,16 @@ module ApiKeys
             unit, amount = "year", amount / 365 if unit == "day" && (amount % 365).zero?
             "#{amount} #{unit.pluralize(amount)}"
           end
+        end
+
+        # config.expire_after gives a key without an expiration of its own
+        # that lifetime, so the never option names it.
+        def never_label
+          expire_after = ApiKeys.configuration.expire_after
+          return "Never" if expire_after.nil?
+
+          lifetime = expire_after.is_a?(ActiveSupport::Duration) ? expire_after : expire_after.seconds
+          "#{lifetime.inspect} (default)"
         end
 
         def value_for(choice)

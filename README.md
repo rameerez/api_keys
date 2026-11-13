@@ -583,15 +583,19 @@ None of this protects a session that has been stolen. Whoever holds a copy of th
 The choices of the expiration picker (`config.expiration_options`), and how each one becomes an `expires_at`:
 
 ```ruby
-# Options for a select: 1 day, 7 days, 30 days, 1 year, Never
-ApiKeys::ExpirationOptions.for_select
+# The picker, in the configured order (pair it with a prompt, as the dashboard does)
+ApiKeys::ExpirationOptions.choices
 # => [["1 day", "1_day"], ["7 days", "7_days"], ["30 days", "30_days"], ["1 year", "1_year"], ["Never", "no_expiration"]]
 
+# The same with Never first, so a select with nothing selected defaults to it
+ApiKeys::ExpirationOptions.for_select
+# => [["Never", "no_expiration"], ["1 day", "1_day"], ["7 days", "7_days"], ["30 days", "30_days"], ["1 year", "1_year"]]
+
 # With "Custom", for a form that also renders the date field
-ApiKeys::ExpirationOptions.for_select(include_custom: true)
+ApiKeys::ExpirationOptions.choices(include_custom: true)
 
 # With each choice's date, as data-api-keys-expires-on="December 13, 2026"
-ApiKeys::ExpirationOptions.for_select(preview: true)
+ApiKeys::ExpirationOptions.choices(preview: true)
 
 # Parse a preset to a time
 ApiKeys::ExpirationOptions.parse("30_days")                     # => 30.days.from_now
@@ -639,7 +643,7 @@ Renders the expiration picker. Like OpenAI's, it starts on "Select an expiration
 <%= form.api_key_expiration_date_field(class: "form-input") %>
 ```
 
-Pass both values to `create_api_key!`: `expires_at_preset: params.dig(:api_key, :expires_at_preset), expires_on: params.dig(:api_key, :expires_on)`. The date field allows tomorrow up to ten years out.
+Pass both values to `create_api_key!`: `expires_at_preset: params.dig(:api_key, :expires_at_preset), expires_on: params.dig(:api_key, :expires_on)`. The date counts only when Custom is chosen, so an empty or stale date field beside another choice is ignored. The date field allows tomorrow up to ten years out.
 
 #### `api_key_scopes_checkboxes`
 
@@ -955,7 +959,7 @@ config.expiration_options = [1.day, 7.days, 30.days, 1.year, :never, :custom] # 
 config.expiration_options = [1.day, 7.days, 30.days, 90.days]
 ```
 
-Without `:never`, the dashboard refuses to create a key that never expires, even from a crafted request. With `config.expire_after` set, "Never" is not offered, because the key would expire anyway. A key's expiration is set when it is created: the edit page shows it, and to change it you create a new key and revoke the old one. The token page and the keys list show when each key expires, and `api_key_expiration_label(@api_key)` says it in words ("Expires on December 13, 2026").
+Without `:never`, the dashboard refuses to create a key that never expires, even from a crafted request. With `config.expire_after` set, the never option names that lifetime instead ("90 days (default)"), because such a key expires anyway. A key's expiration is set when it is created: the edit page shows it, and to change it you create a new key and revoke the old one. The token page and the keys list show when each key expires, and `api_key_expiration_label(@api_key)` says it in words ("Expires on December 13, 2026").
 
 ### Scopes: define and verify API Key permissions
 

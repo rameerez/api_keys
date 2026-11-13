@@ -103,6 +103,31 @@ module ApiKeys
         end
       end
 
+      test "create_api_key! takes a form's empty date field beside a preset" do
+        user = User.create!(name: "Form Owner")
+
+        freeze_time do
+          # A form submits the Custom date field as "" whatever was chosen.
+          assert_equal 30.days.from_now,
+                       user.create_api_key!(name: "Month", expires_at_preset: "30_days", expires_on: "").expires_at
+          assert_nil user.create_api_key!(name: "Forever", expires_at_preset: "no_expiration", expires_on: "").expires_at
+          assert_nil user.create_api_key!(name: "Blank", expires_at_preset: "", expires_on: "").expires_at
+        end
+      end
+
+      test "create_api_key! uses the date only when Custom is chosen" do
+        user = User.create!(name: "Switched Owner")
+
+        freeze_time do
+          # Someone picked a date, then switched back to a preset.
+          assert_equal 7.days.from_now,
+                       user.create_api_key!(name: "Week", expires_at_preset: "7_days", expires_on: "2030-01-01").expires_at
+        end
+        assert_raises(ApiKeys::Errors::InvalidExpirationError) do
+          user.create_api_key!(name: "No Date", expires_at_preset: "custom", expires_on: "")
+        end
+      end
+
       test "create_api_key! refuses expires_in: values that are not positive durations" do
         user = User.create!(name: "Bad Expires In Owner")
 

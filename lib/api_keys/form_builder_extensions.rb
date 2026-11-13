@@ -61,7 +61,7 @@ module ApiKeys
 
       select(
         :expires_at_preset,
-        @template.options_for_select(ApiKeys::ExpirationOptions.for_select(include_custom: custom, preview: true), selected),
+        @template.options_for_select(ApiKeys::ExpirationOptions.choices(include_custom: custom, preview: true), selected),
         options,
         { required: true }.merge(html_options)
       )

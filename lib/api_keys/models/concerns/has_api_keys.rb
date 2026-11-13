@@ -218,8 +218,10 @@ module ApiKeys
         # @param expires_at_preset [String, nil] What the expiration picker
         #   submitted: "1_day", "30_days", "1_year", "never", "custom"... (see
         #   ApiKeys::ExpirationOptions). Takes precedence over expires_at if both given.
-        # @param expires_on [String, Date, nil] The day the key expires, at the
-        #   end of that day ("2027-01-31"): the picker's "Custom" date.
+        # @param expires_on [String, Date, nil] The day the key expires, at
+        #   23:59:59 ("2027-01-31"): the picker's "Custom" date. Used alone or
+        #   with expires_at_preset: "custom"; beside another preset it is
+        #   ignored, as a form submits the field whatever was chosen.
         # @param metadata [Hash, nil] Optional metadata hash.
         # @param key_type [Symbol, nil] The key type (e.g., :publishable, :secret).
         #   Must be defined in ApiKeys.configuration.key_types if provided.
@@ -338,15 +340,21 @@ module ApiKeys
         end
 
         # The one expiration the caller asked for. expires_at_preset wins over
-        # expires_at, as it always has. The newer expires_in: and expires_on:
-        # combine with nothing else (expires_on: goes only with the "custom"
-        # preset), so a key never quietly gets an expiration its caller did
-        # not mean.
+        # expires_at, as it always has. expires_on: is the picker's Custom
+        # date: a form submits it ("" or a date) whatever was chosen, so it
+        # counts only with the "custom" preset or alone, and a blank one is
+        # no date at all. expires_in: combines with nothing, and expires_on:
+        # alone combines with nothing, so a key never quietly gets an
+        # expiration its caller did not mean.
         def resolve_expiration(expires_at, expires_in, preset, expires_on)
           custom = ApiKeys::Helpers::ExpirationOptions::CUSTOM
-          preset = preset.presence || (custom unless expires_on.nil?)
+          preset = preset.presence
+          expires_on = nil if expires_on.respond_to?(:empty?) && expires_on.to_s.strip.empty?
+          expires_on = nil unless preset.nil? || preset == custom
+          preset ||= custom unless expires_on.nil?
+
           conflicting = (!expires_in.nil? && !(preset.nil? && expires_at.nil?)) ||
-                        (!expires_on.nil? && (preset != custom || !expires_at.nil?))
+                        (!expires_on.nil? && !expires_at.nil?)
           raise ArgumentError, "Pass one expiration: expires_at, expires_in, expires_at_preset, or expires_on" if conflicting
 
           return ApiKeys::Helpers::ExpirationOptions.parse(preset, on: expires_on) if preset

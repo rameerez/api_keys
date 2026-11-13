@@ -53,6 +53,15 @@ module ApiKeys
       assert_equal true, arguments[3][:required]
     end
 
+    test "expiration select still matches a form that preselects no_expiration under expire_after" do
+      ApiKeys.configuration.expire_after = 90.days
+      options = FakeBuilder.new.api_key_expiration_select(selected: "no_expiration")[1][:options]
+
+      assert_includes options.map { |option| option[1] }, "no_expiration"
+    ensure
+      ApiKeys.reset_configuration!
+    end
+
     test "expiration select honors a selected preset and preserves options" do
       builder = FakeBuilder.new
 
