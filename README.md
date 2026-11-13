@@ -587,9 +587,9 @@ The choices of the expiration picker (`config.expiration_options`), and how each
 ApiKeys::ExpirationOptions.choices
 # => [["1 day", "1_day"], ["7 days", "7_days"], ["30 days", "30_days"], ["1 year", "1_year"], ["Never", "no_expiration"]]
 
-# The same with Never first, so a select with nothing selected defaults to it
+# The options forms used before 0.10, unchanged (it does not follow config.expiration_options)
 ApiKeys::ExpirationOptions.for_select
-# => [["Never", "no_expiration"], ["1 day", "1_day"], ["7 days", "7_days"], ["30 days", "30_days"], ["1 year", "1_year"]]
+# => [["No Expiration", "no_expiration"], ["7 days", "7_days"], ["30 days", "30_days"], ["60 days", "60_days"], ["90 days", "90_days"], ["1 year", "365_days"]]
 
 # With "Custom", for a form that also renders the date field
 ApiKeys::ExpirationOptions.choices(include_custom: true)
@@ -955,11 +955,19 @@ Pick the choices the picker offers in the initializer. Durations can be whole ho
 # config/initializers/api_keys.rb
 config.expiration_options = [1.day, 7.days, 30.days, 1.year, :never, :custom] # the default
 
-# Every key expires within 90 days: no "Never", no far-off custom dates
+# Every key created from the dashboard expires within 90 days: no "Never", no custom dates
 config.expiration_options = [1.day, 7.days, 30.days, 90.days]
 ```
 
-Without `:never`, the dashboard refuses to create a key that never expires, even from a crafted request. With `config.expire_after` set, the never option names that lifetime instead ("90 days (default)"), because such a key expires anyway. A key's expiration is set when it is created: the edit page shows it, and to change it you create a new key and revoke the old one. The token page and the keys list show when each key expires, and `api_key_expiration_label(@api_key)` says it in words ("Expires on December 13, 2026").
+Without `:never`, the dashboard refuses to create a key that never expires, even from a crafted request. The list governs the picker and the stock dashboard, not `create_api_key!`, which takes any expiration your code asks for. A controller of your own that passes a submitted preset through checks it first:
+
+```ruby
+preset = params.dig(:api_key, :expires_at_preset)
+unless ApiKeys::ExpirationOptions.offered?(preset, include_custom: ApiKeys::ExpirationOptions.custom_offered?)
+  # re-render the form: that choice is not offered
+end
+```
+ With `config.expire_after` set, the never option names that lifetime instead ("90 days (default)"), because such a key expires anyway. A key's expiration is set when it is created: the edit page shows it, and to change it you create a new key and revoke the old one. The token page and the keys list show when each key expires, and `api_key_expiration_label(@api_key)` says it in words ("Expires on December 13, 2026").
 
 ### Scopes: define and verify API Key permissions
 

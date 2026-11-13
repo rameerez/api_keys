@@ -63,8 +63,10 @@ module ApiKeys
     #     picker offers when someone creates a key, in order: durations (whole
     #     hours, days, weeks, months or years, up to ten years), `:never`, and
     #     `:custom` (a date picker). Take `:never` out to make every key expire.
-    #     `:never` is not offered while `config.expire_after` is set, because
-    #     the key would expire anyway.
+    #     While `config.expire_after` is set, `:never` is offered under that
+    #     lifetime's name ("90 days (default)"), because such a key expires anyway.
+    #     The stock dashboard enforces this list; a controller of your own
+    #     checks a submitted preset with `ApiKeys::ExpirationOptions.offered?`.
     #     Default: `[1.day, 7.days, 30.days, 1.year, :never, :custom]`.
     #   @example Every key expires within 90 days
     #     config.expiration_options = [1.day, 7.days, 30.days, 90.days, :custom]
@@ -265,8 +267,9 @@ module ApiKeys
 
     def expiration_options=(value)
       choices = Array(value).map { |choice| choice.is_a?(String) ? choice.to_sym : choice } if value.is_a?(Array)
+      options = ApiKeys::Helpers::ExpirationOptions
       valid = choices.present? && choices.uniq.length == choices.length && choices.all? do |choice|
-        ApiKeys::Helpers::ExpirationOptions::CHOICES.include?(choice) || ApiKeys::Helpers::ExpirationOptions.preset_for(choice)
+        options::CHOICES.include?(choice) || options.preset_for(choice)
       end
       unless valid
         raise ArgumentError, "expiration_options must list durations (whole hours, days, weeks, months or years, " \

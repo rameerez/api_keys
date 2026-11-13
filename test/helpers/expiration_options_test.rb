@@ -38,23 +38,76 @@ module ApiKeys
         assert_equal ["1 day", "1_day"], options.first
       end
 
-      # == for_select: the same choices, Never first as before 0.10 ==
+      # == for_select: exactly what 0.9 returned, so upgrading forms keep their selection ==
 
-      test "for_select keeps Never first, so a form with nothing selected still defaults to it" do
-        # A browser preselects the first option. Forms built on for_select
-        # before 0.10 relied on that being No Expiration; a "1 day" there would
-        # quietly mint keys that die tomorrow.
-        assert_equal [["Never", "no_expiration"], ["1 day", "1_day"], ["7 days", "7_days"],
-                      ["30 days", "30_days"], ["1 year", "1_year"]],
-                     ExpirationOptions.for_select
-        assert_equal ["Custom", "custom"], ExpirationOptions.for_select(include_custom: true).last
-        assert_equal ["1 day", "1_day"], ExpirationOptions.for_select(include_no_expiration: false).first
+      test "0.9 contract: for_select returns default options" do
+        options = ExpirationOptions.for_select
+
+        assert_equal 6, options.length
+        assert_equal ["No Expiration", "no_expiration"], options.first
+        assert_equal ["7 days", "7_days"], options[1]
+        assert_equal ["1 year", "365_days"], options.last
       end
 
-      test "for_select without :never configured has no Never to put first" do
-        ApiKeys.configuration.expiration_options = [7.days, 30.days]
+      test "0.9 contract: for_select without no_expiration option" do
+        options = ExpirationOptions.for_select(include_no_expiration: false)
 
-        assert_equal [["7 days", "7_days"], ["30 days", "30_days"]], ExpirationOptions.for_select
+        assert_equal 5, options.length
+        refute(options.any? { |label, _| label == "No Expiration" })
+        assert_equal ["7 days", "7_days"], options.first
+      end
+
+      test "0.9 contract: for_select with custom presets" do
+        options = ExpirationOptions.for_select(presets: [7, 30, 365])
+
+        assert_equal 4, options.length # includes "No Expiration"
+        assert_equal ["No Expiration", "no_expiration"], options.first
+        assert_equal ["7 days", "7_days"], options[1]
+        assert_equal ["30 days", "30_days"], options[2]
+        assert_equal ["1 year", "365_days"], options[3]
+      end
+
+      test "0.9 contract: for_select with custom presets without no_expiration" do
+        options = ExpirationOptions.for_select(presets: [7, 30], include_no_expiration: false)
+
+        assert_equal 2, options.length
+        assert_equal ["7 days", "7_days"], options.first
+        assert_equal ["30 days", "30_days"], options.last
+      end
+
+      test "0.9 contract: for_select generates correct label for 1 day" do
+        options = ExpirationOptions.for_select(presets: [1])
+
+        assert_equal ["1 day", "1_days"], options[1]
+      end
+
+      test "0.9 contract: for_select generates correct label for multiple years" do
+        options = ExpirationOptions.for_select(presets: [730])
+
+        assert_equal ["2 years", "730_days"], options[1]
+      end
+
+      test "for_select is the same whatever config.expiration_options says" do
+        ApiKeys.configuration.expiration_options = [1.day, :custom]
+
+        assert_equal [["No Expiration", "no_expiration"], ["7 days", "7_days"], ["30 days", "30_days"],
+                      ["60 days", "60_days"], ["90 days", "90_days"], ["1 year", "365_days"]],
+                     ExpirationOptions.for_select
+      end
+
+      test "for_select can add Custom and previews, for forms that want them" do
+        travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+          options = ExpirationOptions.for_select(include_custom: true, preview: true)
+
+          assert_equal ["7 days", "7_days", { "data-api-keys-expires-on" => "November 20, 2026" }], options[1]
+          assert_equal ["Custom", "custom"], options.last
+        end
+      end
+
+      test "every value for_select offers parses" do
+        ExpirationOptions.for_select(presets: [1, 7, 730, 3650.days, 1.year]).each do |_label, value|
+          ExpirationOptions.parse(value) # must not raise
+        end
       end
 
       # == config.expire_after ==
@@ -64,23 +117,16 @@ module ApiKeys
 
         travel_to Time.zone.local(2026, 11, 13, 9, 30) do
           assert_equal ["90 days (default)", "no_expiration"], ExpirationOptions.choices.last
-          assert_equal ["90 days (default)", "no_expiration"], ExpirationOptions.for_select.first
+          assert_equal ["No Expiration", "no_expiration"], ExpirationOptions.for_select.first, "unchanged from 0.9"
           assert_equal ["90 days (default)", "no_expiration", { "data-api-keys-expires-on" => "February 11, 2027" }],
                        ExpirationOptions.choices(preview: true).last
         end
         assert ExpirationOptions.offered?("no_expiration"), "forms that preselect no_expiration keep a matching option"
       end
 
-      test "for_select with custom presets in days or durations" do
-        assert_equal [["Never", "no_expiration"], ["7 days", "7_days"], ["30 days", "30_days"], ["1 year", "365_days"]],
-                     ExpirationOptions.for_select(presets: [7, 30, 365])
+      test "for_select still takes durations as presets" do
         assert_equal [["7 days", "7_days"], ["1 year", "1_year"]],
                      ExpirationOptions.for_select(presets: [7.days, 1.year], include_no_expiration: false)
-      end
-
-      test "for_select labels 1 day and whole years in plain English" do
-        assert_equal ["1 day", "1_day"], ExpirationOptions.for_select(presets: [1])[1]
-        assert_equal ["2 years", "730_days"], ExpirationOptions.for_select(presets: [730])[1]
       end
 
       test "custom presets must be bounded positive integers or durations" do
@@ -116,10 +162,10 @@ module ApiKeys
         end
       end
 
-      test "every value for_select offers parses" do
+      test "every value choices offers parses" do
         ApiKeys.configuration.expiration_options = [1.hour, 1.day, 1.week, 1.month, 1.year, 9.years, :never, :custom]
 
-        ExpirationOptions.for_select.each do |_label, value|
+        ExpirationOptions.choices.each do |_label, value|
           ExpirationOptions.parse(value) # must not raise
         end
       end

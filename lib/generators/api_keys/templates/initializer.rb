@@ -251,7 +251,8 @@ ApiKeys.configure do |config|
   # What the expiration picker offers when someone creates a key, in order:
   # durations (whole hours, days, weeks, months or years, up to ten years),
   # :never, and :custom (a date picker). Leave out :never to make every key
-  # expire. :never is not offered while expire_after is set.
+  # created from the dashboard expire. While expire_after is set, :never shows
+  # that lifetime instead ("90 days (default)").
   # Default: [1.day, 7.days, 30.days, 1.year, :never, :custom]
   # config.expiration_options = [1.day, 7.days, 30.days, 90.days, :custom]
 

@@ -22,6 +22,10 @@ module ApiKeys
     #   ApiKeys::ExpirationOptions.parse("custom", on: "2027-01-31") # => end of that day
     #
     class ExpirationOptions
+      # A for_select preset given in whole days, as before 0.10.
+      LegacyDays = Struct.new(:days)
+      private_constant :LegacyDays
+
       # The longest a key can be set to live, in days (about ten years).
       MAX_DAYS = 3650
       # The symbols config.expiration_options takes beside durations.
@@ -33,6 +37,8 @@ module ApiKeys
       PRESET_FORMAT = /\A(\d{1,6})_(#{UNITS.join('|')})s?\z/
       DATE_FORMAT = /\A\d{4}-\d{2}-\d{2}\z/
       DATE_LABEL = "%B %-d, %Y"
+      # What for_select offered before 0.10, in whole days.
+      LEGACY_PRESETS = [7, 30, 60, 90, 365].freeze
 
       class << self
         # The picker's options, in the order `config.expiration_options`
@@ -59,24 +65,28 @@ module ApiKeys
           build_options(ApiKeys.configuration.expiration_options, include_no_expiration, include_custom, preview)
         end
 
-        # The same options with the never option first, as before 0.10: a form
-        # built on it with nothing selected still defaults to no expiration of
-        # its own, never to "1 day".
+        # The options forms were built on before 0.10, unchanged: No
+        # Expiration first, then 7, 30, 60 and 90 days and 1 year. It does not
+        # follow `config.expiration_options` (see .choices), so a form that
+        # preselects "365_days" or "90_days", or relies on the first option,
+        # keeps working exactly as it did.
         #
+        # @param include_no_expiration [Boolean] Offer "No Expiration" (default: true).
         # @param presets [Array<Integer, ActiveSupport::Duration>, nil] Offer
-        #   these instead of `config.expiration_options`: whole days, or durations.
-        # @see .choices for the other parameters
+        #   these instead: whole days ("30_days") or durations ("1_year").
+        # @param include_custom [Boolean] Add "Custom" at the end (default: false).
+        # @param preview [Boolean] Add each choice's date (see .choices).
         # @return [Array<Array>]
         #
         # @example
         #   ExpirationOptions.for_select
-        #   # => [["Never", "no_expiration"], ["1 day", "1_day"], ["7 days", "7_days"],
-        #   #     ["30 days", "30_days"], ["1 year", "1_year"]]
+        #   # => [["No Expiration", "no_expiration"], ["7 days", "7_days"], ["30 days", "30_days"],
+        #   #     ["60 days", "60_days"], ["90 days", "90_days"], ["1 year", "365_days"]]
         #
-        def for_select(include_no_expiration: true, include_custom: false, presets: nil, preview: false)
-          configured = presets ? choices_from_presets(presets) : ApiKeys.configuration.expiration_options
-          options = build_options(configured, include_no_expiration, include_custom, preview)
-          options.partition { |option| option[1] == NEVER }.flatten(1)
+        def for_select(include_no_expiration: true, presets: nil, include_custom: false, preview: false)
+          configured = choices_from_presets(presets || LEGACY_PRESETS)
+          configured += [:custom] if include_custom
+          build_options(configured, include_no_expiration, include_custom, preview, never_label: "No Expiration")
         end
 
         # Turns a preset into the moment the key expires.
@@ -167,12 +177,12 @@ module ApiKeys
 
         private
 
-        def build_options(configured, include_no_expiration, include_custom, preview)
+        def build_options(configured, include_no_expiration, include_custom, preview, never_label: nil)
           configured = configured.reject { |choice| choice == :never } unless include_no_expiration
           configured = configured.reject { |choice| choice == :custom } unless include_custom
 
           configured.map do |choice|
-            option = [label_for(choice), value_for(choice)]
+            option = [choice == :never && never_label ? never_label : label_for(choice), value_for(choice)]
             expires_at = preview_time(choice)
             option << { "data-api-keys-expires-on" => expires_at.strftime(DATE_LABEL) } if preview && expires_at
             option
@@ -181,6 +191,7 @@ module ApiKeys
 
         # When a choice expires a key made now, or nil (Never, Custom).
         def preview_time(choice)
+          return choice.days.days.from_now if choice.is_a?(LegacyDays)
           return choice.from_now if choice.is_a?(ActiveSupport::Duration)
 
           ApiKeys.configuration.expire_after&.from_now if choice == :never
@@ -220,11 +231,10 @@ module ApiKeys
           case choice
           when :never then never_label
           when :custom then "Custom"
+          when LegacyDays then legacy_days_label(choice.days)
           else
             unit, amount = choice.parts.first
             unit = unit.to_s.delete_suffix("s")
-            # 365.days reads "1 year", as it did before 0.10.
-            unit, amount = "year", amount / 365 if unit == "day" && (amount % 365).zero?
             "#{amount} #{unit.pluralize(amount)}"
           end
         end
@@ -239,10 +249,17 @@ module ApiKeys
           "#{lifetime.inspect} (default)"
         end
 
+        def legacy_days_label(days)
+          return "#{days / 365} #{'year'.pluralize(days / 365)}" if (days % 365).zero?
+
+          "#{days} #{'day'.pluralize(days)}"
+        end
+
         def value_for(choice)
           case choice
           when :never then NEVER
           when :custom then CUSTOM
+          when LegacyDays then "#{choice.days}_days"
           else preset_for(choice)
           end
         end
@@ -250,8 +267,9 @@ module ApiKeys
         # Whole days (as before 0.10) or durations, with "Never" first.
         def choices_from_presets(presets)
           # A Duration answers is_a?(Integer) with true, so ask about it first.
-          durations = presets.map { |days| days.is_a?(ActiveSupport::Duration) || !days.is_a?(Integer) ? days : days.days } if presets.is_a?(Array)
-          unless durations&.all? { |duration| preset_for(duration) }
+          # Whole days stay LegacyDays, so they keep 0.9's "N_days" values.
+          durations = presets.map { |days| days.is_a?(ActiveSupport::Duration) || !days.is_a?(Integer) ? days : LegacyDays.new(days) } if presets.is_a?(Array)
+          unless durations&.all? { |duration| duration.is_a?(LegacyDays) ? duration_for("#{duration.days}_days") : preset_for(duration) }
             raise ArgumentError, "Expiration presets must be whole days or durations, from 1 day up to ten years"
           end
 

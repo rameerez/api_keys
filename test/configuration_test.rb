@@ -274,6 +274,12 @@ module ApiKeys
       assert ApiKeys.configuration.expiration_options.frozen?
     end
 
+    test "expiration_options labels each choice by the unit it was given in" do
+      ApiKeys.configuration.expiration_options = [365.days, 1.year]
+
+      assert_equal [["365 days", "365_days"], ["1 year", "1_year"]], ApiKeys::ExpirationOptions.choices
+    end
+
     test "expiration_options takes durations, :never and :custom, in the order given" do
       ApiKeys.configuration.expiration_options = [:custom, 12.hours, 2.weeks, 3.months, 9.years, :never]
 
@@ -287,7 +293,8 @@ module ApiKeys
     test "expiration_options refuses what the picker could not offer" do
       [
         nil, [], "30.days", 30, [30], [0.days], [-1.day], [10.years], [3651.days],
-        [1.day + 2.hours], [30.minutes], [:forever], [7.days, 7.days], [:never, "never"], [Object.new]
+        [1.day + 2.hours], [30.minutes], [:forever], [7.days, 7.days], [:never, "never"], [Object.new],
+        [12.months, 1.year], [24.hours, 1.day] # the same length twice
       ].each do |value|
         assert_raises(ArgumentError, "expected #{value.inspect} to be refused") do
           ApiKeys.configuration.expiration_options = value
