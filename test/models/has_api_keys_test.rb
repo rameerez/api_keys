@@ -63,6 +63,57 @@ module ApiKeys
         assert_empty user.api_keys
       end
 
+      test "create_api_key! takes expires_in: for a key that lives a while" do
+        user = User.create!(name: "Expires In Owner")
+
+        freeze_time do
+          assert_equal 7.days.from_now, user.create_api_key!(name: "Week", expires_in: 7.days).expires_at
+          assert_equal 1.year.from_now, user.create_api_key!(name: "Year", expires_in: 1.year).expires_at
+          assert_equal 12.hours.from_now, user.create_api_key!(name: "CI", expires_in: 12.hours).expires_at
+        end
+      end
+
+      test "create_api_key! reads every preset the picker offers, and a custom date" do
+        user = User.create!(name: "Preset Owner")
+
+        travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+          assert_equal 1.day.from_now, user.create_api_key!(name: "Day", expires_at_preset: "1_day").expires_at
+          assert_equal 1.year.from_now, user.create_api_key!(name: "Year", expires_at_preset: "1_year").expires_at
+          assert_nil user.create_api_key!(name: "Forever", expires_at_preset: "never").expires_at
+          assert_equal Time.zone.local(2027, 1, 31, 23, 59, 59),
+                       user.create_api_key!(name: "Custom", expires_at_preset: "custom", expires_on: "2027-01-31").expires_at
+        end
+      end
+
+      test "create_api_key! takes one expiration, not two" do
+        user = User.create!(name: "Two Expirations Owner")
+
+        assert_raises(ArgumentError) { user.create_api_key!(name: "Both", expires_in: 7.days, expires_at: 30.days.from_now) }
+        assert_raises(ArgumentError) { user.create_api_key!(name: "Both", expires_in: 7.days, expires_at_preset: "30_days") }
+        assert_raises(ArgumentError) { user.create_api_key!(name: "Both", expires_on: "2027-01-31", expires_at: 30.days.from_now) }
+        assert_empty user.api_keys
+      end
+
+      test "create_api_key! takes expires_on: alone as the custom date" do
+        user = User.create!(name: "Expires On Owner")
+
+        travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+          assert_equal Time.zone.local(2027, 1, 31, 23, 59, 59),
+                       user.create_api_key!(name: "Date", expires_on: Date.new(2027, 1, 31)).expires_at
+        end
+      end
+
+      test "create_api_key! refuses expires_in: values that are not positive durations" do
+        user = User.create!(name: "Bad Expires In Owner")
+
+        [0.days, -1.day, 30, "30 days", Object.new, 3651.days].each do |value|
+          assert_raises(ArgumentError, "expected #{value.inspect} to be refused") do
+            user.create_api_key!(name: "Bad", expires_in: value)
+          end
+        end
+        assert_empty user.api_keys
+      end
+
       test "per-owner security settings are validated and defensively frozen" do
         owner_class = Class.new(ActiveRecord::Base) do
           self.abstract_class = true

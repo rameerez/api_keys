@@ -89,7 +89,7 @@ module ApiKeys
         @api_key = current_api_keys_owner.create_api_key!(
           name: submitted_params[:name],
           scopes: scopes,
-          expires_at: parse_expiration(submitted_params[:expires_at_preset]),
+          **chosen_expiration(submitted_params, type_config),
           key_type: submitted_params[:key_type].presence,
           # The model normalizes these raw strings; no parser needed here.
           allowed_origins: submitted_params[:allowed_origins],
@@ -105,7 +105,13 @@ module ApiKeys
         # If create! fails due to validation (e.g., quota exceeded)
         @api_key = e.record # Get the invalid ApiKey instance
         @api_key.expires_at_preset = submitted_params[:expires_at_preset]
+        @api_key.expires_on = submitted_params[:expires_on]
         flash.now[:alert] = "Failed to create API key: #{e.record.errors.full_messages.join(', ')}"
+        render :new, status: :unprocessable_entity
+      rescue ApiKeys::Errors::InvalidExpirationError => e
+        # Written for the person filling in the form; never echoes their input.
+        flash.now[:alert] = "Failed to create API key: #{e.message}"
+        @api_key = rebuild_api_key_for_form(submitted_params)
         render :new, status: :unprocessable_entity
       rescue ArgumentError
         flash.now[:alert] = "Failed to create API key: invalid options."
@@ -183,7 +189,7 @@ module ApiKeys
       submitted = params.require(:api_key)
       raise ActionController::ParameterMissing, :api_key unless submitted.respond_to?(:permit)
 
-      permitted_params = submitted.permit(:name, :expires_at_preset, :key_type,
+      permitted_params = submitted.permit(:name, :expires_at_preset, :expires_on, :key_type,
                                           :allowed_origins, :allowed_ips, scopes: [])
       normalize_submitted_scopes!(permitted_params)
     end
@@ -255,18 +261,32 @@ module ApiKeys
       permitted_params
     end
 
-    # Helper to parse the expiration preset string into a Time object
-    def parse_expiration(preset)
-      case preset
-      when "7_days" then 7.days.from_now
-      when "30_days" then 30.days.from_now
-      when "60_days" then 60.days.from_now
-      when "90_days" then 90.days.from_now
-      when "365_days" then 365.days.from_now
-      when "no_expiration" then nil
-      when nil, "" then nil
-      else raise ArgumentError, "Invalid expiration preset"
+    # The expiration the picker's choice asks for, as create_api_key!
+    # arguments. Only a choice the form offered is taken, so an app that took
+    # :never (or :custom) off config.expiration_options gets no such key from
+    # a crafted request either. A key type that cannot expire offers no
+    # picker, and the model refuses any expiration submitted for it.
+    #
+    # @return [Hash] { expires_at_preset:, expires_on: }, or {} for no choice
+    def chosen_expiration(submitted_params, type_config)
+      options = ApiKeys::ExpirationOptions
+      preset = submitted_params[:expires_at_preset].presence
+      expirable = type_config.nil? || ApiKeys::ApiKey.revocable_for(type_config)
+
+      if expirable && preset.nil?
+        # A request without a choice gets what create_api_key! gives: never,
+        # or config.expire_after. Never can only be had where it is offered.
+        return {} if options.never_offered? || !ApiKeys.configuration.expire_after.nil?
+
+        raise ApiKeys::Errors::InvalidExpirationError, "Choose when this key expires."
       end
+      if expirable && !options.offered?(preset, include_custom: options.custom_offered?)
+        raise ApiKeys::Errors::InvalidExpirationError, "Choose one of the offered expirations."
+      end
+      return {} if preset.nil?
+      return { expires_at_preset: preset } unless preset == options::CUSTOM
+
+      { expires_at_preset: preset, expires_on: submitted_params[:expires_on].to_s }
     end
 
     def rebuild_api_key_for_form(submitted_params)
@@ -276,6 +296,7 @@ module ApiKeys
         key_type: submitted_params[:key_type]
       )
       api_key.expires_at_preset = submitted_params[:expires_at_preset]
+      api_key.expires_on = submitted_params[:expires_on]
       if ApiKeys::ApiKey.restrictions_column?
         api_key.allowed_origins = submitted_params[:allowed_origins] unless submitted_params[:allowed_origins].nil?
         api_key.allowed_ips = submitted_params[:allowed_ips] unless submitted_params[:allowed_ips].nil?

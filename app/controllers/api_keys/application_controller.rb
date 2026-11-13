@@ -144,7 +144,11 @@ module ApiKeys
     def set_api_keys_security_headers
       response.headers["Cache-Control"] = "no-store, private"
       response.headers["Pragma"] = "no-cache"
-      response.headers["Referrer-Policy"] = "no-referrer"
+      # Not "no-referrer": under it Chrome sends `Origin: null` with the
+      # dashboard's own form posts, and Rails' default origin check
+      # (forgery_protection_origin_check) refuses them. "same-origin" still
+      # sends nothing to any other site.
+      response.headers["Referrer-Policy"] = "same-origin"
       response.headers["X-Content-Type-Options"] = "nosniff"
       response.headers["X-Frame-Options"] = "DENY"
       response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"

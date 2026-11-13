@@ -36,6 +36,9 @@ end
 require "active_support/test_case"
 require "active_support/testing/time_helpers"
 
+# A Rails app always has a time zone (config.time_zone, UTC by default).
+Time.zone_default = Time.find_zone!("UTC")
+
 # Database setup
 require "active_record"
 require "sqlite3"

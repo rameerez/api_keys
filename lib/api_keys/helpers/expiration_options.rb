@@ -2,136 +2,219 @@
 
 module ApiKeys
   module Helpers
-    # Helper for handling API key expiration presets.
+    # The expiration picker: what a new key's form offers, and how each choice
+    # becomes an `expires_at`.
     #
-    # Provides a consistent set of expiration options for use in forms,
-    # and parsing logic to convert preset strings to actual dates.
+    # The choices come from `config.expiration_options`, which defaults to the
+    # picker OpenAI and most API dashboards use:
     #
-    # @example In your view (form select)
-    #   <%= form.select :expires_at_preset,
-    #       ApiKeys::Helpers::ExpirationOptions.for_select %>
+    #   1 day · 7 days · 30 days · 1 year · Never · Custom
+    #
+    # A choice travels through the form as a preset string: "1_day",
+    # "30_days", "1_year", "12_hours", "no_expiration" (or "never"), and
+    # "custom", which takes the date the key expires.
+    #
+    # @example In your view
+    #   <%= form.select :expires_at_preset, ApiKeys::ExpirationOptions.for_select %>
     #
     # @example In your controller
-    #   expires_at = ApiKeys::Helpers::ExpirationOptions.parse(params[:expires_at_preset])
-    #   @api_key = current_org.create_api_key!(expires_at: expires_at, ...)
+    #   expires_at = ApiKeys::ExpirationOptions.parse(params[:expires_at_preset])
+    #   ApiKeys::ExpirationOptions.parse("custom", on: "2027-01-31") # => end of that day
     #
     class ExpirationOptions
-      # Default preset options with human-readable labels
-      DEFAULT_PRESETS = [
-        { label: "No Expiration", value: "no_expiration", days: nil },
-        { label: "7 days", value: "7_days", days: 7 },
-        { label: "30 days", value: "30_days", days: 30 },
-        { label: "60 days", value: "60_days", days: 60 },
-        { label: "90 days", value: "90_days", days: 90 },
-        { label: "1 year", value: "365_days", days: 365 }
-      ].map(&:freeze).freeze
+      # The longest a key can be set to live, in days (about ten years).
+      MAX_DAYS = 3650
+      # The symbols config.expiration_options takes beside durations.
+      CHOICES = %i[never custom].freeze
+      NEVER = "no_expiration"
+      CUSTOM = "custom"
+      # The units a preset can name, smallest first.
+      UNITS = %w[hour day week month year].freeze
+      PRESET_FORMAT = /\A(\d{1,6})_(#{UNITS.join('|')})s?\z/
+      DATE_FORMAT = /\A\d{4}-\d{2}-\d{2}\z/
+      DATE_LABEL = "%B %-d, %Y"
 
       class << self
-        # Returns options suitable for a Rails select helper.
+        # Options for a Rails select helper, as [label, value] pairs.
         #
-        # @param include_no_expiration [Boolean] Whether to include "No Expiration" option (default: true)
-        # @param presets [Array<Integer>, nil] Custom list of days to include (e.g., [7, 30, 90])
-        #   If nil, uses DEFAULT_PRESETS
-        # @return [Array<Array>] Array of [label, value] pairs for select helper
-        #
-        # @example Default options
-        #   ExpirationOptions.for_select
-        #   # => [["No Expiration", "no_expiration"], ["7 days", "7_days"], ...]
-        #
-        # @example Custom presets
-        #   ExpirationOptions.for_select(presets: [7, 30, 365])
-        #   # => [["No Expiration", "no_expiration"], ["7 days", "7_days"], ["30 days", "30_days"], ["1 year", "365_days"]]
-        #
-        # @example Without "No Expiration"
-        #   ExpirationOptions.for_select(include_no_expiration: false)
-        #   # => [["7 days", "7_days"], ["30 days", "30_days"], ...]
-        #
-        def for_select(include_no_expiration: true, presets: nil)
-          options = if presets
-                      build_custom_presets(presets, include_no_expiration)
-                    else
-                      filter_default_presets(include_no_expiration)
-                    end
-
-          options.map { |opt| [opt[:label], opt[:value]] }
-        end
-
-        # Parse an expiration preset string into an actual datetime.
-        #
-        # @param preset [String, nil] The preset value (e.g., "30_days", "no_expiration")
-        # @return [ActiveSupport::TimeWithZone, nil] The expiration date, or nil for no expiration
+        # @param include_no_expiration [Boolean] Offer "Never" (default: true).
+        #   It is never offered while `config.expire_after` is set, because the
+        #   key would expire anyway.
+        # @param include_custom [Boolean] Offer "Custom" (default: false). Only
+        #   a form that also renders the date field (`expires_on`) can use it.
+        # @param presets [Array<Integer, ActiveSupport::Duration>, nil] Offer
+        #   these instead of `config.expiration_options`: whole days, or
+        #   durations. "Never" comes first, as before 0.10.
+        # @param preview [Boolean] Add each choice's expiration date as a
+        #   `data-api-keys-expires-on` attribute, so the form can show it.
+        # @return [Array<Array>]
         #
         # @example
-        #   ExpirationOptions.parse("30_days")  # => 30.days.from_now
-        #   ExpirationOptions.parse("no_expiration")  # => nil
-        #   ExpirationOptions.parse(nil)  # => nil
-        #   ExpirationOptions.parse("invalid")  # => raises ArgumentError
+        #   ExpirationOptions.for_select
+        #   # => [["1 day", "1_day"], ["7 days", "7_days"], ["30 days", "30_days"],
+        #   #     ["1 year", "1_year"], ["Never", "no_expiration"]]
         #
-        def parse(preset)
+        def for_select(include_no_expiration: true, include_custom: false, presets: nil, preview: false)
+          choices = presets ? choices_from_presets(presets) : ApiKeys.configuration.expiration_options
+          # "Never" is a promise config.expire_after would break.
+          choices = choices.reject { |choice| choice == :never } unless include_no_expiration && ApiKeys.configuration.expire_after.nil?
+          choices = choices.reject { |choice| choice == :custom } unless include_custom
+
+          choices.map do |choice|
+            option = [label_for(choice), value_for(choice)]
+            option << { "data-api-keys-expires-on" => parse(option[1]).strftime(DATE_LABEL) } if preview && choice.is_a?(ActiveSupport::Duration)
+            option
+          end
+        end
+
+        # Turns a preset into the moment the key expires.
+        #
+        # @param preset [String, nil] "30_days", "1_year", "no_expiration", "custom"...
+        # @param on [String, Date, nil] With "custom": the day the key expires
+        #   ("2027-01-31"). The key expires at 23:59:59 that day, in the
+        #   app's time zone.
+        # @return [ActiveSupport::TimeWithZone, nil] nil means the key never expires.
+        # @raise [ArgumentError] for anything else, so a typo never makes a
+        #   key permanent. A missing or out-of-range custom date raises
+        #   ApiKeys::Errors::InvalidExpirationError (an ArgumentError) with a
+        #   message a person can act on.
+        #
+        # @example
+        #   ExpirationOptions.parse("30_days")      # => 30.days.from_now
+        #   ExpirationOptions.parse("never")        # => nil
+        #   ExpirationOptions.parse("custom", on: "2027-01-31") # => 2027-01-31 23:59:59
+        #
+        def parse(preset, on: nil)
           return nil if preset.nil? || preset == ""
           unless preset.is_a?(String) && preset.valid_encoding? && preset.bytesize <= 32
             raise ArgumentError, "Invalid API key expiration preset"
           end
-          return nil if preset.blank? || preset == "no_expiration"
+          return nil if preset == NEVER || preset == "never"
+          return custom_date(on) if preset == CUSTOM
 
-          # Try to extract days from the preset string (e.g., "30_days" => 30)
-          if preset =~ /\A(\d+)_days?\z/
-            days = ::Regexp.last_match(1).to_i
-            # Reasonable max: ~10 years to prevent overflow issues
-            return days.days.from_now if days.positive? && days <= 3650
-          end
+          duration = duration_for(preset)
+          raise ArgumentError, "Invalid API key expiration preset" unless duration
 
-          # Check against known presets
-          known = DEFAULT_PRESETS.find { |p| p[:value] == preset }
-          return known[:days].days.from_now if known && known[:days]
-
-          raise ArgumentError, "Invalid API key expiration preset"
+          duration.from_now
         end
 
-        # Returns the default preset value (useful for form defaults)
+        # Whether the form offers this preset ("never" counts as "no_expiration").
         #
-        # @return [String] The default preset value
+        # @param preset [String]
+        # @param include_custom [Boolean] Whether the form offers "Custom".
+        # @return [Boolean]
+        def offered?(preset, include_custom: false)
+          return false unless preset.is_a?(String)
+
+          preset = NEVER if preset == "never"
+          for_select(include_custom: include_custom).any? { |_label, value| value == preset }
+        end
+
+        # Whether `config.expiration_options` offers a custom date.
+        def custom_offered?
+          ApiKeys.configuration.expiration_options.include?(:custom)
+        end
+
+        # Whether "Never" can be offered: it is configured, and
+        # `config.expire_after` would not expire the key anyway.
+        def never_offered?
+          ApiKeys.configuration.expiration_options.include?(:never) && ApiKeys.configuration.expire_after.nil?
+        end
+
+        # The earliest and latest day a custom date can be, as the date
+        # field's min and max.
+        #
+        # @return [Hash] { min: "2026-11-14", max: "2036-11-10" }
+        def custom_date_range
+          { min: (Date.current + 1).iso8601, max: (Date.current + MAX_DAYS).iso8601 }
+        end
+
+        # The preset string for a duration, or nil when the picker cannot
+        # offer it (not a whole number of one unit, not positive, or longer
+        # than ten years).
+        #
+        # @param duration [ActiveSupport::Duration]
+        # @return [String, nil] "1_day", "2_weeks", "1_year"...
+        def preset_for(duration)
+          return nil unless duration.is_a?(ActiveSupport::Duration) && duration.parts.size == 1
+
+          unit, amount = duration.parts.first
+          unit = unit.to_s.delete_suffix("s")
+          return nil unless UNITS.include?(unit) && amount.is_a?(Integer)
+
+          preset = "#{amount}_#{unit.pluralize(amount)}"
+          preset if duration_for(preset)
+        end
+
+        # The default selection of forms written before 0.10.
+        #
+        # @return [String] "no_expiration"
         def default_value
-          "no_expiration"
+          NEVER
         end
 
         private
 
-        def filter_default_presets(include_no_expiration)
-          if include_no_expiration
-            DEFAULT_PRESETS
+        def duration_for(preset)
+          match = PRESET_FORMAT.match(preset)
+          return nil unless match
+
+          amount = match[1].to_i
+          duration = amount.public_send(match[2].pluralize)
+          duration if amount.positive? && duration.to_i <= MAX_DAYS.days.to_i
+        end
+
+        def custom_date(on)
+          date = case on
+                 when Date then on
+                 when String then parse_date(on.strip)
+                 end
+          raise ApiKeys::Errors::InvalidExpirationError, "Pick the date the key expires." unless date
+          if date > Date.current + MAX_DAYS
+            raise ApiKeys::Errors::InvalidExpirationError, "A key can expire at most 10 years from now."
+          end
+
+          # 23:59:59 sharp: a fractional end_of_day would round up to the next
+          # midnight in a datetime column without sub-second precision (MySQL).
+          (Time.zone || Time.find_zone!("UTC")).local(date.year, date.month, date.day, 23, 59, 59)
+        end
+
+        def parse_date(text)
+          Date.iso8601(text) if text.valid_encoding? && text.match?(DATE_FORMAT)
+        rescue Date::Error
+          nil
+        end
+
+        def label_for(choice)
+          case choice
+          when :never then "Never"
+          when :custom then "Custom"
           else
-            DEFAULT_PRESETS.reject { |p| p[:value] == "no_expiration" }
+            unit, amount = choice.parts.first
+            unit = unit.to_s.delete_suffix("s")
+            # 365.days reads "1 year", as it did before 0.10.
+            unit, amount = "year", amount / 365 if unit == "day" && (amount % 365).zero?
+            "#{amount} #{unit.pluralize(amount)}"
           end
         end
 
-        def build_custom_presets(days_list, include_no_expiration)
-          unless days_list.is_a?(Array) && days_list.all? { |days| days.is_a?(Integer) && days.between?(1, 3650) }
-            raise ArgumentError, "Expiration presets must be an array of integers between 1 and 3650"
+        def value_for(choice)
+          case choice
+          when :never then NEVER
+          when :custom then CUSTOM
+          else preset_for(choice)
           end
-
-          options = []
-
-          if include_no_expiration
-            options << { label: "No Expiration", value: "no_expiration", days: nil }
-          end
-
-          days_list.each do |days|
-            options << preset_for_days(days)
-          end
-
-          options
         end
 
-        def preset_for_days(days)
-          label = case days
-                  when 1 then "1 day"
-                  when 365 then "1 year"
-                  when ->(d) { d % 365 == 0 } then "#{days / 365} years"
-                  else "#{days} days"
-                  end
+        # Whole days (as before 0.10) or durations, with "Never" first.
+        def choices_from_presets(presets)
+          # A Duration answers is_a?(Integer) with true, so ask about it first.
+          durations = presets.map { |days| days.is_a?(ActiveSupport::Duration) || !days.is_a?(Integer) ? days : days.days } if presets.is_a?(Array)
+          unless durations&.all? { |duration| preset_for(duration) }
+            raise ArgumentError, "Expiration presets must be whole days or durations, from 1 day up to ten years"
+          end
 
-          { label: label, value: "#{days}_days", days: days }
+          [:never, *durations]
         end
       end
     end

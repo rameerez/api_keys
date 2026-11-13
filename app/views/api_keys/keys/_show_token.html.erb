@@ -35,6 +35,14 @@
   </div>
 
 
+  <p class="api-keys-token-expiration">
+    <% if api_key.expires_at %>
+      This key expires on <strong title="<%= api_key.expires_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>"><%= api_key.expires_at.strftime(ApiKeys::ExpirationOptions::DATE_LABEL) %></strong>.
+    <% else %>
+      This key never expires.
+    <% end %>
+  </p>
+
   <% displayed_scopes = api_keys_displayed_scopes(api_key) %>
   <% if displayed_scopes.present? %>
     <div class="api-keys-token-scopes">

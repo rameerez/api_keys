@@ -70,7 +70,9 @@ module ApiKeys
     # validations) and no update_column can name another one. A backfill of
     # keys made before the columns existed writes them with SQL (update_all).
     attr_readonly :created_by_type, :created_by_id
-    attr_accessor :expires_at_preset
+    # Form-only: what the expiration picker submitted, kept so a form that
+    # failed to save shows the same choice again.
+    attr_accessor :expires_at_preset, :expires_on
 
     # JSON attributes (:scopes, :metadata) are defined in the engine initializer
     # using ActiveSupport.on_load(:active_record) to ensure DB connection is ready.

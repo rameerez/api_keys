@@ -34,6 +34,19 @@ module ApiKeys
         @publishable_key.stubs(:environment).returns("test")
       end
 
+      # api_key_expiration_label tests
+      test "api_key_expiration_label says when a key expires, in plain English" do
+        travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+          upcoming = stub(expires_at: Time.zone.local(2026, 12, 3, 23, 59), expired?: false)
+          past = stub(expires_at: Time.zone.local(2026, 11, 1, 8), expired?: true)
+          permanent = stub(expires_at: nil, expired?: false)
+
+          assert_equal "Expires on December 3, 2026", api_key_expiration_label(upcoming)
+          assert_equal "Expired on November 1, 2026", api_key_expiration_label(past)
+          assert_equal "Never expires", api_key_expiration_label(permanent)
+        end
+      end
+
       # api_key_status tests
       test "api_key_status returns :active for active key" do
         assert_equal :active, api_key_status(@active_key)

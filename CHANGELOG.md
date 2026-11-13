@@ -1,3 +1,27 @@
+## [0.10.0] - 2026-11-13
+
+### Added
+
+- An expiration picker modeled on OpenAI's API keys page. The dashboard's new key form asks "Expiration": **1 day, 7 days, 30 days, 1 year, Never, or Custom** (a date picker). It starts on "Select an expiration" and is required, so nobody makes a key that never expires by accident. A hint under it says the date the choice means ("This key will expire on December 13, 2026."). A custom date expires at 23:59:59 that day in the app's time zone (not `end_of_day`, whose fraction a MySQL `datetime` without sub-second precision rounds up to the next midnight). It must be within ten years.
+- `config.expiration_options`, the picker's choices in order: durations (whole hours, days, weeks, months or years, up to ten years), `:never` and `:custom`. Default `[1.day, 7.days, 30.days, 1.year, :never, :custom]`. Without `:never`, the dashboard refuses a key that never expires, a crafted request included. Without `:custom`, it offers no date field and refuses a custom date.
+- `create_api_key!(expires_in: 30.days)` and `create_api_key!(expires_on: "2027-01-31")`. Each refuses to be combined with another expiration argument. `expires_at_preset:` takes every preset the picker sends: `"1_day"`, `"1_year"`, `"12_hours"`, `"2_weeks"`, `"never"`, `"custom"` (with `expires_on:`).
+- `ApiKeys::ExpirationOptions.for_select(include_custom:, preview:)`, `.parse(preset, on: date)`, `.offered?` and `.custom_offered?`; the presets now read every unit, singular or plural, up to ten years.
+- `form.api_key_expiration_date_field`, the date field for "Custom".
+- `api_key_expiration_label(api_key)`: "Expires on December 13, 2026", "Expired on November 1, 2026" or "Never expires".
+- The token page says when the new key expires. The edit page shows the expiration, which cannot be changed. The keys list shows the date ("Dec 13, 2026", or "Never") instead of a rounded relative time ("Expires in 12 months" for a 1-year key), with the relative time as a tooltip.
+- `ApiKeys::Errors::InvalidExpirationError`, an `ArgumentError` whose message the dashboard shows ("Pick the date the key expires.").
+
+### Fixed
+
+- The dashboard's forms work in Chrome on apps with Rails' default origin check. Since 0.4.0 its pages sent `Referrer-Policy: no-referrer`; under it Chrome posts a same-origin form with `Origin: null`, and `forgery_protection_origin_check` (on by default since Rails 5) refused creating, updating and revoking keys with `ActionController::InvalidAuthenticityToken`. The pages now send `Referrer-Policy: same-origin`, which still sends no referrer to any other site.
+
+### Changed
+
+- The dashboard offered No Expiration, 7, 30, 60, 90 and 365 days, with No Expiration preselected. It now offers the choices above and asks for one. Its controller reads presets through `ApiKeys::ExpirationOptions` instead of its own list, and refuses a preset the form did not offer ("Choose one of the offered expirations."). A request with no choice at all still gets what `create_api_key!` gives (never, or `config.expire_after`) while "Never" is offered.
+- `ApiKeys::ExpirationOptions.for_select` follows `config.expiration_options`: 1 day, 7 days, 30 days, 1 year, Never. "No Expiration" is now labeled "Never" (its value stays `no_expiration`), and it is left out while `config.expire_after` is set, because such a key expired anyway. `for_select(presets: [7, 30, 365])` still puts Never first and takes durations too.
+- The dashboard uses the system sans-serif font (`--api-keys-font-family`) instead of the browser default serif, form labels are bold and sit above their fields, and the revoke icon lost its stray button border.
+- `form.api_key_expiration_select` starts on "Select an expiration" and renders `required`, instead of preselecting No Expiration. Pass `selected: "no_expiration"` for the old behavior, or `prompt: false` and `required: false` to turn either off. `custom: true` adds "Custom".
+
 ## [0.9.0] - 2026-11-09
 
 ### Added

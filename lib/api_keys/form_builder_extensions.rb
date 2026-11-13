@@ -11,8 +11,8 @@ module ApiKeys
   #     ActionView::Helpers::FormBuilder.include(ApiKeys::FormBuilderExtensions)
   #   end
   #
-  # @example Expiration select
-  #   <%= form.api_key_expiration_select(class: "my-select-class") %>
+  # @example Expiration picker
+  #   <%= form.api_key_expiration_select({}, class: "my-select-class") %>
   #
   # @example Scopes checkboxes with block for custom rendering
   #   <%= form.api_key_scopes_checkboxes(@scopes) do |scope, checked| %>
@@ -25,32 +25,60 @@ module ApiKeys
   #   clearing every box submits "no scopes" instead of nothing.)
   #
   module FormBuilderExtensions
-    # Renders a select field for API key expiration presets.
+    # Renders the expiration picker: 1 day, 7 days, 30 days, 1 year, Never
+    # (config.expiration_options). Like OpenAI's, it asks for a choice
+    # ("Select an expiration", required) instead of defaulting to one, and
+    # each option carries the date it means (`data-api-keys-expires-on`).
     #
-    # @param options [Hash] Options passed to the select helper
-    # @param html_options [Hash] HTML attributes for the select element
+    # @param options [Hash] Options passed to the select helper, plus:
+    #   - :selected [String] Preselect a preset ("30_days"); no prompt then.
+    #   - :prompt [String, false] The placeholder (default "Select an expiration").
+    #   - :custom [Boolean] Offer "Custom" too (default false). Render
+    #     `api_key_expiration_date_field` with it, and show that field when
+    #     Custom is chosen.
+    # @param html_options [Hash] HTML attributes for the select element.
+    #   `required: true` unless you pass `required: false`.
     # @return [String] HTML select element
     #
     # @example Basic usage
     #   <%= form.api_key_expiration_select %>
     #
     # @example With Tailwind classes
-    #   <%= form.api_key_expiration_select(class: "w-full px-4 py-3 border rounded-lg") %>
+    #   <%= form.api_key_expiration_select({}, class: "w-full px-4 py-3 border rounded-lg") %>
     #
-    # @example With custom default
-    #   <%= form.api_key_expiration_select(selected: "30_days") %>
+    # @example With a custom date
+    #   <%= form.api_key_expiration_select(custom: true) %>
+    #   <%= form.api_key_expiration_date_field %>
     #
     def api_key_expiration_select(options = {}, html_options = {})
-      # expires_at_preset is a form-only param, not a model attribute
-      # So we only use the provided :selected option or default
-      selected = options.delete(:selected) || ApiKeys::ExpirationOptions.default_value
+      # expires_at_preset is a form-only param, not a model attribute, so the
+      # selection comes from :selected, never from the object.
+      options = options.dup
+      custom = options.delete(:custom) || false
+      selected = options.delete(:selected)
+      prompt = options.key?(:prompt) ? options.delete(:prompt) : "Select an expiration"
+      options[:prompt] = prompt if prompt && selected.nil?
 
       select(
         :expires_at_preset,
-        @template.options_for_select(ApiKeys::ExpirationOptions.for_select, selected),
+        @template.options_for_select(ApiKeys::ExpirationOptions.for_select(include_custom: custom, preview: true), selected),
         options,
-        html_options
+        { required: true }.merge(html_options)
       )
+    end
+
+    # Renders the date field for the picker's "Custom" choice
+    # (`api_key[expires_on]`), from tomorrow up to ten years out. The key
+    # expires at the end of the chosen day.
+    #
+    # @param html_options [Hash] HTML attributes for the input.
+    # @return [String] HTML date input
+    #
+    # @example
+    #   <%= form.api_key_expiration_date_field(class: "form-input") %>
+    #
+    def api_key_expiration_date_field(html_options = {})
+      date_field(:expires_on, ApiKeys::ExpirationOptions.custom_date_range.merge(html_options))
     end
 
     # Renders checkboxes for API key scopes.
