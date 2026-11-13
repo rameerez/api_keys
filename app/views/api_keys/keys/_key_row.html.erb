@@ -17,18 +17,20 @@
   </td>
 
   <td class="api-keys-cell-expires">
+    <%# The date, as OpenAI's key list shows it; the relative time is the tooltip. %>
     <% if key.expires_at? %>
+      <% expires_on = key.expires_at.strftime("%b %-d, %Y") %>
       <% if key.expired? %>
-        <strong class="api-keys-expired-text" title="<%= key.expires_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
-          Expired <%= time_ago_in_words(key.expires_at) %> ago
+        <strong class="api-keys-expired-text" title="Expired <%= time_ago_in_words(key.expires_at) %> ago (<%= key.expires_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>)">
+          Expired <%= expires_on %>
         </strong>
       <% else %>
-        <span title="<%= key.expires_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>">
-          Expires in <%= time_ago_in_words(key.expires_at) %>
+        <span title="In <%= time_ago_in_words(key.expires_at) %> (<%= key.expires_at.strftime('%Y-%m-%d %H:%M:%S %Z') %>)">
+          <%= expires_on %>
         </span>
       <% end %>
     <% else %>
-      <em>Never expires</em>
+      <em>Never</em>
     <% end %>
   </td>
 

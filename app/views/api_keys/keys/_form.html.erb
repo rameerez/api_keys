@@ -52,20 +52,28 @@
       <%= form.text_field :name, placeholder: "e.g., myproject-production-key" %>
     </div>
 
+    <%# The expiration picker: 1 day, 7 days, 30 days, 1 year, Never, Custom %>
+    <%# (config.expiration_options). Like OpenAI's, it asks for a choice instead %>
+    <%# of defaulting to one; the hint below it says the date it means. %>
+    <% offers_custom = ApiKeys::ExpirationOptions.custom_offered? %>
+    <% custom_chosen = offers_custom && api_key.expires_at_preset == ApiKeys::ExpirationOptions::CUSTOM %>
     <div data-api-keys-expiration>
-      <%= form.label :expires_at_preset, "Expiration" %>
+      <%# Explicit ids: form_with leaves them out where form_with_generates_ids is off. %>
+      <%= form.label :expires_at_preset, "Expiration", for: "api_key_expires_at_preset" %>
       <%= form.select :expires_at_preset,
-          options_for_select([
-            ["No Expiration", "no_expiration"],
-            ["7 days", "7_days"],
-            ["30 days", "30_days"],
-            ["60 days", "60_days"],
-            ["90 days", "90_days"],
-            ["365 days", "365_days"] # Common presets
-          ], api_key.expires_at_preset.presence || (api_key.expires_at.present? ? nil : "no_expiration")), # Default selection
-          {}, # html options
-          {} # data attributes
-      %>
+          options_for_select(ApiKeys::ExpirationOptions.choices(include_custom: offers_custom, preview: true),
+                             api_key.expires_at_preset),
+          { prompt: "Select an expiration" },
+          { required: true, id: "api_key_expires_at_preset" } %>
+      <% if offers_custom %>
+        <%= tag.div class: "api-keys-custom-expiration", data: { api_keys_custom_expiration: "" }, hidden: !custom_chosen do %>
+          <%= form.label :expires_on, "Expires on", for: "api_key_expires_on" %>
+          <%= form.date_field :expires_on, value: api_key.expires_on, required: custom_chosen, disabled: !custom_chosen,
+                              id: "api_key_expires_on",
+                              **ApiKeys::ExpirationOptions.custom_date_range %>
+        <% end %>
+      <% end %>
+      <small class="api-keys-form-help" data-api-keys-expiration-hint aria-live="polite" hidden></small>
     </div>
 
     <%# The offered scopes are the owner's default scopes. The controller reads %>
@@ -124,6 +132,13 @@
     <div>
       <%= form.label :name, "Key Name (optional)" %>
       <%= form.text_field :name %>
+    </div>
+
+    <%# An expiration is set when the key is created and cannot change. %>
+    <div class="api-keys-expiration-summary">
+      <p><strong>Expiration</strong></p>
+      <span title="<%= api_key.expires_at&.strftime('%Y-%m-%d %H:%M:%S %Z') %>"><%= api_key_expiration_label(api_key) %></span>
+      <small class="api-keys-form-help">A key's expiration is set when it is created. To change it, create a new key and revoke this one.</small>
     </div>
 
     <%# A `scopes: :ceiling` key is authorized by its type's live permissions and %>
@@ -195,7 +210,7 @@
   </div>
 <% end %>
 
-<% if !api_key.persisted? && ApiKeys.configuration.key_types.present? %>
+<% unless api_key.persisted? %>
   <% key_type_policies = ApiKeys.configuration.key_types.to_h do |type, config| %>
     <% [type.to_s, {
       restrictions: ApiKeys::ApiKey.restriction_kinds_for(config).map(&:to_s),
@@ -206,11 +221,49 @@
   <script nonce="<%= content_security_policy_nonce %>">
     (() => {
       const form = document.getElementById("api-keys-key-form");
-      const keyType = form && form.querySelector("#api_key_key_type");
-      if (!form || !keyType) return;
+      if (!form) return;
 
+      // The expiration picker: show the date field only for Custom, and say
+      // in words when the chosen key would expire.
+      const expiration = form.querySelector("#api_key_expires_at_preset");
+      const customExpiration = form.querySelector("[data-api-keys-custom-expiration]");
+      const customDate = customExpiration && customExpiration.querySelector("input");
+      const hint = form.querySelector("[data-api-keys-expiration-hint]");
+      const longDate = (isoDate) => new Date(isoDate + "T00:00:00").toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+
+      const updateExpiration = () => {
+        if (!expiration) return;
+        const custom = !expiration.disabled && expiration.value === "custom";
+        if (customDate) {
+          customExpiration.hidden = !custom;
+          customDate.disabled = !custom;
+          customDate.required = custom;
+        }
+        if (!hint) return;
+
+        const option = expiration.selectedOptions[0];
+        let text = "";
+        if (expiration.disabled) {
+          text = "";
+        } else if (option && option.dataset.apiKeysExpiresOn) {
+          text = "This key will expire on " + option.dataset.apiKeysExpiresOn + ".";
+        } else if (expiration.value === "no_expiration") {
+          text = "This key will never expire.";
+        } else if (custom && customDate && customDate.value) {
+          text = "This key will expire at the end of " + longDate(customDate.value) + ".";
+        }
+        hint.textContent = text;
+        hint.hidden = !text;
+      };
+
+      if (expiration) expiration.addEventListener("change", updateExpiration);
+      if (customDate) customDate.addEventListener("input", updateExpiration);
+
+      // Key types: show the fields the chosen type allows.
+      const keyType = form.querySelector("#api_key_key_type");
       const policies = <%= raw json_escape(key_type_policies.to_json) %>;
       const updatePolicyFields = () => {
+        if (!keyType) return;
         const policy = policies[keyType.value];
 
         form.querySelectorAll("[data-api-keys-restriction-kind]").forEach((container) => {
@@ -237,8 +290,9 @@
         });
       };
 
-      keyType.addEventListener("change", updatePolicyFields);
+      if (keyType) keyType.addEventListener("change", () => { updatePolicyFields(); updateExpiration(); });
       updatePolicyFields();
+      updateExpiration();
     })();
   </script>
 <% end %>

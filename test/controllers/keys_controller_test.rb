@@ -64,7 +64,9 @@ module ApiKeys
       assert_includes response.headers["Cache-Control"], "no-store"
       assert_includes response.headers["Cache-Control"], "private"
       assert_equal "no-cache", response.headers["Pragma"]
-      assert_equal "no-referrer", response.headers["Referrer-Policy"]
+      # same-origin, not no-referrer: under no-referrer Chrome posts the
+      # dashboard's forms with `Origin: null`, which Rails' origin check refuses.
+      assert_equal "same-origin", response.headers["Referrer-Policy"]
       assert_equal "nosniff", response.headers["X-Content-Type-Options"]
       assert_equal "DENY", response.headers["X-Frame-Options"]
       assert_equal "camera=(), microphone=(), geolocation=()", response.headers["Permissions-Policy"]
@@ -1281,6 +1283,260 @@ module ApiKeys
       assert_redirected_to keys_path
       assert_equal KeysController::ALREADY_SHOWN_ALERT, flash[:alert], "a copied session gets nothing"
       assert_nil @controller.instance_variable_get(:@plaintext_token)
+    end
+  end
+end
+
+module ApiKeys
+  # The expiration picker on the new key form (0.10.0): 1 day, 7 days, 30 days,
+  # 1 year, Never, or a custom date, chosen on purpose.
+  class KeysControllerExpirationTest < ActionController::TestCase
+    include KeysControllerTestSetup
+    tests ApiKeys::KeysController
+
+    test "the new key form asks when the key expires, the industry-standard way" do
+      get :new
+
+      assert_response :success
+      assert_select "label[for=api_key_expires_at_preset]", text: "Expiration"
+      assert_select "select[name='api_key[expires_at_preset]'][required]" do
+        assert_select "option", 7
+        assert_select "option[value='']", text: "Select an expiration"
+        assert_select "option:not([value=''])", 6
+        assert_select "option[value='1_day']", text: "1 day"
+        assert_select "option[value='7_days']", text: "7 days"
+        assert_select "option[value='30_days']", text: "30 days"
+        assert_select "option[value='1_year']", text: "1 year"
+        assert_select "option[value='no_expiration']", text: "Never"
+        assert_select "option[value='custom']", text: "Custom"
+        assert_select "option[selected]", 0
+      end
+      assert_select "[data-api-keys-custom-expiration][hidden] input[type=date][name='api_key[expires_on]']"
+    end
+
+    test "each choice previews the date the key would expire" do
+      travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+        get :new
+      end
+
+      assert_select "option[value='1_day'][data-api-keys-expires-on='November 14, 2026']"
+      assert_select "option[value='1_year'][data-api-keys-expires-on='November 13, 2027']"
+      assert_select "option[value='no_expiration']:not([data-api-keys-expires-on])"
+      assert_select "[data-api-keys-expiration-hint]"
+      assert_select "input[type=date][name='api_key[expires_on]'][min='2026-11-14'][max='2036-11-10']"
+    end
+
+    test "creating a key that expires in 1 day" do
+      freeze_time do
+        post :create, params: { api_key: { name: "Day Key", expires_at_preset: "1_day" } }
+
+        key = @user.api_keys.last
+        assert_redirected_to key_path(key)
+        assert_equal 1.day.from_now, key.expires_at
+      end
+    end
+
+    test "creating a key that expires in 1 year" do
+      freeze_time do
+        post :create, params: { api_key: { name: "Year Key", expires_at_preset: "1_year" } }
+
+        assert_equal 1.year.from_now, @user.api_keys.last.expires_at
+      end
+    end
+
+    test "creating a key that never expires" do
+      post :create, params: { api_key: { name: "Forever Key", expires_at_preset: "no_expiration" } }
+
+      assert_redirected_to key_path(@user.api_keys.last)
+      assert_nil @user.api_keys.last.expires_at
+    end
+
+    test "creating a key with a custom date expires at the end of that day" do
+      travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+        post :create, params: { api_key: { name: "Custom Key", expires_at_preset: "custom", expires_on: "2027-01-31" } }
+
+        assert_redirected_to key_path(@user.api_keys.last)
+        assert_equal Time.zone.local(2027, 1, 31, 23, 59, 59), @user.api_keys.last.expires_at
+      end
+    end
+
+    test "a date submitted without Custom is ignored" do
+      freeze_time do
+        post :create, params: { api_key: { name: "Week Key", expires_at_preset: "7_days", expires_on: "2030-01-01" } }
+
+        assert_equal 7.days.from_now, @user.api_keys.last.expires_at
+      end
+    end
+
+    test "Custom without a date asks for one and keeps what was typed" do
+      post :create, params: { api_key: { name: "No Date", expires_at_preset: "custom", expires_on: "" } }
+
+      assert_response :unprocessable_entity
+      assert_empty @user.api_keys
+      assert_includes flash[:alert], "Pick the date the key expires."
+      assert_select "option[value='custom'][selected]"
+      assert_select "[data-api-keys-custom-expiration]:not([hidden])"
+      assert_select "input[name='api_key[name]'][value='No Date']"
+    end
+
+    test "a custom date in the past is refused and shown again" do
+      travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+        post :create, params: { api_key: { name: "Past", expires_at_preset: "custom", expires_on: "2026-11-01" } }
+      end
+
+      assert_response :unprocessable_entity
+      assert_empty @user.api_keys
+      assert_includes flash[:alert], "Expires at can't be in the past"
+      assert_select "option[value='custom'][selected]"
+      assert_select "input[name='api_key[expires_on]'][value='2026-11-01']"
+    end
+
+    test "a custom date past ten years is refused" do
+      travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+        post :create, params: { api_key: { name: "Far", expires_at_preset: "custom", expires_on: "2040-01-01" } }
+      end
+
+      assert_response :unprocessable_entity
+      assert_includes flash[:alert], "A key can expire at most 10 years from now."
+    end
+
+    test "a failed creation keeps the chosen preset selected" do
+      post :create, params: { api_key: { name: "bad name!", expires_at_preset: "30_days" } }
+
+      assert_response :unprocessable_entity
+      assert_select "option[value='30_days'][selected]"
+      assert_select "[data-api-keys-custom-expiration][hidden]"
+    end
+
+    test "a request without a choice keeps the 0.9 behavior while Never is offered" do
+      post :create, params: { api_key: { name: "Scripted Key" } }
+
+      assert_redirected_to key_path(@user.api_keys.last)
+      assert_nil @user.api_keys.last.expires_at
+    end
+
+    test "a preset the form never offered is refused, not guessed" do
+      post :create, params: { api_key: { name: "Odd", expires_at_preset: "60_days" } }
+
+      assert_response :unprocessable_entity
+      assert_empty @user.api_keys
+      assert_includes flash[:alert], "Choose one of the offered expirations."
+    end
+
+    test "an app that takes Never off the list gets no key that never expires" do
+      ApiKeys.configuration.expiration_options = [7.days, 30.days, :custom]
+
+      get :new
+      assert_select "option[value='no_expiration']", 0
+
+      post :create, params: { api_key: { name: "Sneaky", expires_at_preset: "no_expiration" } }
+      assert_response :unprocessable_entity
+      assert_includes flash[:alert], "Choose one of the offered expirations."
+
+      post :create, params: { api_key: { name: "Sneakier" } }
+      assert_response :unprocessable_entity
+      assert_includes flash[:alert], "Choose when this key expires."
+
+      assert_empty @user.api_keys
+    end
+
+    test "an app without :custom offers no date field and refuses Custom" do
+      ApiKeys.configuration.expiration_options = [7.days, :never]
+
+      get :new
+      assert_select "option[value='custom']", 0
+      assert_select "input[name='api_key[expires_on]']", 0
+
+      post :create, params: { api_key: { name: "Custom", expires_at_preset: "custom", expires_on: "2030-01-01" } }
+      assert_response :unprocessable_entity
+      assert_empty @user.api_keys
+    end
+
+    test "with config.expire_after, the never option offers that lifetime by name" do
+      ApiKeys.configuration.expire_after = 90.days
+
+      get :new
+      assert_select "option[value='no_expiration']", text: "90 days (default)"
+
+      freeze_time do
+        post :create, params: { api_key: { name: "Defaulted", expires_at_preset: "no_expiration" } }
+        assert_equal 90.days.from_now, @user.api_keys.last.expires_at
+
+        post :create, params: { api_key: { name: "Unchosen" } }
+        assert_equal 90.days.from_now, @user.api_keys.last.expires_at, "a missing choice still gets expire_after"
+      end
+    end
+
+    test "a key type that cannot expire needs no choice even when Never is not offered" do
+      ApiKeys.configure do |config|
+        config.key_types = { permanent: { prefix: "pk", permissions: %w[read], public: true, revocable: false } }
+        config.environments = { test: { prefix_segment: "test" } }
+        config.current_environment = :test
+        config.expiration_options = [7.days, :custom]
+      end
+
+      post :create, params: { api_key: { name: "Permanent", key_type: "permanent" } }
+
+      assert_redirected_to key_path(@user.api_keys.last)
+      assert_nil @user.api_keys.last.expires_at
+    end
+
+    test "the picker script runs without key types, under the dashboard's CSP nonce" do
+      get :new
+
+      assert_match(/<script nonce="[^"]+">[^<]*data-api-keys-custom-expiration/m, response.body)
+    end
+
+    test "the token page says when the new key expires" do
+      travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+        post :create, params: { api_key: { name: "Dated", expires_at_preset: "30_days" } }
+        get :show, params: { id: @user.api_keys.last.id }
+      end
+
+      assert_response :success
+      assert_select ".api-keys-token-expiration", text: /This key expires on December 13, 2026/
+    end
+
+    test "the token page says when the new key never expires" do
+      post :create, params: { api_key: { name: "Forever", expires_at_preset: "no_expiration" } }
+      get :show, params: { id: @user.api_keys.last.id }
+
+      assert_select ".api-keys-token-expiration", text: /This key never expires/
+    end
+
+    test "the keys list shows the date each key expires" do
+      travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+        @user.create_api_key!(name: "Dated", expires_in: 30.days)
+        @user.create_api_key!(name: "Forever")
+        expired = @user.create_api_key!(name: "Old", expires_in: 1.day)
+        expired.update_column(:expires_at, Time.zone.local(2026, 11, 1, 8))
+
+        get :index
+      end
+
+      assert_select "td.api-keys-cell-expires span[title^='In ']", text: "Dec 13, 2026"
+      assert_select "td.api-keys-cell-expires em", text: "Never"
+      assert_select "td.api-keys-cell-expires .api-keys-expired-text", text: "Expired Nov 1, 2026"
+    end
+
+    test "the edit form shows the expiration it cannot change" do
+      travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+        key = @user.create_api_key!(name: "Dated", expires_in: 7.days)
+        get :edit, params: { id: key.id }
+      end
+
+      assert_select ".api-keys-expiration-summary", text: /Expires on November 20, 2026/
+      assert_select "select[name='api_key[expires_at_preset]']", 0
+    end
+
+    test "the expiration of a key cannot be changed by an update" do
+      key = @user.create_api_key!(name: "Fixed", expires_in: 7.days)
+
+      patch :update, params: { id: key.id, api_key: { name: "Fixed", expires_at_preset: "no_expiration",
+                                                     expires_on: "2030-01-01", expires_at: "" } }
+
+      assert_redirected_to keys_path
+      assert_in_delta 7.days.from_now, key.reload.expires_at, 5
     end
   end
 end

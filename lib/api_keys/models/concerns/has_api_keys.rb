@@ -212,8 +212,16 @@ module ApiKeys
         #   When key_type is specified, scopes are filtered to only include those allowed
         #   by the key type's permissions ceiling. Blank values are automatically removed.
         # @param expires_at [Time, nil] Optional expiration timestamp.
-        # @param expires_at_preset [String, nil] Convenience param: "7_days", "30_days", "no_expiration", etc.
-        #   If provided, this is parsed into expires_at. Takes precedence over expires_at if both given.
+        # @param expires_in [ActiveSupport::Duration, nil] How long the key lives:
+        #   `expires_in: 30.days`. Whole hours, days, weeks, months or years, up
+        #   to ten years. Pass it or expires_at, not both.
+        # @param expires_at_preset [String, nil] What the expiration picker
+        #   submitted: "1_day", "30_days", "1_year", "never", "custom"... (see
+        #   ApiKeys::ExpirationOptions). Takes precedence over expires_at if both given.
+        # @param expires_on [String, Date, nil] The day the key expires, at
+        #   23:59:59 ("2027-01-31"): the picker's "Custom" date. Used alone or
+        #   with expires_at_preset: "custom"; beside another preset it is
+        #   ignored, as a form submits the field whatever was chosen.
         # @param metadata [Hash, nil] Optional metadata hash.
         # @param key_type [Symbol, nil] The key type (e.g., :publishable, :secret).
         #   Must be defined in ApiKeys.configuration.key_types if provided.
@@ -230,19 +238,16 @@ module ApiKeys
         # @return [ApiKeys::ApiKey] The newly created ApiKey instance. The plaintext token
         #                           is available via the `#token` attribute on this instance
         #                           *only until it's reloaded*.
-        def create_api_key!(name: nil, scopes: nil, expires_at: nil, expires_at_preset: nil, metadata: nil,
-                            key_type: nil, environment: nil, restrictions: nil, allowed_origins: nil, allowed_ips: nil,
-                            created_by: nil)
+        def create_api_key!(name: nil, scopes: nil, expires_at: nil, expires_in: nil, expires_at_preset: nil,
+                            expires_on: nil, metadata: nil, key_type: nil, environment: nil, restrictions: nil,
+                            allowed_origins: nil, allowed_ips: nil, created_by: nil)
           config = ApiKeys.configuration
 
           if created_by && !ApiKeys::ApiKey.created_by_columns?
             raise ApiKeys::Errors::CreatedByMigrationRequiredError
           end
 
-          # Parse expires_at_preset if provided (takes precedence over expires_at)
-          if expires_at_preset.present?
-            expires_at = ApiKeys::Helpers::ExpirationOptions.parse(expires_at_preset)
-          end
+          expires_at = resolve_expiration(expires_at, expires_in, expires_at_preset, expires_on)
 
           # Auto-clean scopes: remove blank values from arrays (common when using form checkboxes)
           if scopes.is_a?(Array)
@@ -332,6 +337,34 @@ module ApiKeys
 
         def key_types_feature_enabled?(config)
           config.key_types.present? && config.key_types.any?
+        end
+
+        # The one expiration the caller asked for. expires_at_preset wins over
+        # expires_at, as it always has. expires_on: is the picker's Custom
+        # date: a form submits it ("" or a date) whatever was chosen, so it
+        # counts only with the "custom" preset or alone, and a blank one is
+        # no date at all. expires_in: combines with nothing, and expires_on:
+        # alone combines with nothing, so a key never quietly gets an
+        # expiration its caller did not mean.
+        def resolve_expiration(expires_at, expires_in, preset, expires_on)
+          custom = ApiKeys::Helpers::ExpirationOptions::CUSTOM
+          preset = preset.presence
+          expires_on = nil if expires_on.respond_to?(:empty?) && expires_on.to_s.strip.empty?
+          expires_on = nil unless preset.nil? || preset == custom
+          preset ||= custom unless expires_on.nil?
+
+          conflicting = (!expires_in.nil? && !(preset.nil? && expires_at.nil?)) ||
+                        (!expires_on.nil? && !expires_at.nil?)
+          raise ArgumentError, "Pass one expiration: expires_at, expires_in, expires_at_preset, or expires_on" if conflicting
+
+          return ApiKeys::Helpers::ExpirationOptions.parse(preset, on: expires_on) if preset
+          return expires_at if expires_in.nil?
+
+          unless ApiKeys::Helpers::ExpirationOptions.preset_for(expires_in)
+            raise ArgumentError, "expires_in must be whole hours, days, weeks, months or years, up to ten years (e.g. 30.days)"
+          end
+
+          expires_in.from_now
         end
 
         def validate_key_type!(key_type, config)

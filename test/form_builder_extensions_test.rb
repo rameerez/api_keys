@@ -37,6 +37,29 @@ module ApiKeys
       def select(*arguments)
         arguments
       end
+
+      def date_field(*arguments)
+        arguments
+      end
+    end
+
+    test "expiration select asks for a choice, the way OpenAI's key form does" do
+      arguments = FakeBuilder.new.api_key_expiration_select
+
+      assert_equal :expires_at_preset, arguments[0]
+      assert_nil arguments[1][:selected]
+      assert_equal %w[1_day 7_days 30_days 1_year no_expiration], arguments[1][:options].map { |option| option[1] }
+      assert_equal "Select an expiration", arguments[2][:prompt]
+      assert_equal true, arguments[3][:required]
+    end
+
+    test "expiration select still matches a form that preselects no_expiration under expire_after" do
+      ApiKeys.configuration.expire_after = 90.days
+      options = FakeBuilder.new.api_key_expiration_select(selected: "no_expiration")[1][:options]
+
+      assert_includes options.map { |option| option[1] }, "no_expiration"
+    ensure
+      ApiKeys.reset_configuration!
     end
 
     test "expiration select honors a selected preset and preserves options" do
@@ -47,9 +70,39 @@ module ApiKeys
       assert_equal :expires_at_preset, arguments[0]
       assert_equal "30_days", arguments[1][:selected]
       assert_equal({ include_blank: true }, arguments[2])
-      assert_equal({ class: "expiry" }, arguments[3])
-      assert_equal ApiKeys::ExpirationOptions.default_value,
-                   builder.api_key_expiration_select[1][:selected]
+      assert_equal({ class: "expiry", required: true }, arguments[3])
+    end
+
+    test "expiration select can turn off the prompt and the required attribute" do
+      arguments = FakeBuilder.new.api_key_expiration_select({ prompt: false }, required: false)
+
+      assert_equal({}, arguments[2])
+      assert_equal({ required: false }, arguments[3])
+    end
+
+    test "expiration select offers Custom when the form renders the date field" do
+      arguments = FakeBuilder.new.api_key_expiration_select(custom: true)
+
+      assert_equal "custom", arguments[1][:options].last[1]
+      refute arguments[2].key?(:custom)
+    end
+
+    test "expiration select previews each choice's date" do
+      travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+        options = FakeBuilder.new.api_key_expiration_select[1][:options]
+
+        assert_equal ["1 day", "1_day", { "data-api-keys-expires-on" => "November 14, 2026" }], options.first
+        assert_equal ["Never", "no_expiration"], options.last
+      end
+    end
+
+    test "expiration date field picks a day from tomorrow to ten years out" do
+      travel_to Time.zone.local(2026, 11, 13, 9, 30) do
+        arguments = FakeBuilder.new.api_key_expiration_date_field(class: "date")
+
+        assert_equal :expires_on, arguments[0]
+        assert_equal({ min: "2026-11-14", max: "2036-11-10", class: "date" }, arguments[1])
+      end
     end
 
     test "scope data supports every checked policy" do

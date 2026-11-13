@@ -248,6 +248,14 @@ ApiKeys.configure do |config|
   # Default: nil
   # config.expire_after = 90.days
 
+  # What the expiration picker offers when someone creates a key, in order:
+  # durations (whole hours, days, weeks, months or years, up to ten years),
+  # :never, and :custom (a date picker). Leave out :never to make every key
+  # created from the dashboard expire. While expire_after is set, :never shows
+  # that lifetime instead ("90 days (default)").
+  # Default: [1.day, 7.days, 30.days, 1.year, :never, :custom]
+  # config.expiration_options = [1.day, 7.days, 30.days, 90.days, :custom]
+
   # Default scopes to assign to newly created keys if none are specified.
   # Can be overridden per-model with `default_scopes` in the `has_api_keys` block.
   # Default: []

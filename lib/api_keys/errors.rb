@@ -5,6 +5,12 @@ module ApiKeys
     # Base error class for all ApiKeys errors
     class BaseError < StandardError; end
 
+    # Raised when a key's expiration cannot be understood: "Custom" without a
+    # readable date, or a date past the ten-year limit. An ArgumentError, as
+    # every invalid expiration preset has always been; its message is written
+    # for the person filling in the form.
+    class InvalidExpirationError < ArgumentError; end
+
     # Raised when attempting to revoke or destroy a non-revocable key
     class KeyNotRevocableError < BaseError
       def initialize(message = "This API key cannot be revoked or deleted")

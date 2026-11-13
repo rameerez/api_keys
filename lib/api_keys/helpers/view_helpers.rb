@@ -53,6 +53,21 @@ module ApiKeys
         REFUSAL_REASONS.fetch(api_key.last_refusal_code.to_s, UNKNOWN_REFUSAL_REASON)
       end
 
+      # Says when a key expires, in plain English.
+      #
+      # @param api_key [ApiKeys::ApiKey] The API key
+      # @return [String] "Expires on December 13, 2026", "Expired on
+      #   November 1, 2026", or "Never expires"
+      #
+      # @example
+      #   api_key_expiration_label(@key) # => "Expires on December 13, 2026"
+      #
+      def api_key_expiration_label(api_key)
+        return "Never expires" if api_key.expires_at.nil?
+
+        "#{api_key.expired? ? 'Expired' : 'Expires'} on #{api_key.expires_at.strftime(ApiKeys::Helpers::ExpirationOptions::DATE_LABEL)}"
+      end
+
       # Returns the status of an API key as a symbol.
       #
       # @param api_key [ApiKeys::ApiKey] The API key

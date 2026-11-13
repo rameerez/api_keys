@@ -56,6 +56,22 @@ module ApiKeys
     attr_reader :default_max_keys_per_owner, :require_key_name
     attr_reader :expire_after, :default_scopes, :track_requests_count
 
+    # Expiration choices
+    #
+    # @!attribute [rw] expiration_options
+    #   @return [Array<ActiveSupport::Duration, Symbol>] What the expiration
+    #     picker offers when someone creates a key, in order: durations (whole
+    #     hours, days, weeks, months or years, up to ten years), `:never`, and
+    #     `:custom` (a date picker). Take `:never` out to make every key expire.
+    #     While `config.expire_after` is set, `:never` is offered under that
+    #     lifetime's name ("90 days (default)"), because such a key expires anyway.
+    #     The stock dashboard enforces this list; a controller of your own
+    #     checks a submitted preset with `ApiKeys::ExpirationOptions.offered?`.
+    #     Default: `[1.day, 7.days, 30.days, 1.year, :never, :custom]`.
+    #   @example Every key expires within 90 days
+    #     config.expiration_options = [1.day, 7.days, 30.days, 90.days, :custom]
+    attr_reader :expiration_options
+
     # Performance
     attr_reader :cache_ttl, :stats_update_interval
 
@@ -247,6 +263,20 @@ module ApiKeys
       end
 
       @expire_after = value
+    end
+
+    def expiration_options=(value)
+      choices = Array(value).map { |choice| choice.is_a?(String) ? choice.to_sym : choice } if value.is_a?(Array)
+      options = ApiKeys::Helpers::ExpirationOptions
+      valid = choices.present? && choices.uniq.length == choices.length && choices.all? do |choice|
+        options::CHOICES.include?(choice) || options.preset_for(choice)
+      end
+      unless valid
+        raise ArgumentError, "expiration_options must list durations (whole hours, days, weeks, months or years, " \
+                             "up to ten years), :never and :custom, each once"
+      end
+
+      @expiration_options = choices.freeze
     end
 
     def default_scopes=(value)
@@ -684,6 +714,7 @@ module ApiKeys
       @default_max_keys_per_owner = nil # No global key limit per owner
       @require_key_name = false # Don't require names for keys globally
       @expire_after = nil # Keys do not expire by default (e.g., 90.days)
+      @expiration_options = [1.day, 7.days, 30.days, 1.year, :never, :custom].freeze # The picker, like OpenAI's
       @default_scopes = [].freeze # No default scopes assigned globally
 
       # Performance
