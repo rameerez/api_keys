@@ -34,7 +34,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Ruby ${{ matrix.ruby_version }}
-        uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1
+        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1
         with:
           ruby-version: ${{ matrix.ruby_version }}
           bundler-cache: true
@@ -113,7 +113,7 @@ jobs:
         run: dpkg -s libmysqlclient-dev >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y libmysqlclient-dev)
 
       - name: Set up Ruby
-        uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1
+        uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1
         with:
           ruby-version: "3.4"
           bundler-cache: true
