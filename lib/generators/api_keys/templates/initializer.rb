@@ -419,6 +419,22 @@ ApiKeys.configure do |config|
   # config.before_authentication = ->(context) { Rails.logger.info "Auth request: #{context[:request_uuid]}" }
   # config.after_authentication = ->(context) { Analytics.track_auth(context) }
 
+  # Called in the request, right after a refusal of an identified key (the
+  # request presented the key's real token and a policy said no: origin or IP
+  # lock, environment, missing scope, revoked, expired, untrusted). Gets the
+  # ApiKey, the error_code (a Symbol) and the request. Never called for a
+  # missing or unknown token. It cannot change the refusal, and a raise is
+  # rescued and logged. Keep it to a job enqueue: it runs on every refusal.
+  # The origin host in the request is attacker-controlled: validate it, and
+  # never treat it as proof that the site belongs to the key's owner.
+  #
+  # Default: nil (does nothing)
+  # config.on_key_refused = ->(api_key:, error_code:, request:) do
+  #   next unless error_code == :origin_not_allowed
+  #
+  #   RefusedOriginMailJob.perform_later(api_key.id, ApiKeys::Restrictions.extract_origin_host(request))
+  # end
+
   # ============================================================================
   # PERFORMANCE
   # ============================================================================

@@ -100,7 +100,7 @@ module ApiKeys
             status: :forbidden,
             required_scope: scope
           )
-          record_key_refusal(refused_key, :missing_scope)
+          after_key_refusal(refused_key, :missing_scope)
         elsif !api_key_trusted?(@current_api_key)
           log_debug "[ApiKeys Auth] Trust check failed for key ID #{@current_api_key.id}."
           after_auth_context[:required_scope_check] = { required: scope, passed: true } if scope
@@ -113,7 +113,7 @@ module ApiKeys
             message: "API key is no longer trusted: the person behind it no longer stands behind it",
             status: :forbidden
           )
-          record_key_refusal(refused_key, :untrusted_key)
+          after_key_refusal(refused_key, :untrusted_key)
         else
           after_auth_context[:required_scope_check] = { required: scope, passed: true } if scope
           # Authentication and scope check successful, enqueue stats update
@@ -125,7 +125,7 @@ module ApiKeys
         status = FORBIDDEN_ERROR_CODES.include?(result.error_code) ? :forbidden : :unauthorized
         render_unauthorized(error_code: result.error_code, message: result.message, status: status)
         # Only identified refusals carry a key; lookup failures have none to stamp.
-        record_key_refusal(result.api_key, result.error_code) if result.api_key
+        after_key_refusal(result.api_key, result.error_code) if result.api_key
       end
 
       # Enqueue after_authentication callback asynchronously regardless of success/failure
@@ -218,6 +218,28 @@ module ApiKeys
         release_stats_enqueue(:used, current_api_key.id)
         log_error "[ApiKeys Auth] Failed to enqueue UpdateStatsJob for key #{current_api_key.id} (#{error.class})."
       end
+    end
+
+    # Everything that follows a refusal of an identified key, once the
+    # response is rendered: the gem's refusal stats, then the host's
+    # `config.on_key_refused`. Both are called separately, so a controller
+    # that overrides `record_key_refusal` (and calls super) keeps working and
+    # the configured callback still runs.
+    def after_key_refusal(api_key, error_code)
+      record_key_refusal(api_key, error_code)
+      run_on_key_refused(api_key, error_code)
+    end
+
+    # Calls `config.on_key_refused` with the refused key, the code the client
+    # received and the request. Never raises and never renders: the refusal
+    # has already been rendered, and the callback is not given the controller.
+    def run_on_key_refused(api_key, error_code)
+      callback = ApiKeys.configuration.on_key_refused
+      return unless callback && api_key
+
+      callback.call(api_key: api_key, error_code: error_code.to_sym, request: request)
+    rescue StandardError => error
+      log_error "[ApiKeys Auth] on_key_refused failed for key #{api_key&.id} (#{error.class})."
     end
 
     # Enqueues the refusal half of UpdateStatsJob for a key that presented its

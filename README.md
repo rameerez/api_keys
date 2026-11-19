@@ -1540,6 +1540,68 @@ The dashboard's key page then says *"Requests are arriving but refused: last at 
 - `enable_async_operations = false` turns them off with every other job.
 - New installs get the columns from the start. Existing installs run `rails generate api_keys:add_key_activity`; until then, authentication is unchanged and refusals are not recorded.
 
+### Reacting to a refused key: `on_key_refused`
+
+The columns above tell the owner when they come back to the dashboard. To act at the moment of a refusal (email the owner, post to your chat, count it in your own analytics), give the gem a callable:
+
+```ruby
+# config/initializers/api_keys.rb
+config.on_key_refused = ->(api_key:, error_code:, request:) do
+  # ...
+end
+```
+
+`authenticate_api_key!` calls it for every refusal of an identified key, the same refusals that are recorded above: `origin_not_allowed`, `ip_not_allowed`, `restriction_misconfigured`, `environment_mismatch`, `unknown_environment`, `unknown_key_type`, `environment_misconfigured`, `revoked_key`, `expired_key`, `missing_scope` and `untrusted_key`. It receives the `ApiKeys::ApiKey`, the `error_code` the client got (a Symbol) and the `ActionDispatch::Request`.
+
+- It is never called for a missing, malformed or unknown token. Those name no key, so nobody can make it run for a key without holding that key's token.
+- It runs after the refusal has been rendered and its statistics enqueued, and it is not given the controller. It cannot change the response.
+- An exception in it is rescued and logged (the class only, `[ApiKeys Auth] on_key_refused failed for key 42 (RuntimeError)`), and the client gets the same refusal as without it.
+- It runs inside the request, synchronously, and is not debounced: a client hammering a refused key calls it on every request. Keep it to an in-memory check and a job enqueue, and do the rest (database reads, mail) in the job. It does not depend on `enable_async_operations`.
+- Unlike `after_authentication`, which runs later in a job and therefore only gets serializable ids, this one gets the request. Read what you need from it here; do not pass the request to a job.
+
+#### Example: email the owner when their public key is refused on a site that is not on its list
+
+```ruby
+# config/initializers/api_keys.rb
+config.on_key_refused = ->(api_key:, error_code:, request:) do
+  next unless error_code == :origin_not_allowed
+
+  host = ApiKeys::Restrictions.extract_origin_host(request) # nil from curl or a server
+  RefusedOriginMailJob.perform_later(api_key.id, host)
+end
+```
+
+```ruby
+# app/jobs/refused_origin_mail_job.rb
+class RefusedOriginMailJob < ApplicationJob
+  def perform(api_key_id, host)
+    api_key = ApiKeys::ApiKey.find_by(id: api_key_id) or return
+    return unless api_key.active? && api_key.allowed_origins.any?
+
+    # The host is attacker-controlled (see below). Mail about a plain DNS
+    # name only, and nothing at all for anything else.
+    if host
+      return unless host.bytesize <= 253 && host.match?(/\A(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}\z/)
+      return unless PublicSuffix.valid?(host, default_rule: nil) # not github.io or co.uk themselves (public_suffix gem)
+      return if api_key.restrictions.origin_allowed?(host) # the owner added it since
+    end
+
+    # Throttle: once per key and host, and a cap per key (store it on the key's metadata).
+    RefusedOriginMailer.with(api_key: api_key, host: host).notice.deliver_later
+  end
+end
+```
+
+**The origin host is chosen by the attacker.** A public key is in page source, so anyone can copy it and send it with any `Origin` or `Referer` header, from `curl` or their own site. A refused host proves nothing about who owns that site, and certainly not that it belongs to the key's owner. So:
+
+- Validate it before you use it: a plain DNS name of a sane length, no wildcard, and not a public suffix like `github.io` or `co.uk` that nobody owns (the [`public_suffix`](https://github.com/weppos/publicsuffix-ruby) gem knows the list). Mail nothing when it fails.
+- Never let a mail or a page add it to the allowlist by itself. Say "if `example.com` is your site, you can add it", and make adding it an authenticated action by someone allowed to edit the key. If you link to that action, sign the host into the link, bound to the key, with an expiry, so nobody can craft a link that offers to allow their own site on another customer's key.
+- Do not make the host a link in the mail or put it in the subject line.
+- Throttle hard: per key and host, a maximum number of hosts per key, and per owner per day. Otherwise anyone holding the key can send a new made-up `Origin` every minute and turn your app into a mail cannon pointed at your customer.
+- Never put the key's allowlist in the mail. The refusal response does not echo it either.
+
+Apps that overrode the private `record_key_refusal(api_key, error_code)` to get here can keep that override: it is still called, with `super` still recording the refusal, and `on_key_refused` runs after it. Moving to `on_key_refused` is recommended, since a private method can change without notice.
+
 ## Key Types: Stripe-style Publishable & Secret Keys
 
 For applications that distribute software with embedded API keys (desktop apps, mobile apps, CLI tools), you may want to differentiate between key types with different permission levels. The `api_keys` gem supports Stripe-style publishable/secret key types with optional test/live environment isolation.
@@ -1919,6 +1981,7 @@ The mounted dashboard renders only the expiration and request-restriction fields
 - IP restrictions inherit the truthfulness of their resolver. Behind a proxy that is the only way in, keep `request.remote_ip` and list the proxy in `trusted_proxies`. If Rails is reachable directly, resolve `request.remote_addr`, or callers can choose the address being checked with `X-Forwarded-For` (see [Resolving the client IP](#resolving-the-client-ip)). Only trust a CDN-supplied header when direct access to the origin is blocked.
 - Everything fails closed: a locked list plus an unreadable request context, an unknown policy kind, or malformed stored policy data is a refusal, never a pass.
 - Refusals never echo the configured allowlist back to the caller. Reflecting your domains to an unauthenticated attacker would be a reconnaissance gift. If you want a more explicit message, override it through i18n (`api_keys.errors.origin_not_allowed`).
+- To tell the key's owner about a refusal, use [`config.on_key_refused`](#reacting-to-a-refused-key-on_key_refused). The refused origin it can read from the request is whatever the caller sent: validate it, and never treat it as proof that the site belongs to the owner.
 - Restriction checks read the current database row on every request, cache or no cache. Tightening the origins of a leaked publishable key takes effect on the very next call.
 
 ## Enterprise-ready by design

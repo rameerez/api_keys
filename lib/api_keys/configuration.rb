@@ -111,6 +111,24 @@ module ApiKeys
     #     config.trusted_key_check = ->(api_key) { api_key.owner.managed_by?(api_key.created_by) }
     attr_reader :trusted_key_check
 
+    # Reacting to a refused key
+    #
+    # @!attribute [rw] on_key_refused
+    #   @return [#call, nil] Callable run when `authenticate_api_key!` refuses
+    #     a key it identified (the request presented the key's real token and a
+    #     policy said no: origin or IP lock, environment, missing scope,
+    #     revoked, expired, untrusted). It receives the keywords `api_key:`,
+    #     `error_code:` (a Symbol) and `request:`, after the refusal has been
+    #     rendered and recorded. It runs inside the request, so keep it to an
+    #     in-memory check and a job enqueue. A raise is rescued and logged: the
+    #     refusal the client gets never changes. Never called for a missing,
+    #     malformed or unknown token. nil (the default) does nothing.
+    #   @example Tell the owner when their public key is used on a site not on its list
+    #     config.on_key_refused = ->(api_key:, error_code:, request:) do
+    #       RefusedOriginJob.perform_later(api_key.id, ApiKeys::Restrictions.extract_origin_host(request)) if error_code == :origin_not_allowed
+    #     end
+    attr_reader :on_key_refused
+
     # Idempotency-Key, for tests only
     #
     # @!attribute [rw] idempotency_in_test_transactions
@@ -368,6 +386,12 @@ module ApiKeys
       raise ArgumentError, "trusted_key_check must be callable or nil" unless value.nil? || value.respond_to?(:call)
 
       @trusted_key_check = value
+    end
+
+    def on_key_refused=(value)
+      raise ArgumentError, "on_key_refused must be callable or nil" unless value.nil? || value.respond_to?(:call)
+
+      @on_key_refused = value
     end
 
     def client_ip_resolver=(value)
@@ -762,6 +786,9 @@ module ApiKeys
 
       # The person behind a key: no check, every valid key is trusted
       @trusted_key_check = nil
+
+      # Reacting to a refused key: nothing by default
+      @on_key_refused = nil
 
       # Idempotency-Key: refuse every open transaction (tests may opt out)
       @idempotency_in_test_transactions = false

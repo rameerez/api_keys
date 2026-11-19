@@ -1,3 +1,13 @@
+## [Unreleased]
+
+### Added
+
+- `config.on_key_refused`, a supported way to react to a refusal of an identified key. `authenticate_api_key!` calls it with `api_key:`, `error_code:` (a Symbol) and `request:` after the refusal is rendered and recorded, for every refusal whose key was identified (origin or IP lock, environment, key type, revoked, expired, missing scope, untrusted). It is never called for a missing, malformed or unknown token. It cannot change the response: it is not given the controller, and a raise is rescued and logged with its class only. It runs in the request, so it should enqueue a job and return. Before, the only way to get the refused key and the request together was to override the private `record_key_refusal`: `render_unauthorized` gets no key, and the `after_authentication` job gets no request. The README has an example (email the owner when their public key is refused on a site that is not on its list) and the security notes for it: the origin host is chosen by whoever sends the request.
+
+### Upgrading
+
+- Nothing to do. An app that overrides `record_key_refusal` keeps working: the gem still calls it (and `super` still records the refusal), then calls `on_key_refused`. Moving that code to `on_key_refused` is recommended.
+
 ## [0.10.0] - 2026-11-13
 
 ### Added
